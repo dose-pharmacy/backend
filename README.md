@@ -36,3 +36,15 @@ Node.js + TypeScript REST API with PostgreSQL, Prisma, and Better Auth.
 Inventory, POS, purchasing, and related modules are not implemented in this phase.
 
 Frontend authentication contract: [docs/FRONTEND_AUTH.md](docs/FRONTEND_AUTH.md)
+
+## Render deployment
+
+This repository includes `render.yaml` for Blueprint deployments. For a manually
+created Render web service, use:
+
+- Build command: `npm ci && npm run build`
+- Start command: `npx prisma migrate deploy && npm start`
+- Health check path: `/health`
+
+Set the required environment variables from `.env.example` in Render. The build
+command must run before the start command so `build/server.js` exists at runtime.
