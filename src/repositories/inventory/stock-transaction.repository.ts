@@ -32,4 +32,19 @@ export const stockTransactionRepository = {
     ]);
     return { items, total };
   },
+
+  async listByBatch(batchId: string, query: { skip: number; take: number }) {
+    const where: Prisma.StockTransactionWhereInput = { batchId };
+    const [items, total] = await prisma.$transaction([
+      prisma.stockTransaction.findMany({
+        where,
+        include: transactionInclude,
+        orderBy: { createdAt: "desc" },
+        skip: query.skip,
+        take: query.take,
+      }),
+      prisma.stockTransaction.count({ where }),
+    ]);
+    return { items, total };
+  },
 };

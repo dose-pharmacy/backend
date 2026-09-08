@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { batchService } from "../../services/inventory/batch.service.js";
-import type { CreateBatchInput, ListBatchesQuery, UpdateBatchInput } from "../../services/inventory/batch.service.js";
+import type { CreateBatchInput, ListBatchesQuery, UpdateBatchInput, BatchTransactionQuery } from "../../services/inventory/batch.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
@@ -9,6 +9,8 @@ type ListQuery = {
   limit?: number;
   productId?: string;
   search?: string;
+  locationId?: string;
+  status?: string;
   expiresBefore?: string;
   expiresAfter?: string;
 };
@@ -61,5 +63,16 @@ export const batchController = {
   remove: asyncHandler(async (req: Request, res: Response) => {
     await batchService.remove(req.params.id as string);
     sendSuccess(res, null);
+  }),
+
+  getTransactions: asyncHandler(async (req: Request, res: Response) => {
+    const query = req.query as BatchTransactionQuery;
+    const input: BatchTransactionQuery = {
+      page: query.page,
+      limit: query.limit,
+      transactionType: query.transactionType,
+    };
+    const { items, meta } = await batchService.getTransactions(req.params.id as string, input);
+    sendSuccess(res, items, { meta });
   }),
 };

@@ -71,9 +71,13 @@ export const batchListQuerySchema = z
   .object({
     productId: uuidSchema.optional(),
     search: optionalQueryString(64),
+    locationId: uuidSchema.optional(),
+    status: z.enum(["AVAILABLE", "LOW_STOCK", "DEPLETED", "EXPIRED"]).optional(),
     expiresBefore: dateField("Expires before").optional(),
     expiresAfter: dateField("Expires after").optional(),
   })
   .merge(paginationQuerySchema);
+
+export const batchTransactionQuerySchema = paginationQuerySchema;
 
 export { idParamSchema as batchParamsSchema };

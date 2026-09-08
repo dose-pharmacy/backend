@@ -11,6 +11,11 @@ export type BatchListQuery = {
   take: number;
 };
 
+export type QuantityByBatchAndLocationQuery = {
+  batchIds: string[];
+  locationId?: string;
+};
+
 const batchDetailInclude = {
   product: {
     select: {
@@ -109,5 +114,27 @@ export const batchRepository = {
       prisma.stockTransaction.count({ where: { batchId: id } }),
     ]);
     return { stock, transactions };
+  },
+
+  async quantityByBatchAndLocation(
+    batchIds: string[],
+    locationId?: string,
+  ): Promise<Array<{ batchId: string; quantity: Prisma.Decimal }>> {
+    const where: Prisma.InventoryStockWhereInput = {
+      batchId: { in: batchIds },
+      quantity: { gt: 0 },
+      ...(locationId ? { locationId } : {}),
+    };
+
+    const rows = await prisma.inventoryStock.groupBy({
+      by: ["batchId"],
+      where,
+      _sum: { quantity: true },
+    });
+
+    return rows.map((row) => ({
+      batchId: row.batchId,
+      quantity: row._sum.quantity ?? new Prisma.Decimal(0),
+    }));
   },
 };

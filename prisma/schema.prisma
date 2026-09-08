@@ -33,6 +33,21 @@ enum StockTransactionType {
   EXPIRY
   DISPOSAL
   CORRECTION
+  RETURN_TO_SUPPLIER
+  CLEARANCE_SALE
+}
+
+enum TransferStatus {
+  DRAFT
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum ExpiryActionType {
+  RETURN_TO_SUPPLIER
+  CLEARANCE_SALE
+  DISPOSE
 }
 
 model User {
@@ -47,6 +62,8 @@ model User {
   sessions          Session[]
   accounts          Account[]
   stockTransactions StockTransaction[]
+  stockTransfers    StockTransfer[]     @relation("CreatedStockTransfers")
+  expiryActions     ExpiryAction[]      @relation("PerformedExpiryActions")
 
   @@unique([email])
   @@map("user")
@@ -140,10 +157,12 @@ model Product {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  units        ProductUnit[]
-  batches      Batch[]
-  stock        InventoryStock[]
-  transactions StockTransaction[]
+  units              ProductUnit[]
+  batches            Batch[]
+  stock              InventoryStock[]
+  transactions       StockTransaction[]
+  transferItems      StockTransferItem[]
+  reorderConfig      ReorderConfiguration?
 
   @@unique([sku])
   @@index([productGroupId])
@@ -181,6 +200,9 @@ model InventoryLocation {
   updatedAt    DateTime  @updatedAt
   stock        InventoryStock[]
   transactions StockTransaction[]
+  fromTransfers StockTransfer[] @relation("FromLocation")
+  toTransfers   StockTransfer[] @relation("ToLocation")
+  expiryActions ExpiryAction[]
 
   @@unique([name])
   @@index([isActive])
@@ -201,6 +223,8 @@ model Batch {
   updatedAt         DateTime  @updatedAt
   stock             InventoryStock[]
   transactions      StockTransaction[]
+  transferItems     StockTransferItem[]
+  expiryActions     ExpiryAction[]
 
   @@unique([productId, batchNumber])
   @@index([productId, expiryDate])
@@ -258,4 +282,87 @@ model StockTransaction {
   @@index([transactionType])
   @@index([createdById])
   @@map("stock_transaction")
+}
+
+// ============================================================
+// Inventory Operations & Expiry Control (Phase 2)
+// ============================================================
+
+model StockTransfer {
+  id              String    @id @default(uuid())
+  fromLocationId  String
+  fromLocation    InventoryLocation @relation("FromLocation", fields: [fromLocationId], references: [id])
+  toLocationId    String
+  toLocation      InventoryLocation @relation("ToLocation", fields: [toLocationId], references: [id])
+  transferDate    DateTime  @default(now())
+  reason          String?
+  status          TransferStatus @default(DRAFT)
+  createdById     String
+  createdBy       User      @relation("CreatedStockTransfers", fields: [createdById], references: [id])
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  items           StockTransferItem[]
+
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([status])
+  @@index([createdById])
+  @@map("stock_transfer")
+}
+
+model StockTransferItem {
+  id           String    @id @default(uuid())
+  transferId   String
+  transfer     StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id])
+  batchId      String
+  batch        Batch     @relation(fields: [batchId], references: [id])
+  quantity     Decimal   @db.Decimal(14, 3)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([transferId, productId, batchId])
+  @@index([transferId])
+  @@index([productId])
+  @@index([batchId])
+  @@map("stock_transfer_item")
+}
+
+model ExpiryAction {
+  id               String    @id @default(uuid())
+  batchId          String
+  batch            Batch     @relation(fields: [batchId], references: [id])
+  actionType       ExpiryActionType
+  quantity         Decimal?  @db.Decimal(14, 3)
+  locationId       String?
+  location         InventoryLocation? @relation(fields: [locationId], references: [id])
+  supplierId       String?
+  discountPercent  Decimal?  @db.Decimal(5, 2)
+  reason           String?
+  notes            String?
+  performedById    String
+  performedBy      User      @relation("PerformedExpiryActions", fields: [performedById], references: [id])
+  createdAt        DateTime  @default(now())
+
+  @@index([batchId])
+  @@index([actionType])
+  @@index([performedById])
+  @@map("expiry_action")
+}
+
+model ReorderConfiguration {
+  id                String  @id @default(uuid())
+  productId         String  @unique
+  product           Product @relation(fields: [productId], references: [id])
+  minimumStockLevel Decimal @db.Decimal(14, 3)
+  reorderPoint      Decimal @db.Decimal(14, 3)
+  leadTimeDays      Int     @default(7)
+  reorderQuantity   Decimal @db.Decimal(14, 3)
+  useSalesVelocity  Boolean @default(false)
+  bufferPercentage  Decimal @default(20) @db.Decimal(5, 2)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("reorder_configuration")
 }

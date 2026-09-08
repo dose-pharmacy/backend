@@ -105,4 +105,24 @@ export const inventoryStockRepository = {
     });
     return aggregate._sum.quantity ?? new Prisma.Decimal(0);
   },
+
+  /** Quantity of multiple batches grouped by batch, optionally filtered by location. */
+  async quantityByBatchAndLocation(batchIds: string[], locationId?: string) {
+    const where: Prisma.InventoryStockWhereInput = {
+      batchId: { in: batchIds },
+      quantity: { gt: 0 },
+      ...(locationId ? { locationId } : {}),
+    };
+
+    const rows = await prisma.inventoryStock.groupBy({
+      by: ["batchId"],
+      where,
+      _sum: { quantity: true },
+    });
+
+    return rows.map((row) => ({
+      batchId: row.batchId,
+      quantity: row._sum.quantity ?? new Prisma.Decimal(0),
+    }));
+  },
 };
