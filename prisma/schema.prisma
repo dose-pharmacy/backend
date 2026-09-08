@@ -15,17 +15,38 @@ enum UserRole {
   MANAGER
 }
 
+enum StockDirection {
+  IN
+  OUT
+}
+
+enum StockTransactionType {
+  OPENING
+  PURCHASE
+  SALE
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  RETURN_IN
+  RETURN_OUT
+  EXPIRY
+  DISPOSAL
+  CORRECTION
+}
+
 model User {
-  id            String    @id
-  name          String
-  email         String
-  emailVerified Boolean   @default(false)
-  image         String?
-  role          UserRole  @default(ADMIN)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  sessions      Session[]
-  accounts      Account[]
+  id                String              @id
+  name              String
+  email             String
+  emailVerified     Boolean             @default(false)
+  image             String?
+  role              UserRole            @default(ADMIN)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  sessions          Session[]
+  accounts          Account[]
+  stockTransactions StockTransaction[]
 
   @@unique([email])
   @@map("user")
@@ -77,4 +98,164 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+// ============================================================
+// Inventory core domain (Phase 1)
+//
+// Single-tenant today: no Business/Organization model exists in
+// the auth foundation. Uniqueness is therefore global. When a
+// tenant layer is introduced, scope columns (businessId) must be
+// added and folded into these unique constraints.
+// ============================================================
+
+model ProductGroup {
+  id                  String    @id @default(uuid())
+  name                String
+  description         String?
+  defaultProfitMargin Decimal   @default(0) @db.Decimal(5, 2)
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  products            Product[]
+
+  @@unique([name])
+  @@index([isActive])
+  @@map("product_group")
+}
+
+model Product {
+  id            String    @id @default(uuid())
+  name          String
+  genericName   String?
+  brand         String?
+  sku           String
+  description   String?
+  imageUrl      String?
+  minimumStock  Decimal   @default(0) @db.Decimal(14, 3)
+  reorderPoint  Decimal?  @db.Decimal(14, 3)
+  isActive      Boolean   @default(true)
+  productGroupId String
+  productGroup  ProductGroup @relation(fields: [productGroupId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  units        ProductUnit[]
+  batches      Batch[]
+  stock        InventoryStock[]
+  transactions StockTransaction[]
+
+  @@unique([sku])
+  @@index([productGroupId])
+  @@index([name])
+  @@index([isActive])
+  @@map("product")
+}
+
+model ProductUnit {
+  id               String  @id @default(uuid())
+  productId        String
+  product          Product @relation(fields: [productId], references: [id])
+  name             String
+  // 1 unit = conversionFactor x base units
+  conversionFactor Decimal @db.Decimal(12, 4)
+  sellPrice        Decimal? @db.Decimal(12, 2)
+  purchasePrice    Decimal? @db.Decimal(12, 2)
+  isBaseUnit       Boolean @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Exactly one base unit per product is enforced by a partial
+  // unique index added in the migration (Prisma cannot express it).
+  @@unique([productId, name])
+  @@index([productId, isBaseUnit])
+  @@map("product_unit")
+}
+
+model InventoryLocation {
+  id           String    @id @default(uuid())
+  name         String
+  description  String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  stock        InventoryStock[]
+  transactions StockTransaction[]
+
+  @@unique([name])
+  @@index([isActive])
+  @@map("inventory_location")
+}
+
+model Batch {
+  id                String    @id @default(uuid())
+  productId         String
+  product           Product   @relation(fields: [productId], references: [id])
+  batchNumber       String
+  manufacturingDate DateTime?
+  receivedDate      DateTime?
+  expiryDate        DateTime
+  purchaseCost      Decimal?  @db.Decimal(12, 2)
+  supplierReference String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  stock             InventoryStock[]
+  transactions      StockTransaction[]
+
+  @@unique([productId, batchNumber])
+  @@index([productId, expiryDate])
+  @@index([batchNumber])
+  @@map("batch")
+}
+
+model InventoryStock {
+  id               String           @id @default(uuid())
+  // productId mirrors batch.productId so stock can be queried by
+  // product without joining through the batch.
+  productId        String
+  product          Product          @relation(fields: [productId], references: [id])
+  batchId          String
+  batch            Batch            @relation(fields: [batchId], references: [id])
+  locationId       String
+  location         InventoryLocation @relation(fields: [locationId], references: [id])
+  // Quantities are always stored in the product base unit.
+  quantity         Decimal          @default(0) @db.Decimal(14, 3)
+  reservedQuantity Decimal          @default(0) @db.Decimal(14, 3)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  // A batch belongs to a single product, so (batchId, locationId)
+  // fully identifies one Product+Batch+Location stock record.
+  @@unique([batchId, locationId])
+  @@index([productId])
+  @@index([locationId])
+  @@map("inventory_stock")
+}
+
+model StockTransaction {
+  id              String              @id @default(uuid())
+  productId       String
+  product         Product             @relation(fields: [productId], references: [id])
+  batchId         String
+  batch           Batch               @relation(fields: [batchId], references: [id])
+  locationId      String
+  location        InventoryLocation   @relation(fields: [locationId], references: [id])
+  transactionType StockTransactionType
+  direction       StockDirection
+  // Always positive; direction decides increase/decrease.
+  quantity        Decimal             @db.Decimal(14, 3)
+  balanceAfter    Decimal             @db.Decimal(14, 3)
+  referenceType   String?
+  referenceId     String?
+  notes           String?
+  createdById     String
+  createdBy       User                @relation(fields: [createdById], references: [id])
+  createdAt       DateTime            @default(now())
+
+  @@index([productId, createdAt])
+  @@index([batchId, createdAt])
+  @@index([locationId, createdAt])
+  @@index([transactionType])
+  @@index([createdById])
+  @@map("stock_transaction")
 }

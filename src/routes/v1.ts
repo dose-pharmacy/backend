@@ -5,6 +5,7 @@ import {
   requireAuthenticatedUser,
   requireRole,
 } from "../middleware/authorize.js";
+import { inventoryRouter } from "./inventory.js";
 
 export const v1Router = Router();
 
@@ -14,3 +15,5 @@ v1Router.get(
   requireRole(UserRole.ADMIN),
   adminController.test,
 );
+
+v1Router.use("/inventory", inventoryRouter);
