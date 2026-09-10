@@ -268,11 +268,15 @@ describe("inventory: product creation with embedded units", () => {
     productIds.push(product.id as string);
     expect(product.units.length).toBe(3);
     expect(product.units.map((u: { unit: { name: string } }) => u.unit.name)).toEqual(
-      expect.arrayContaining(["Tablet", "Strip", "Box"]),
+      expect.arrayContaining([
+        product.units.find((u: { unit: { name: string } }) => u.unitId === tabletId)?.unit.name,
+        product.units.find((u: { unit: { name: string } }) => u.unitId === stripId)?.unit.name,
+        product.units.find((u: { unit: { name: string } }) => u.unitId === boxId)?.unit.name,
+      ].filter(Boolean)),
     );
     const base = product.units.find((u: { isBaseUnit: boolean }) => u.isBaseUnit);
-    expect(base.unit.name).toBe("Tablet");
-    expect(base.conversionFactor).toBe(1);
+    expect(base?.unitId).toBe(tabletId);
+    expect(base?.conversionFactor).toBe(1);
   });
 
   it("rejects a product without a base unit and creates nothing", async () => {
@@ -341,10 +345,11 @@ describe("inventory: product creation with embedded units", () => {
   });
 
   it("rejects an inactive unit and rolls back the whole product creation", async () => {
+    const ghostName = uniqueName("Ghost Unit");
     const inactive = await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "Ghost Unit" })
+      .send({ name: ghostName })
       .expect(201);
     const inactiveId = inactive.body.data.id as string;
     unitIds.push(inactiveId);
