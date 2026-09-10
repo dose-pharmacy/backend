@@ -33,6 +33,62 @@ async function signUpUser(name: string): Promise<{ email: string; cookie: string
   return { email, cookie, userId: res.body.user.id as string };
 }
 
+async function cleanPosFixtures(): Promise<void> {
+  const [locations, groups, units] = await Promise.all([
+    prisma.inventoryLocation.findMany({ where: { name: { contains: "Pos" } }, select: { id: true } }),
+    prisma.productGroup.findMany({ where: { name: { contains: "Pos" } }, select: { id: true } }),
+    prisma.unit.findMany({ where: { name: { contains: "Pos" } }, select: { id: true } }),
+  ]);
+  const locationIds = locations.map(({ id }) => id);
+  const groupIds = groups.map(({ id }) => id);
+  const products = await prisma.product.findMany({
+    where: {
+      OR: [
+        { name: { contains: "Pos" } },
+        ...(groupIds.length ? [{ productGroupId: { in: groupIds } }] : []),
+      ],
+    },
+    select: { id: true },
+  });
+  const productIds = products.map(({ id }) => id);
+
+  await prisma.sale.deleteMany({
+    where: {
+      OR: [
+        ...(locationIds.length ? [{ locationId: { in: locationIds } }] : []),
+        ...(productIds.length ? [{ items: { some: { productId: { in: productIds } } } }] : []),
+      ],
+    },
+  });
+  await prisma.stockTransaction.deleteMany({
+    where: {
+      OR: [
+        ...(locationIds.length ? [{ locationId: { in: locationIds } }] : []),
+        ...(productIds.length ? [{ productId: { in: productIds } }] : []),
+      ],
+    },
+  });
+  await prisma.inventoryStock.deleteMany({
+    where: {
+      OR: [
+        ...(locationIds.length ? [{ locationId: { in: locationIds } }] : []),
+        ...(productIds.length ? [{ productId: { in: productIds } }] : []),
+      ],
+    },
+  });
+  if (productIds.length) {
+    await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
+    await prisma.productUnit.deleteMany({ where: { productId: { in: productIds } } });
+    await prisma.reorderConfiguration.deleteMany({ where: { productId: { in: productIds } } });
+    await prisma.product.deleteMany({ where: { id: { in: productIds } } });
+  }
+  const unitIds = units.map(({ id }) => id);
+  if (groupIds.length) await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
+  if (locationIds.length) await prisma.inventoryLocation.deleteMany({ where: { id: { in: locationIds } } });
+  if (unitIds.length) await prisma.unit.deleteMany({ where: { id: { in: unitIds } } });
+  await prisma.user.deleteMany({ where: { name: { contains: "pos", mode: "insensitive" } } });
+}
+
 // ---------------------------------------------------------------------------
 // POS product selection
 // ---------------------------------------------------------------------------
@@ -108,6 +164,7 @@ describe("pos: product selection", () => {
   }
 
   beforeAll(async () => {
+    await cleanPosFixtures();
     const admin = await signUpUser("pos-list");
     cookie = admin.cookie;
     userIds.push(admin.userId);
@@ -387,6 +444,7 @@ describe("pos: sales", () => {
   }
 
   beforeAll(async () => {
+    await cleanPosFixtures();
     const admin = await signUpUser("pos-sales");
     cookie = admin.cookie;
     actorId = admin.userId;
@@ -637,13 +695,20 @@ describe("pos: sales", () => {
       data: { sellPrice: 9.99 },
     });
 
-    const fetched = await request(app)
-      .get(`/api/v1/pos/sales/${saleId}`)
-      .set("Cookie", cookie)
-      .expect(200);
-    expect(fetched.body.data.items[0].originalUnitPrice).toBe(2);
-    expect(fetched.body.data.items[0].actualUnitPrice).toBe(2);
-    expect(fetched.body.data.subtotal).toBe(20);
+    try {
+      const fetched = await request(app)
+        .get(`/api/v1/pos/sales/${saleId}`)
+        .set("Cookie", cookie)
+        .expect(200);
+      expect(fetched.body.data.items[0].originalUnitPrice).toBe(2);
+      expect(fetched.body.data.items[0].actualUnitPrice).toBe(2);
+      expect(fetched.body.data.subtotal).toBe(20);
+    } finally {
+      await prisma.productUnit.updateMany({
+        where: { productId: paracetamolId, unitId: tabletUnitId },
+        data: { sellPrice: 2 },
+      });
+    }
   });
 
   // ------------------------------------------------------------------

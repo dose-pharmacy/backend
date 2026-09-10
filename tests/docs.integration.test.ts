@@ -28,6 +28,7 @@ function collectRoutes(router: Router, prefix: string): Route[] {
 }
 
 const normalize = (path: string) => path.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
+const openApiPath = (path: string) => normalize(path).replace(/^\/api\/v1/, "");
 
 const realRoutes = [
   ...collectRoutes(inventoryRouter, "/api/v1/inventory"),
@@ -64,7 +65,7 @@ describe("OpenAPI / Swagger documentation", () => {
     for (const path of posPaths) {
       for (const method of Object.keys(openApiDocument.paths[path])) {
         const route = realRoutes.find(
-          (r) => r.method === method.toUpperCase() && normalize(r.path) === path,
+          (r) => r.method === method.toUpperCase() && openApiPath(r.path) === path,
         );
         expect(route, `${method.toUpperCase()} ${path} is documented but has no route`).toBeDefined();
       }
@@ -74,7 +75,7 @@ describe("OpenAPI / Swagger documentation", () => {
   it("documents every route that actually exists on inventory and POS routers", () => {
     const documented = (method: string, path: string) =>
       Object.keys(openApiDocument.paths).some((specPath) => {
-        if (normalize(path) !== specPath) return false;
+        if (openApiPath(path) !== specPath) return false;
         return Object.keys(openApiDocument.paths[specPath]).includes(method.toLowerCase());
       });
 

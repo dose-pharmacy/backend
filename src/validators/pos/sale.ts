@@ -65,18 +65,7 @@ export const createSaleSchema = z
     billDiscount: discountSchema.optional(),
     notes: z.string().trim().max(500).optional(),
   })
-  .superRefine((value, ctx) => {
-    // A payment with a zero amount is meaningless.
-    value.payments.forEach((payment, index) => {
-      if (payment.amount === 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["payments", index, "amount"],
-          message: "Payment amount must be greater than zero",
-        });
-      }
-    });
-  });
+  ;
 
 export const saleListQuerySchema = z
   .object({
