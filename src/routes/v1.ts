@@ -6,6 +6,7 @@ import {
   requireRole,
 } from "../middleware/authorize.js";
 import { inventoryRouter } from "./inventory.js";
+import { posRouter } from "./pos.js";
 
 export const v1Router = Router();
 
@@ -17,3 +18,4 @@ v1Router.get(
 );
 
 v1Router.use("/inventory", inventoryRouter);
+v1Router.use("/pos", posRouter);

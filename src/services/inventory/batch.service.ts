@@ -122,9 +122,8 @@ export const batchService = {
       throw new AppError(404, ErrorCode.BATCH_NOT_FOUND, "Batch not found");
     }
 
-    const [totalQuantity, quantityByLocation] = await Promise.all([
+    const [totalQuantity] = await Promise.all([
       inventoryStockRepository.batchTotalQuantity(id),
-      inventoryStockRepository.quantityByBatchAndLocation([id]),
     ]);
 
     const today = startOfTodayUtc();
@@ -133,10 +132,9 @@ export const batchService = {
       (batch.expiryDate.getTime() - today.getTime()) / 86_400_000,
     );
 
-    // Resolve location names so the frontend doesn't need extra calls
-    const locationIds = quantityByLocation.map((q) => q.batchId);
-    // quantityByBatchAndLocation returns { batchId, quantity } — we need location breakdown
-    // use a dedicated query for per-location breakdown with names
+    // Resolve location names so the frontend doesn't need extra calls.
+    // quantityByBatchAndLocation returns { batchId, quantity } — for a
+    // per-location breakdown with names use a dedicated query.
     const locationRows = await inventoryStockRepository.quantityByLocation(batch.productId);
 
     return {
