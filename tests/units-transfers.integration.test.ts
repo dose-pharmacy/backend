@@ -404,6 +404,10 @@ describe("inventory: conversion", () => {
   let boxId: string;
   let productId: string;
 
+  function uniqueName(base: string): string {
+    return `${base} ${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  }
+
   beforeAll(async () => {
     const admin = await signUpUser("units-conversion");
     cookie = admin.cookie;
@@ -413,7 +417,7 @@ describe("inventory: conversion", () => {
       const res = await request(app)
         .post("/api/v1/inventory/units")
         .set("Cookie", cookie)
-        .send({ name })
+        .send({ name: uniqueName(name) })
         .expect(201);
       unitIds.push(res.body.data.id as string);
     }
@@ -502,6 +506,10 @@ describe("inventory: transfers", () => {
   let batchId: string;
   let locationAId: string;
   let locationBId: string;
+
+  function uniqueName(base: string): string {
+    return `${base} ${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  }
 
   async function openStock(batch: string, location: string, quantity: number, unitId: string) {
     await request(app)
