@@ -39,6 +39,10 @@ describe("inventory: master units", () => {
   const productIds: string[] = [];
   const unitIds: string[] = [];
 
+  function uniqueName(base: string): string {
+    return `${base} ${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  }
+
   async function makeGroup(name: string): Promise<string> {
     const res = await request(app)
       .post("/api/v1/inventory/product-groups")
@@ -77,46 +81,49 @@ describe("inventory: master units", () => {
   });
 
   it("creates a reusable master unit", async () => {
+    const tabletName = uniqueName("Tablet");
     const res = await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "Tablet", symbol: "TAB", description: "Single tablet" })
+      .send({ name: tabletName, symbol: "TAB", description: "Single tablet" })
       .expect(201);
-    expect(res.body.data.name).toBe("Tablet");
+    expect(res.body.data.name).toBe(tabletName);
     expect(res.body.data.symbol).toBe("TAB");
     expect(res.body.data.isActive).toBe(true);
     unitIds.push(res.body.data.id as string);
   });
 
   it("rejects duplicate master unit names (case-insensitive)", async () => {
+    const stripName = uniqueName("Strip");
     await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "Strip" })
+      .send({ name: stripName })
       .expect(201)
       .then((res) => unitIds.push(res.body.data.id as string));
 
     const res = await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "strip" })
+      .send({ name: stripName.toLowerCase() })
       .expect(409);
     expect(res.body.error.code).toBe("DUPLICATE_UNIT");
   });
 
   it("lists, searches and filters units", async () => {
+    const boxName = uniqueName("Box");
     await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "Box", symbol: "BX" })
+      .send({ name: boxName, symbol: "BX" })
       .expect(201)
       .then((res) => unitIds.push(res.body.data.id as string));
 
     const search = await request(app)
-      .get("/api/v1/inventory/units?search=tab")
+      .get(`/api/v1/inventory/units?search=${tabletName.split(" ")[0]}`)
       .set("Cookie", cookie)
       .expect(200);
-    expect(search.body.data.map((u: { name: string }) => u.name)).toContain("Tablet");
+    expect(search.body.data.map((u: { name: string }) => u.name)).toContain(tabletName);
 
     const all = await request(app)
       .get("/api/v1/inventory/units")
@@ -126,7 +133,7 @@ describe("inventory: master units", () => {
     // by the later soft-delete test, so it is not asserted here.)
     expect(all.body.meta.total).toBeGreaterThanOrEqual(3);
     expect(all.body.data.map((u: { name: string }) => u.name)).toEqual(
-      expect.arrayContaining(["Tablet", "Strip", "Box"]),
+      expect.arrayContaining([tabletName, stripName, boxName]),
     );
   });
 
@@ -174,14 +181,14 @@ describe("inventory: master units", () => {
       .set("Cookie", cookie)
       .send({ unitId: unitIds[0], conversionFactor: 1, isBaseUnit: true })
       .expect(201);
-    expect(first.body.data.unit.name).toBe("Tablet");
+    expect(first.body.data.unit.name).toBe(tabletName);
 
     const second = await request(app)
       .post(`/api/v1/inventory/products/${secondId}/units`)
       .set("Cookie", cookie)
       .send({ unitId: unitIds[0], conversionFactor: 1, isBaseUnit: true })
       .expect(201);
-    expect(second.body.data.unit.name).toBe("Tablet");
+    expect(second.body.data.unit.name).toBe(tabletName);
     expect(second.body.data.unitId).toBe(first.body.data.unitId);
   });
 });
@@ -198,6 +205,10 @@ describe("inventory: product creation with embedded units", () => {
   let boxId: string;
   let groupId: string;
 
+  function uniqueName(base: string): string {
+    return `${base} ${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  }
+
   beforeAll(async () => {
     const admin = await signUpUser("units-product-create");
     cookie = admin.cookie;
@@ -207,7 +218,7 @@ describe("inventory: product creation with embedded units", () => {
       const res = await request(app)
         .post("/api/v1/inventory/units")
         .set("Cookie", cookie)
-        .send({ name })
+        .send({ name: uniqueName(name) })
         .expect(201);
       unitIds.push(res.body.data.id as string);
     }
