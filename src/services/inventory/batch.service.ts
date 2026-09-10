@@ -90,32 +90,28 @@ export const batchService = {
       take,
     });
 
-    // If filtering by location or status, we need to enrich with stock data
-    let enrichedItems = items;
-    if (query.locationId || query.status) {
-      const batchIds = items.map((item) => item.id);
-      const stockByBatch = await inventoryStockRepository.quantityByBatchAndLocation(
-        batchIds,
-        query.locationId,
-      );
-      const stockMap = new Map(stockByBatch.map((s) => [s.batchId, s.quantity]));
+    // Always enrich with stock data so every batch item has totalQuantity/status/daysUntilExpiry
+    const batchIds = items.map((item) => item.id);
+    const stockByBatch = batchIds.length
+      ? await inventoryStockRepository.quantityByBatchAndLocation(batchIds, query.locationId)
+      : [];
+    const stockMap = new Map(stockByBatch.map((s) => [s.batchId, s.quantity]));
 
-      enrichedItems = items
-        .map((item) => {
-          const totalQuantity = stockMap.get(item.id)?.toNumber() ?? 0;
-          const status = calculateBatchStatus(totalQuantity, item.expiryDate);
-          return { ...item, totalQuantity, status };
-        })
-        .filter((item) => {
-          if (query.locationId && (!item.totalQuantity || item.totalQuantity <= 0)) {
-            return false;
-          }
-          if (query.status && item.status !== query.status) {
-            return false;
-          }
-          return true;
-        });
-    }
+    const today = startOfTodayUtc();
+    const enrichedItems = items
+      .map((item) => {
+        const totalQuantity = stockMap.get(item.id)?.toNumber() ?? 0;
+        const status = calculateBatchStatus(totalQuantity, item.expiryDate);
+        const daysUntilExpiry = Math.ceil(
+          (item.expiryDate.getTime() - today.getTime()) / 86_400_000,
+        );
+        return { ...item, totalQuantity, status, daysUntilExpiry };
+      })
+      .filter((item) => {
+        if (query.locationId && item.totalQuantity <= 0) return false;
+        if (query.status && item.status !== query.status) return false;
+        return true;
+      });
 
     return { items: enrichedItems, meta: buildPaginationMeta(total, page, limit) };
   },
@@ -131,17 +127,24 @@ export const batchService = {
       inventoryStockRepository.quantityByBatchAndLocation([id]),
     ]);
 
+    const today = startOfTodayUtc();
     const status = calculateBatchStatus(totalQuantity.toNumber(), batch.expiryDate);
-    const daysRemaining = Math.ceil(
-      (batch.expiryDate.getTime() - startOfTodayUtc().getTime()) / 86_400_000,
+    const daysUntilExpiry = Math.ceil(
+      (batch.expiryDate.getTime() - today.getTime()) / 86_400_000,
     );
+
+    // Resolve location names so the frontend doesn't need extra calls
+    const locationIds = quantityByLocation.map((q) => q.batchId);
+    // quantityByBatchAndLocation returns { batchId, quantity } — we need location breakdown
+    // use a dedicated query for per-location breakdown with names
+    const locationRows = await inventoryStockRepository.quantityByLocation(batch.productId);
 
     return {
       ...batch,
       totalQuantity: totalQuantity.toNumber(),
-      quantityByLocation,
+      locationStock: locationRows,
       status,
-      daysRemaining,
+      daysUntilExpiry,
     };
   },
 

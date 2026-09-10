@@ -24,16 +24,20 @@ export type ExpiryWindow = {
 export type ExpiryBatchItem = {
   id: string;
   batchNumber: string;
-  productId: string;
-  productName: string;
-  productSku: string;
-  productBrand: string | null;
-  quantity: number;
   expiryDate: Date;
   daysRemaining: number;
-  locationId: string | null;
-  locationName: string | null;
+  purchaseCost: number | null;
   status: ExpiryStatus;
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    brand: string | null;
+  };
+  stock: {
+    quantity: number;
+    location: { id: string; name: string } | null;
+  };
 };
 
 export type ExpiryDashboardResult = {
@@ -104,16 +108,21 @@ export const expiryService = {
 
     const batches = await prisma.batch.findMany({
       where,
-      include: {
-        product: {
-          select: { id: true, name: true, sku: true, brand: true },
-        },
+      select: {
+        id: true,
+        batchNumber: true,
+        expiryDate: true,
+        purchaseCost: true,
+        productId: true,
+        product: { select: { id: true, name: true, sku: true, brand: true } },
         stock: {
           where: {
             quantity: { gt: 0 },
             ...(query.locationId ? { locationId: query.locationId } : {}),
           },
-          include: {
+          select: {
+            quantity: true,
+            locationId: true,
             location: { select: { id: true, name: true } },
           },
         },
@@ -135,16 +144,20 @@ export const expiryService = {
         return {
           id: batch.id,
           batchNumber: batch.batchNumber,
-          productId: batch.productId,
-          productName: batch.product.name,
-          productSku: batch.product.sku,
-          productBrand: batch.product.brand,
-          quantity,
           expiryDate: batch.expiryDate,
           daysRemaining,
-          locationId: stock.locationId,
-          locationName: stock.location.name,
+          purchaseCost: batch.purchaseCost?.toNumber() ?? null,
           status,
+          product: {
+            id: batch.product.id,
+            name: batch.product.name,
+            sku: batch.product.sku,
+            brand: batch.product.brand,
+          },
+          stock: {
+            quantity,
+            location: stock.location,
+          },
         };
       });
     });
@@ -163,7 +176,7 @@ export const expiryService = {
         daysFrom: prevThreshold + (i === 0 ? 0 : 1),
         daysTo: threshold,
         batches: windowItems,
-        totalQuantity: windowItems.reduce((sum, item) => sum + item.quantity, 0),
+        totalQuantity: windowItems.reduce((sum, item) => sum + item.stock.quantity, 0),
         batchCount: windowItems.length,
       });
       prevThreshold = threshold;
@@ -176,19 +189,19 @@ export const expiryService = {
       daysFrom: -Infinity,
       daysTo: -1,
       batches: expiredItems,
-      totalQuantity: expiredItems.reduce((sum, item) => sum + item.quantity, 0),
+      totalQuantity: expiredItems.reduce((sum, item) => sum + item.stock.quantity, 0),
       batchCount: expiredItems.length,
     });
 
     // Calculate summary
     const summary = {
-      expired: expiredItems.length,
+      expired: items.filter((i) => i.daysRemaining < 0).length,
       critical: items.filter((i) => i.status === "CRITICAL").length,
       expiringSoon: items.filter((i) => i.status === "EXPIRING_SOON").length,
       warning: items.filter((i) => i.status === "WARNING").length,
       normal: items.filter((i) => i.status === "NORMAL").length,
       totalBatches: items.length,
-      totalQuantity: items.reduce((sum, item) => sum + item.quantity, 0),
+      totalQuantity: items.reduce((sum, item) => sum + item.stock.quantity, 0),
     };
 
     return { windows, summary };
@@ -218,16 +231,21 @@ export const expiryService = {
     const [batches, total] = await prisma.$transaction([
       prisma.batch.findMany({
         where,
-        include: {
-          product: {
-            select: { id: true, name: true, sku: true, brand: true },
-          },
+        select: {
+          id: true,
+          batchNumber: true,
+          expiryDate: true,
+          purchaseCost: true,
+          productId: true,
+          product: { select: { id: true, name: true, sku: true, brand: true } },
           stock: {
             where: {
               quantity: { gt: 0 },
               ...(query.locationId ? { locationId: query.locationId } : {}),
             },
-            include: {
+            select: {
+              quantity: true,
+              locationId: true,
               location: { select: { id: true, name: true } },
             },
           },
@@ -251,16 +269,20 @@ export const expiryService = {
         return {
           id: batch.id,
           batchNumber: batch.batchNumber,
-          productId: batch.productId,
-          productName: batch.product.name,
-          productSku: batch.product.sku,
-          productBrand: batch.product.brand,
-          quantity,
           expiryDate: batch.expiryDate,
           daysRemaining,
-          locationId: stock.locationId,
-          locationName: stock.location.name,
+          purchaseCost: batch.purchaseCost?.toNumber() ?? null,
           status,
+          product: {
+            id: batch.product.id,
+            name: batch.product.name,
+            sku: batch.product.sku,
+            brand: batch.product.brand,
+          },
+          stock: {
+            quantity,
+            location: stock.location,
+          },
         };
       });
     });

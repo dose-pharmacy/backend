@@ -141,6 +141,28 @@ model ProductGroup {
   @@map("product_group")
 }
 
+// Reusable master unit (e.g. "Tablet", "Strip", "Box", "Bottle", "Vial",
+// "ml", "mg"). A Unit is the reusable concept only; product-specific
+// configuration (conversion factor, prices, base-unit flag) lives on
+// ProductUnit. Units are deactivated (soft-deleted) rather than hard-deleted
+// so historical transfer audit rows keep their meaning.
+model Unit {
+  id          String    @id @default(uuid())
+  name        String
+  symbol      String?
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  productUnits  ProductUnit[]
+  transferItems StockTransferItem[]
+
+  @@unique([name])
+  @@index([isActive])
+  @@map("unit")
+}
+
 model Product {
   id            String    @id @default(uuid())
   name          String
@@ -171,12 +193,22 @@ model Product {
   @@map("product")
 }
 
+// Product-specific configuration of a reusable master Unit.
+//   Unit "Box" + ProductUnit(Paracetamol, Box, conversionFactor=100)
+//   Unit "Box" + ProductUnit(Ibuprofen,  Box, conversionFactor=50)
+//
+// conversionFactor: how many BASE units this unit equals (1 unit = factor x
+// base units). The base unit always has conversionFactor = 1.
+//
+// purchasePrice is the DEFAULT / reference purchase price for this product
+// unit. It is NOT the authoritative historical inventory cost — the actual
+// cost of received stock is recorded on the Batch (purchaseCost).
 model ProductUnit {
   id               String  @id @default(uuid())
   productId        String
   product          Product @relation(fields: [productId], references: [id])
-  name             String
-  // 1 unit = conversionFactor x base units
+  unitId           String
+  unit             Unit    @relation(fields: [unitId], references: [id])
   conversionFactor Decimal @db.Decimal(12, 4)
   sellPrice        Decimal? @db.Decimal(12, 2)
   purchasePrice    Decimal? @db.Decimal(12, 2)
@@ -184,10 +216,12 @@ model ProductUnit {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  // The same master unit may only be configured once per product.
+  @@unique([productId, unitId])
   // Exactly one base unit per product is enforced by a partial
   // unique index added in the migration (Prisma cannot express it).
-  @@unique([productId, name])
   @@index([productId, isBaseUnit])
+  @@index([unitId])
   @@map("product_unit")
 }
 
@@ -310,6 +344,14 @@ model StockTransfer {
   @@map("stock_transfer")
 }
 
+// A transfer line item keeps BOTH representations for auditability:
+//   quantity     = quantity entered by the user (in `unit`)
+//   unitId       = the master unit selected by the user (e.g. "Box")
+//   baseQuantity = quantity normalised to the product base unit at the time
+//                  the item was entered (e.g. 2 Boxes x 100 = 200 Tablets)
+// Stock movements always operate on baseQuantity; the entered quantity/unit
+// are preserved so history can display "Transferred 5 Boxes (= 500 Tablets)"
+// without re-deriving from the (possibly changed) ProductUnit conversion.
 model StockTransferItem {
   id           String    @id @default(uuid())
   transferId   String
@@ -318,14 +360,19 @@ model StockTransferItem {
   product      Product   @relation(fields: [productId], references: [id])
   batchId      String
   batch        Batch     @relation(fields: [batchId], references: [id])
+  unitId       String
+  unit         Unit      @relation(fields: [unitId], references: [id])
   quantity     Decimal   @db.Decimal(14, 3)
+  baseQuantity Decimal   @db.Decimal(14, 3)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  @@unique([transferId, productId, batchId])
+  // One entry per product + batch + unit within a transfer.
+  @@unique([transferId, productId, batchId, unitId])
   @@index([transferId])
   @@index([productId])
   @@index([batchId])
+  @@index([unitId])
   @@map("stock_transfer_item")
 }
 

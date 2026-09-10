@@ -10,8 +10,16 @@ export type ProductGroupListQuery = {
 
 export const productGroupRepository = {
   findById(id: string) {
-    return prisma.productGroup.findUnique({ where: { id } });
+    // include products in the result for convenience, but don't paginate them here
+    return prisma.productGroup.findUnique({
+      where: { id },
+      include: {
+        products: true,
+        _count: { select: { products: true } }
+      },
+    });
   },
+
 
   /** Case-insensitive name lookup used for duplicate detection. */
   findByName(name: string, excludeId?: string) {
@@ -33,6 +41,9 @@ export const productGroupRepository = {
       prisma.productGroup.findMany({
         where,
         orderBy: { createdAt: "desc" },
+        include: {
+          _count: { select: { products: true } }
+        },
         skip: query.skip,
         take: query.take,
       }),
@@ -74,4 +85,17 @@ export const productGroupRepository = {
   countProducts(id: string) {
     return prisma.product.count({ where: { productGroupId: id } });
   },
+
+  // list a product group's products with pagination
+  listProducts(
+    id: string,
+    query: { skip: number; take: number },
+  ) {
+    return prisma.product.findMany({
+      where: { productGroupId: id },
+      orderBy: { createdAt: "desc" },
+      skip: query.skip,
+      take: query.take,
+    });
+  }
 };

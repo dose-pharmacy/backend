@@ -82,7 +82,6 @@ export const locationStockService = {
       where: { id: { in: locationIds } },
       select: { id: true, name: true },
     });
-    const locationNames = new Map(locations.map((loc) => [loc.id, loc.name]));
 
     // Build location stock map
     const stockByProduct = new Map<string, Map<string, number>>();

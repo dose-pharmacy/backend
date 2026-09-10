@@ -18,6 +18,15 @@ const stockInclude = {
       genericName: true,
       brand: true,
       sku: true,
+      minimumStock: true,
+      reorderPoint: true,
+      units: {
+        where: { isBaseUnit: true },
+        take: 1,
+        select: {
+          unit: { select: { id: true, name: true, symbol: true } },
+        },
+      },
     },
   },
   batch: { select: { id: true, batchNumber: true, expiryDate: true } },
