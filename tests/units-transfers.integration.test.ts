@@ -536,7 +536,7 @@ describe("inventory: transfers", () => {
       const res = await request(app)
         .post("/api/v1/inventory/units")
         .set("Cookie", cookie)
-        .send({ name })
+        .send({ name: uniqueName(name) })
         .expect(201);
       unitIds.push(res.body.data.id as string);
     }
