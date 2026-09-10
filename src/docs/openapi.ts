@@ -115,6 +115,8 @@ export const openApiDocument = {
     { name: "Product Units", description: "Product-specific unit configuration" },
     { name: "Transfers", description: "Stock transfers between locations" },
     { name: "Stock", description: "Stock movements and current stock" },
+    { name: "POS Products", description: "Sellable products for the point of sale" },
+    { name: "Sales", description: "Retail point of sale (POS) sales" },
   ],
   paths: {
     "/api/auth/sign-up/email": {
@@ -905,6 +907,96 @@ export const openApiDocument = {
         },
       },
     },
+    "/pos/products": {
+      get: {
+        tags: ["POS Products"],
+        summary: "List sellable products for the point of sale",
+        description:
+          "Returns only ACTIVE products that have at least one selling unit (an active master unit with a configured sellPrice). Each unit carries its own unit-specific price — the price is never derived as base price x conversion factor. `availableStock = quantity - reservedQuantity` is computed server-side in the product BASE unit, for `locationId` when supplied or across all locations otherwise.",
+        parameters: [
+          { name: "page", in: "query", schema: { type: "integer", minimum: 1 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "search", in: "query", schema: { type: "string" }, description: "Match by product name, generic name, brand or SKU" },
+          { name: "brand", in: "query", schema: { type: "string" } },
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Restrict stock figures to one inventory location" },
+        ],
+        responses: {
+          "200": { description: "Paginated sellable products with units, prices and stock", content: { "application/json": { schema: { $ref: "#/components/schemas/PosProductListResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/pos/sales": {
+      post: {
+        tags: ["Sales"],
+        summary: "Complete a POS sale atomically",
+        description:
+          "Completes the sale in ONE database transaction: validates the location, each product/unit and quantity; calculates prices (with optional price override) and discounts; validates payments; allocates batches with FEFO (First Expiry, First Out — expired batches and reserved stock are excluded); creates the Sale + SaleItems + SaleItemBatch allocations + SalePayments; and moves stock out (SALE/OUT) through the central stock movement engine. If any step fails, EVERYTHING rolls back — never a completed sale without its stock movements, and never stock deducted without a completed sale.\n\n" +
+          "`quantity` is the cashier-entered quantity in `unitId`; `baseQuantity` is server-calculated from the ProductUnit conversion factor at sale time and is never accepted from the client. `actualUnitPrice` defaults to the configured ProductUnit.sellPrice. `payments` supports split payments; total payments must cover `totalAmount`, and the excess is recorded as `changeAmount`.",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SaleCreateInput" } } },
+        },
+        responses: {
+          "201": { description: "Sale completed", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleResponse" } } } },
+          "404": { description: "Location or product not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "409": { description: "Inactive product/location/unit or insufficient stock", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "422": { description: "Validation error / invalid unit / unit without sell price / insufficient payment", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+      get: {
+        tags: ["Sales"],
+        summary: "List POS sales",
+        parameters: [
+          { name: "page", in: "query", schema: { type: "integer", minimum: 1 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "status", in: "query", schema: { type: "string", enum: ["DRAFT", "COMPLETED", "CANCELLED"] } },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "dateFrom", in: "query", schema: { type: "string", format: "date-time" } },
+          { name: "dateTo", in: "query", schema: { type: "string", format: "date-time" } },
+          { name: "search", in: "query", schema: { type: "string" }, description: "Match by sale/receipt number" },
+        ],
+        responses: {
+          "200": { description: "Paginated sale list", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleListResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/pos/sales/{id}": {
+      get: {
+        tags: ["Sales"],
+        summary: "Get a sale (receipt data)",
+        description:
+          "Returns everything needed to render a receipt: sale number, location, cashier, items (unit, entered quantity, base quantity, unit price, discounts, line totals), batch allocations, payment breakdown, paid amount and change.",
+        parameters: [idPathParam],
+        responses: {
+          "200": { description: "Sale detail", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleResponse" } } } },
+          "404": { description: "Sale not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/pos/sales/{id}/cancel": {
+      post: {
+        tags: ["Sales"],
+        summary: "Cancel a draft sale",
+        description:
+          "Only DRAFT sales (which never moved stock) can be cancelled. COMPLETED sales are terminal in this phase: returns/refunds/exchanges are intentionally not implemented yet, so a completed sale is never un-cancelled and stock is never restored through cancellation.",
+        parameters: [idPathParam],
+        requestBody: {
+          required: false,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SaleCancelInput" } } },
+        },
+        responses: {
+          "200": { description: "Sale cancelled", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleResponse" } } } },
+          "404": { description: "Sale not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "409": { description: "Sale is not cancellable (completed or already cancelled)", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -1215,19 +1307,6 @@ export const openApiDocument = {
           data: { id: "unit-uuid", name: "Box", symbol: "BX", description: null, isActive: true, createdAt: "2026-09-10T12:00:00.000Z", updatedAt: "2026-09-10T12:00:00.000Z" },
         },
       },
-      UnitListResponse: {
-        type: "object",
-        properties: {
-          success: { type: "boolean", example: true },
-          data: { type: "array", items: { $ref: "#/components/schemas/Unit" } },
-          meta: { $ref: "#/components/schemas/PaginationMeta" },
-        },
-        example: {
-          success: true,
-          data: [{ id: "unit-uuid", name: "Box", symbol: "BX", description: null, isActive: true }],
-          meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
-        },
-      },
       ProductUnitConfig: {
         type: "object",
         description:
@@ -1402,68 +1481,6 @@ export const openApiDocument = {
           meta: { $ref: "#/components/schemas/PaginationMeta" },
         },
         example: { success: true, data: [{ id: "product-uuid", name: "Paracetamol 500mg", genericName: "Paracetamol", brand: "Example", sku: "PCM-500", isActive: true }], meta: { page: 1, limit: 20, total: 1, totalPages: 1 } },
-      },
-      ProductDetailResponse: {
-        type: "object",
-        properties: {
-          success: { type: "boolean", example: true },
-          data: {
-            type: "object",
-            properties: {
-              id: { type: "string", format: "uuid" },
-              name: { type: "string" },
-              genericName: { type: "string", nullable: true },
-              brand: { type: "string", nullable: true },
-              sku: { type: "string" },
-              description: { type: "string", nullable: true },
-              minimumStock: { type: "number" },
-              reorderPoint: { type: "number", nullable: true },
-              isActive: { type: "boolean" },
-              productGroupId: { type: "string", format: "uuid" },
-              productGroup: {
-                type: "object",
-                properties: {
-                  id: { type: "string", format: "uuid" },
-                  name: { type: "string" },
-                  isActive: { type: "boolean" },
-                },
-              },
-              units: { type: "array", items: { $ref: "#/components/schemas/ProductUnit" } },
-              stockSummary: {
-                type: "object",
-                properties: {
-                  totalQuantity: { type: "number", description: "Always in base units" },
-                  byLocation: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        locationId: { type: "string", format: "uuid" },
-                        locationName: { type: "string" },
-                        quantity: { type: "number" },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-        example: {
-          success: true,
-          data: {
-            id: "product-uuid",
-            name: "Paracetamol 500mg",
-            genericName: "Paracetamol",
-            brand: "Example",
-            sku: "PCM-500",
-            minimumStock: 100,
-            reorderPoint: 200,
-            isActive: true,
-            units: [{ unitId: "tablet-unit-uuid", conversionFactor: 1, sellPrice: 2, isBaseUnit: true }],
-            stockSummary: { totalQuantity: 1250, byLocation: [{ locationName: "Main Store", quantity: 1250 }] },
-          },
-        },
       },
       TransferItemCreateInput: {
         type: "object",
@@ -1668,80 +1685,6 @@ export const openApiDocument = {
             transaction: { id: "transaction-uuid", productId: "product-uuid", batchId: "batch-uuid", locationId: "location-uuid", transactionType: "OPENING_STOCK", direction: "IN", quantity: 2000, balanceAfter: 2000 },
             stock: { id: "stock-uuid", quantity: 2000 },
           },
-        },
-      },
-      BinCardResponse: {
-        type: "object",
-        properties: {
-          success: { type: "boolean", example: true },
-          data: {
-            type: "object",
-            properties: {
-              openingBalance: { type: "number", example: 500, description: "Balance before the requested date range, in base units" },
-              transactions: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    date: { type: "string", format: "date-time", example: "2026-09-10T08:30:00.000Z" },
-                    reference: { type: "string", nullable: true, example: "OPENING_STOCK:transaction-uuid" },
-                    transactionType: { type: "string", example: "RECEIVING" },
-                    direction: { type: "string", enum: ["IN", "OUT"], example: "IN" },
-                    in: { type: "number", example: 2000 },
-                    out: { type: "number", example: 0 },
-                    balance: { type: "number", example: 2500 },
-                    user: {
-                      type: "object",
-                      nullable: true,
-                      properties: {
-                        id: { type: "string", example: "user-uuid" },
-                        name: { type: "string", example: "Ada Lovelace" },
-                        email: { type: "string", format: "email", example: "ada@example.com" },
-                      },
-                    },
-                  },
-                },
-              },
-              closingBalance: { type: "number", example: 2500, description: "Balance after the requested date range, in base units" },
-            },
-          },
-        },
-        example: {
-          success: true,
-          data: {
-            openingBalance: 500,
-            transactions: [{ date: "2026-09-10T08:30:00.000Z", reference: "RECEIVING:transaction-uuid", transactionType: "RECEIVING", direction: "IN", in: 2000, out: 0, balance: 2500, user: { id: "user-uuid", name: "Ada Lovelace", email: "ada@example.com" } }],
-            closingBalance: 2500,
-          },
-        },
-      },
-      StockListResponse: {
-        type: "object",
-        properties: {
-          success: { type: "boolean", example: true },
-          data: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                id: { type: "string" },
-                productId: { type: "string" },
-                batchId: { type: "string" },
-                locationId: { type: "string" },
-                quantity: { type: "number", description: "Always in base units" },
-                reservedQuantity: { type: "number" },
-                product: { $ref: "#/components/schemas/ProductSummary" },
-                batch: { type: "object", properties: { id: { type: "string" }, batchNumber: { type: "string" }, expiryDate: { type: "string" } } },
-                location: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
-              },
-            },
-          },
-          meta: { $ref: "#/components/schemas/PaginationMeta" },
-        },
-        example: {
-          success: true,
-          data: [{ id: "stock-uuid", productId: "product-uuid", batchId: "batch-uuid", locationId: "location-uuid", quantity: 1000, reservedQuantity: 100, product: { id: "product-uuid", name: "Paracetamol 500mg", sku: "PCM-500" }, batch: { id: "batch-uuid", batchNumber: "PCM001", expiryDate: "2027-08-31" }, location: { id: "location-uuid", name: "Main Store" } }],
-          meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
         },
       },
       PaginationMeta: {
@@ -2400,6 +2343,218 @@ export const openApiDocument = {
           success: true,
           data: [{ id: "unit-uuid", name: "Box", symbol: "BX", description: null, isActive: true, productCount: 5, createdAt: "2026-09-10T12:00:00.000Z", updatedAt: "2026-09-10T12:00:00.000Z" }],
           meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        },
+      },
+      PosProductListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: { $ref: "#/components/schemas/PosProduct" },
+          },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      PosProduct: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          name: { type: "string", example: "Paracetamol 500mg" },
+          genericName: { type: "string", nullable: true },
+          brand: { type: "string", nullable: true },
+          sku: { type: "string" },
+          productGroup: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
+          isActive: { type: "boolean" },
+          baseUnit: { type: "object", nullable: true, properties: { id: { type: "string" }, name: { type: "string" }, symbol: { type: "string", nullable: true } } },
+          units: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid", description: "ProductUnit id" },
+                unitId: { type: "string", format: "uuid" },
+                unitName: { type: "string", example: "Box" },
+                unitSymbol: { type: "string", nullable: true },
+                conversionFactor: { type: "number", example: 100, description: "1 unit = conversionFactor base units" },
+                sellPrice: { type: "number", nullable: true, description: "Unit-specific selling price (ProductUnit.sellPrice)" },
+                isBaseUnit: { type: "boolean" },
+              },
+            },
+          },
+          totalStock: { type: "number", description: "Total base-unit stock (quantity sum)" },
+          reservedStock: { type: "number", description: "Reserved base-unit stock" },
+          availableStock: { type: "number", description: "quantity - reservedQuantity (base units)" },
+          stockStatus: { type: "string", enum: ["IN_STOCK", "LOW_STOCK", "OUT_OF_STOCK"] },
+        },
+        example: {
+          id: "product-uuid",
+          name: "Paracetamol 500mg",
+          brand: "Generic",
+          sku: "PCM-500",
+          baseUnit: { id: "tablet-unit-id", name: "Tablet" },
+          units: [
+            { id: "product-unit-uuid", unitId: "tablet-unit-id", unitName: "Tablet", conversionFactor: 1, sellPrice: 2, isBaseUnit: true },
+            { id: "product-unit-uuid", unitId: "box-unit-id", unitName: "Box", conversionFactor: 100, sellPrice: 160, isBaseUnit: false },
+          ],
+          availableStock: 500,
+          stockStatus: "IN_STOCK",
+        },
+      },
+      SaleCreateInput: {
+        type: "object",
+        required: ["locationId", "items", "payments"],
+        description:
+          "`quantity` is the cashier-entered quantity in `unitId` — `baseQuantity` is server-calculated. `actualUnitPrice` is an optional price override; when omitted the configured ProductUnit.sellPrice is used (and preserved on the sale item as `originalUnitPrice`).",
+        properties: {
+          locationId: { type: "string", format: "uuid", example: "location-uuid" },
+          items: {
+            type: "array",
+            minItems: 1,
+            items: { $ref: "#/components/schemas/SaleItemInput" },
+          },
+          payments: {
+            type: "array",
+            minItems: 1,
+            items: { $ref: "#/components/schemas/SalePaymentInput" },
+          },
+          billDiscount: { $ref: "#/components/schemas/DiscountInput" },
+          notes: { type: "string", maxLength: 500 },
+        },
+        example: {
+          locationId: "location-uuid",
+          items: [
+            {
+              productId: "product-uuid",
+              unitId: "box-unit-id",
+              quantity: 2,
+              discount: { type: "PERCENTAGE", value: 10 },
+            },
+            { productId: "product-uuid-2", unitId: "tablet-unit-id", quantity: 5, actualUnitPrice: 1.5 },
+          ],
+          payments: [{ method: "CASH", amount: 500 }, { method: "DIGITAL_TRANSFER", amount: 500 }],
+        },
+      },
+      SaleItemInput: {
+        type: "object",
+        required: ["productId", "unitId", "quantity"],
+        properties: {
+          productId: { type: "string", format: "uuid" },
+          unitId: { type: "string", format: "uuid", description: "A master unit configured for the product" },
+          quantity: { type: "number", exclusiveMinimum: 0, example: 2, description: "Entered quantity in the selected unit (max 3 decimal places)" },
+          actualUnitPrice: { type: "number", minimum: 0, example: 155, description: "Optional price override; defaults to ProductUnit.sellPrice" },
+          discount: { $ref: "#/components/schemas/DiscountInput" },
+        },
+      },
+      DiscountInput: {
+        type: "object",
+        required: ["type", "value"],
+        properties: {
+          type: { type: "string", enum: ["PERCENTAGE", "FIXED_AMOUNT"] },
+          value: { type: "number", minimum: 0, example: 10, description: "Percent (0-100) for PERCENTAGE, money amount for FIXED_AMOUNT" },
+        },
+      },
+      SalePaymentInput: {
+        type: "object",
+        required: ["method", "amount"],
+        properties: {
+          method: { type: "string", enum: ["CASH", "CARD", "DIGITAL_TRANSFER"] },
+          amount: { type: "number", exclusiveMinimum: 0, example: 500 },
+          reference: { type: "string", maxLength: 200, description: "Card/transfer reference number" },
+        },
+      },
+      SaleResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/Sale" },
+        },
+      },
+      SaleListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/Sale" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      Sale: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          saleNumber: { type: "string", example: "SL-20260910-3F2A9B", description: "Receipt number" },
+          locationId: { type: "string", format: "uuid" },
+          location: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
+          status: { type: "string", enum: ["DRAFT", "COMPLETED", "CANCELLED"] },
+          subtotal: { type: "number" },
+          totalDiscount: { type: "number" },
+          totalAmount: { type: "number" },
+          paidAmount: { type: "number" },
+          changeAmount: { type: "number" },
+          billDiscountType: { type: "string", enum: ["PERCENTAGE", "FIXED_AMOUNT"], nullable: true },
+          billDiscountValue: { type: "number", nullable: true },
+          cashierId: { type: "string" },
+          cashier: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, email: { type: "string" } } },
+          notes: { type: "string", nullable: true },
+          completedAt: { type: "string", format: "date-time", nullable: true },
+          cancelledAt: { type: "string", format: "date-time", nullable: true },
+          cancelReason: { type: "string", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+          items: {
+            type: "array",
+            items: { $ref: "#/components/schemas/SaleItem" },
+          },
+          payments: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                method: { type: "string", enum: ["CASH", "CARD", "DIGITAL_TRANSFER"] },
+                amount: { type: "number" },
+                reference: { type: "string", nullable: true },
+                createdAt: { type: "string", format: "date-time" },
+              },
+            },
+          },
+        },
+      },
+      SaleItem: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          saleId: { type: "string", format: "uuid" },
+          productId: { type: "string", format: "uuid" },
+          product: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, sku: { type: "string" } } },
+          unitId: { type: "string", format: "uuid" },
+          unit: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, symbol: { type: "string", nullable: true } } },
+          quantity: { type: "number", example: 2, description: "Entered quantity in the selected unit" },
+          baseQuantity: { type: "number", example: 200, description: "Normalized to the product base unit at sale time" },
+          conversionFactor: { type: "number", example: 100, description: "ProductUnit conversion factor at sale time" },
+          originalUnitPrice: { type: "number", description: "Configured ProductUnit.sellPrice at sale time" },
+          actualUnitPrice: { type: "number", description: "Price actually charged (after override)" },
+          discountType: { type: "string", enum: ["PERCENTAGE", "FIXED_AMOUNT"], nullable: true },
+          discountValue: { type: "number", nullable: true },
+          discountAmount: { type: "number" },
+          lineTotal: { type: "number" },
+          batchAllocations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                batchId: { type: "string", format: "uuid" },
+                baseQuantity: { type: "number", description: "Base-unit quantity taken from this batch (FEFO)" },
+                batch: { type: "object", properties: { id: { type: "string" }, batchNumber: { type: "string" }, expiryDate: { type: "string", format: "date-time" } } },
+              },
+            },
+          },
+        },
+      },
+      SaleCancelInput: {
+        type: "object",
+        properties: {
+          reason: { type: "string", maxLength: 500, example: "Wrong items scanned" },
         },
       },
     },
