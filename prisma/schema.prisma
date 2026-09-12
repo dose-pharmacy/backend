@@ -50,6 +50,69 @@ enum ExpiryActionType {
   DISPOSE
 }
 
+// ============================================================
+// Purchasing & Supplier Management (Phase 3)
+// ============================================================
+
+enum PurchaseRequirementStatus {
+  OPEN
+  ASSIGNED
+  CLOSED
+}
+
+enum PurchaseRequirementReason {
+  LOW_STOCK
+  REORDER_ALERT
+  MANUAL
+}
+
+enum PurchaseOrderStatus {
+  REGISTERED
+  AWAITING_DELIVERY
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum GoodsReceiptStatus {
+  MATCHED
+  DISCREPANCY
+  RESOLVED
+}
+
+enum SupplierInvoiceStatus {
+  OPEN
+  PARTIALLY_PAID
+  PAID
+}
+
+enum PurchaseReturnReason {
+  EXPIRED
+  DAMAGED
+  INCORRECT_DELIVERY
+}
+
+model User {
+  id                        String              @id
+  name                      String
+  email                     String
+  emailVerified             Boolean             @default(false)
+  image                     String?
+  role                      UserRole            @default(ADMIN)
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+  sessions                  Session[]
+  accounts                  Account[]
+  stockTransactions         StockTransaction[]
+  stockTransfers            StockTransfer[]     @relation("CreatedStockTransfers")
+  expiryActions             ExpiryAction[]      @relation("PerformedExpiryActions")
+  purchaseRequirements      PurchaseRequirement[] @relation("CreatedPurchaseRequirements")
+  purchaseOrders            PurchaseOrder[]     @relation("CreatedPurchaseOrders")
+  goodsReceipts             GoodsReceipt[]      @relation("CreatedGoodsReceipts")
+  confirmedGoodsReceipts    GoodsReceipt[]      @relation("ConfirmedGoodsReceipts")
+  supplierInvoices          SupplierInvoice[]   @relation("CreatedSupplierInvoices")
+  supplierPayments          SupplierPayment[]   @relation("RecordedSupplierPayments")
+  purchaseReturns           PurchaseReturn[]    @relation("RecordedPurchaseReturns")
 enum SaleStatus {
   DRAFT
   COMPLETED
@@ -199,6 +262,15 @@ model Product {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  units                      ProductUnit[]
+  batches                    Batch[]
+  stock                      InventoryStock[]
+  transactions               StockTransaction[]
+  transferItems              StockTransferItem[]
+  reorderConfig              ReorderConfiguration?
+  purchaseRequirementLines   PurchaseRequirementLine[]
+  purchaseOrderItems         PurchaseOrderItem[]
+  purchaseReturns            PurchaseReturn[]
   units              ProductUnit[]
   batches            Batch[]
   stock              InventoryStock[]
@@ -258,6 +330,8 @@ model InventoryLocation {
   fromTransfers StockTransfer[] @relation("FromLocation")
   toTransfers   StockTransfer[] @relation("ToLocation")
   expiryActions ExpiryAction[]
+  goodsReceiptItems GoodsReceiptItem[]
+  purchaseReturns PurchaseReturn[]
   sales         Sale[]
 
   @@unique([name])
@@ -275,12 +349,16 @@ model Batch {
   expiryDate        DateTime
   purchaseCost      Decimal?  @db.Decimal(12, 2)
   supplierReference String?
+  supplierId        String?
+  supplier          Supplier? @relation(fields: [supplierId], references: [id])
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   stock             InventoryStock[]
   transactions      StockTransaction[]
   transferItems     StockTransferItem[]
   expiryActions     ExpiryAction[]
+  goodsReceiptItems GoodsReceiptItem[]
+  purchaseReturns   PurchaseReturn[]
   saleItemBatches   SaleItemBatch[]
 
   @@unique([productId, batchNumber])
@@ -408,6 +486,7 @@ model ExpiryAction {
   locationId       String?
   location         InventoryLocation? @relation(fields: [locationId], references: [id])
   supplierId       String?
+  supplier         Supplier? @relation(fields: [supplierId], references: [id])
   discountPercent  Decimal?  @db.Decimal(5, 2)
   reason           String?
   notes            String?
@@ -438,6 +517,236 @@ model ReorderConfiguration {
 }
 
 // ============================================================
+// Purchasing & Supplier Management (Phase 3)
+// ============================================================
+
+model Supplier {
+  id             String   @id @default(uuid())
+  name           String
+  contactPerson  String?
+  email          String?
+  phone          String?
+  address        String?
+  paymentTerms   String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  batches            Batch[]
+  expiryActions      ExpiryAction[]
+  requirements       PurchaseRequirementLine[]
+  purchaseOrders     PurchaseOrder[]
+  goodsReceipts      GoodsReceipt[]
+  supplierInvoices   SupplierInvoice[]
+  supplierPayments   SupplierPayment[]
+  purchaseReturns    PurchaseReturn[]
+
+  @@unique([name])
+  @@index([isActive])
+  @@map("supplier")
+}
+
+model PurchaseRequirement {
+  id         String   @id @default(uuid())
+  reference  String
+  status     PurchaseRequirementStatus @default(OPEN)
+  requiredBy DateTime?
+  notes      String?
+  createdById String
+  createdBy  User     @relation("CreatedPurchaseRequirements", fields: [createdById], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lines      PurchaseRequirementLine[]
+
+  @@unique([reference])
+  @@index([status])
+  @@index([createdById])
+  @@map("purchase_requirement")
+}
+
+model PurchaseRequirementLine {
+  id                  String   @id @default(uuid())
+  requirementId       String
+  requirement         PurchaseRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  productId           String
+  product             Product  @relation(fields: [productId], references: [id])
+  quantityNeeded      Decimal  @db.Decimal(14, 3)
+  quantityDelivered   Decimal  @default(0) @db.Decimal(14, 3)
+  reasonCode          PurchaseRequirementReason?
+  supplierId          String?
+  supplier            Supplier? @relation(fields: [supplierId], references: [id])
+  status              PurchaseRequirementStatus @default(OPEN)
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  purchaseOrderItems  PurchaseOrderItem[]
+
+  @@unique([requirementId, productId])
+  @@index([productId])
+  @@index([supplierId])
+  @@map("purchase_requirement_line")
+}
+
+model PurchaseOrder {
+  id                    String   @id @default(uuid())
+  poNumber              String
+  supplierId            String
+  supplier              Supplier @relation(fields: [supplierId], references: [id])
+  status                PurchaseOrderStatus @default(REGISTERED)
+  orderDate             DateTime @default(now())
+  expectedDeliveryDate  DateTime?
+  notes                 String?
+  createdById           String
+  createdBy             User     @relation("CreatedPurchaseOrders", fields: [createdById], references: [id])
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  items                 PurchaseOrderItem[]
+  goodsReceipts         GoodsReceipt[]
+  supplierInvoices      SupplierInvoice[]
+
+  @@unique([poNumber])
+  @@index([supplierId])
+  @@index([status])
+  @@index([createdById])
+  @@map("purchase_order")
+}
+
+model PurchaseOrderItem {
+  id                    String   @id @default(uuid())
+  purchaseOrderId       String
+  purchaseOrder         PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  requirementLineId     String?
+  requirementLine       PurchaseRequirementLine? @relation(fields: [requirementLineId], references: [id], onDelete: SetNull)
+  productId             String
+  product               Product  @relation(fields: [productId], references: [id])
+  quantityOrdered       Decimal  @db.Decimal(14, 3)
+  quantityReceived      Decimal  @default(0) @db.Decimal(14, 3)
+  unitCost              Decimal  @db.Decimal(12, 2)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  goodsReceiptItems     GoodsReceiptItem[]
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+  @@index([requirementLineId])
+  @@map("purchase_order_item")
+}
+
+model GoodsReceipt {
+  id              String   @id @default(uuid())
+  receiptNumber   String
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  supplierId      String
+  supplier        Supplier @relation(fields: [supplierId], references: [id])
+  receivedDate    DateTime @default(now())
+  status          GoodsReceiptStatus @default(MATCHED)
+  discrepancyNote String?
+  confirmedById   String?
+  confirmedBy     User?    @relation("ConfirmedGoodsReceipts", fields: [confirmedById], references: [id])
+  createdById     String
+  createdBy       User     @relation("CreatedGoodsReceipts", fields: [createdById], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  items           GoodsReceiptItem[]
+
+  @@unique([receiptNumber])
+  @@index([purchaseOrderId])
+  @@index([status])
+  @@map("goods_receipt")
+}
+
+model GoodsReceiptItem {
+  id                  String   @id @default(uuid())
+  goodsReceiptId      String
+  goodsReceipt        GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItemId String
+  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id])
+  locationId          String
+  location            InventoryLocation @relation(fields: [locationId], references: [id])
+  expectedQty         Decimal  @db.Decimal(14, 3)
+  deliveredQty        Decimal  @db.Decimal(14, 3)
+  actualQty           Decimal  @db.Decimal(14, 3)
+  unitCost            Decimal  @db.Decimal(12, 2)
+  batchNumber         String?
+  manufacturingDate   DateTime?
+  expiryDate          DateTime?
+  batchId             String?
+  batch               Batch?   @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@unique([goodsReceiptId, purchaseOrderItemId])
+  @@index([purchaseOrderItemId])
+  @@index([batchId])
+  @@map("goods_receipt_item")
+}
+
+model SupplierInvoice {
+  id                  String   @id @default(uuid())
+  invoiceNumber       String
+  supplierId          String
+  supplier            Supplier @relation(fields: [supplierId], references: [id])
+  purchaseOrderId     String?
+  purchaseOrder       PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  invoiceDate         DateTime @default(now())
+  dueDate             DateTime?
+  invoiceAmount       Decimal  @db.Decimal(12, 2)
+  paymentTerms        String?
+  outstandingBalance  Decimal  @db.Decimal(12, 2)
+  status              SupplierInvoiceStatus @default(OPEN)
+  createdById         String
+  createdBy           User     @relation("CreatedSupplierInvoices", fields: [createdById], references: [id])
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  payments            SupplierPayment[]
+
+  @@unique([supplierId, invoiceNumber])
+  @@index([supplierId])
+  @@index([status])
+  @@map("supplier_invoice")
+}
+
+model SupplierPayment {
+  id                  String   @id @default(uuid())
+  supplierInvoiceId   String
+  supplierInvoice     SupplierInvoice @relation(fields: [supplierInvoiceId], references: [id], onDelete: Cascade)
+  supplierId          String
+  supplier            Supplier @relation(fields: [supplierId], references: [id])
+  amount              Decimal  @db.Decimal(12, 2)
+  paymentDate         DateTime @default(now())
+  notes               String?
+  recordedById        String
+  recordedBy          User     @relation("RecordedSupplierPayments", fields: [recordedById], references: [id])
+  createdAt           DateTime @default(now())
+
+  @@index([supplierInvoiceId])
+  @@map("supplier_payment")
+}
+
+model PurchaseReturn {
+  id              String   @id @default(uuid())
+  returnNumber    String
+  supplierId      String
+  supplier        Supplier @relation(fields: [supplierId], references: [id])
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+  batchId         String?
+  batch           Batch?   @relation(fields: [batchId], references: [id])
+  locationId      String
+  location        InventoryLocation @relation(fields: [locationId], references: [id])
+  reason          PurchaseReturnReason
+  quantity        Decimal  @db.Decimal(14, 3)
+  returnedDate    DateTime @default(now())
+  debitNoteAmount Decimal  @db.Decimal(12, 2)
+  unitCost        Decimal  @db.Decimal(12, 2)
+  notes           String?
+  recordedById    String
+  recordedBy      User     @relation("RecordedPurchaseReturns", fields: [recordedById], references: [id])
+  createdAt       DateTime @default(now())
+
+  @@index([supplierId])
+  @@index([productId])
+  @@index([batchId])
+  @@map("purchase_return")
 // Retail Point of Sale (POS)
 //
 // A Sale is completed ATOMICALLY: sale + items + batch allocations +
