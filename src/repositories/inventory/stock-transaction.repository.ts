@@ -2,11 +2,15 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.js";
 
 const transactionInclude = {
+  product: {
+    select: { id: true, name: true, sku: true },
+  },
   batch: {
     select: {
       id: true,
       batchNumber: true,
       expiryDate: true,
+      purchaseCost: true,
     },
   },
   location: {

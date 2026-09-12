@@ -113,6 +113,39 @@ model User {
   supplierInvoices          SupplierInvoice[]   @relation("CreatedSupplierInvoices")
   supplierPayments          SupplierPayment[]   @relation("RecordedSupplierPayments")
   purchaseReturns           PurchaseReturn[]    @relation("RecordedPurchaseReturns")
+enum SaleStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  DIGITAL_TRANSFER
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+model User {
+  id                String              @id
+  name              String
+  email             String
+  emailVerified     Boolean             @default(false)
+  image             String?
+  role              UserRole            @default(ADMIN)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  sessions          Session[]
+  accounts          Account[]
+  stockTransactions StockTransaction[]
+  stockTransfers    StockTransfer[]     @relation("CreatedStockTransfers")
+  expiryActions     ExpiryAction[]      @relation("PerformedExpiryActions")
+  cashierSales      Sale[]              @relation("CashierSales")
+  cancelledSales    Sale[]              @relation("CancelledSales")
 
   @@unique([email])
   @@map("user")
@@ -190,6 +223,29 @@ model ProductGroup {
   @@map("product_group")
 }
 
+// Reusable master unit (e.g. "Tablet", "Strip", "Box", "Bottle", "Vial",
+// "ml", "mg"). A Unit is the reusable concept only; product-specific
+// configuration (conversion factor, prices, base-unit flag) lives on
+// ProductUnit. Units are deactivated (soft-deleted) rather than hard-deleted
+// so historical transfer audit rows keep their meaning.
+model Unit {
+  id          String    @id @default(uuid())
+  name        String
+  symbol      String?
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  productUnits  ProductUnit[]
+  transferItems StockTransferItem[]
+  saleItems     SaleItem[]
+
+  @@unique([name])
+  @@index([isActive])
+  @@map("unit")
+}
+
 model Product {
   id            String    @id @default(uuid())
   name          String
@@ -215,6 +271,13 @@ model Product {
   purchaseRequirementLines   PurchaseRequirementLine[]
   purchaseOrderItems         PurchaseOrderItem[]
   purchaseReturns            PurchaseReturn[]
+  units              ProductUnit[]
+  batches            Batch[]
+  stock              InventoryStock[]
+  transactions       StockTransaction[]
+  transferItems      StockTransferItem[]
+  reorderConfig      ReorderConfiguration?
+  saleItems          SaleItem[]
 
   @@unique([sku])
   @@index([productGroupId])
@@ -223,12 +286,22 @@ model Product {
   @@map("product")
 }
 
+// Product-specific configuration of a reusable master Unit.
+//   Unit "Box" + ProductUnit(Paracetamol, Box, conversionFactor=100)
+//   Unit "Box" + ProductUnit(Ibuprofen,  Box, conversionFactor=50)
+//
+// conversionFactor: how many BASE units this unit equals (1 unit = factor x
+// base units). The base unit always has conversionFactor = 1.
+//
+// purchasePrice is the DEFAULT / reference purchase price for this product
+// unit. It is NOT the authoritative historical inventory cost — the actual
+// cost of received stock is recorded on the Batch (purchaseCost).
 model ProductUnit {
   id               String  @id @default(uuid())
   productId        String
   product          Product @relation(fields: [productId], references: [id])
-  name             String
-  // 1 unit = conversionFactor x base units
+  unitId           String
+  unit             Unit    @relation(fields: [unitId], references: [id])
   conversionFactor Decimal @db.Decimal(12, 4)
   sellPrice        Decimal? @db.Decimal(12, 2)
   purchasePrice    Decimal? @db.Decimal(12, 2)
@@ -236,10 +309,12 @@ model ProductUnit {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  // The same master unit may only be configured once per product.
+  @@unique([productId, unitId])
   // Exactly one base unit per product is enforced by a partial
   // unique index added in the migration (Prisma cannot express it).
-  @@unique([productId, name])
   @@index([productId, isBaseUnit])
+  @@index([unitId])
   @@map("product_unit")
 }
 
@@ -257,6 +332,7 @@ model InventoryLocation {
   expiryActions ExpiryAction[]
   goodsReceiptItems GoodsReceiptItem[]
   purchaseReturns PurchaseReturn[]
+  sales         Sale[]
 
   @@unique([name])
   @@index([isActive])
@@ -283,6 +359,7 @@ model Batch {
   expiryActions     ExpiryAction[]
   goodsReceiptItems GoodsReceiptItem[]
   purchaseReturns   PurchaseReturn[]
+  saleItemBatches   SaleItemBatch[]
 
   @@unique([productId, batchNumber])
   @@index([productId, expiryDate])
@@ -368,6 +445,14 @@ model StockTransfer {
   @@map("stock_transfer")
 }
 
+// A transfer line item keeps BOTH representations for auditability:
+//   quantity     = quantity entered by the user (in `unit`)
+//   unitId       = the master unit selected by the user (e.g. "Box")
+//   baseQuantity = quantity normalised to the product base unit at the time
+//                  the item was entered (e.g. 2 Boxes x 100 = 200 Tablets)
+// Stock movements always operate on baseQuantity; the entered quantity/unit
+// are preserved so history can display "Transferred 5 Boxes (= 500 Tablets)"
+// without re-deriving from the (possibly changed) ProductUnit conversion.
 model StockTransferItem {
   id           String    @id @default(uuid())
   transferId   String
@@ -376,14 +461,19 @@ model StockTransferItem {
   product      Product   @relation(fields: [productId], references: [id])
   batchId      String
   batch        Batch     @relation(fields: [batchId], references: [id])
+  unitId       String
+  unit         Unit      @relation(fields: [unitId], references: [id])
   quantity     Decimal   @db.Decimal(14, 3)
+  baseQuantity Decimal   @db.Decimal(14, 3)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  @@unique([transferId, productId, batchId])
+  // One entry per product + batch + unit within a transfer.
+  @@unique([transferId, productId, batchId, unitId])
   @@index([transferId])
   @@index([productId])
   @@index([batchId])
+  @@index([unitId])
   @@map("stock_transfer_item")
 }
 
@@ -657,4 +747,129 @@ model PurchaseReturn {
   @@index([productId])
   @@index([batchId])
   @@map("purchase_return")
+// Retail Point of Sale (POS)
+//
+// A Sale is completed ATOMICALLY: sale + items + batch allocations +
+// payments are created and stock is deducted (SALE/OUT movements through
+// the central stock movement engine) in ONE database transaction. There is
+// never a completed sale without its stock movements, and never stock
+// deducted without a completed sale.
+//
+// Historical accuracy: SaleItem stores the entered quantity + selected unit
+// (quantity/unitId), the normalized base quantity (baseQuantity), the
+// conversion factor used at sale time, and both the configured price
+// (originalUnitPrice = ProductUnit.sellPrice) and the price actually charged
+// (actualUnitPrice, after any override). Completed sales never depend on the
+// current ProductUnit configuration for reconstruction.
+//
+// purchasePrice on ProductUnit is a DEFAULT/reference price only; the actual
+// cost of sold stock remains on the Batch (purchaseCost).
+// ============================================================
+
+model Sale {
+  id               String         @id @default(uuid())
+  // Human-readable receipt number, e.g. "SL-20260910-3F2A9B".
+  saleNumber       String         @unique
+  locationId       String
+  location         InventoryLocation @relation(fields: [locationId], references: [id])
+  status           SaleStatus     @default(DRAFT)
+  // Sum of item line totals BEFORE discounts.
+  subtotal         Decimal        @db.Decimal(12, 2)
+  // Sum of item discounts + bill discount.
+  totalDiscount    Decimal        @default(0) @db.Decimal(12, 2)
+  // Amount actually charged to the customer.
+  totalAmount      Decimal        @db.Decimal(12, 2)
+  // Sum of all SalePayment amounts.
+  paidAmount       Decimal        @default(0) @db.Decimal(12, 2)
+  // Excess of total payments over totalAmount (cash overpayment etc.).
+  changeAmount     Decimal        @default(0) @db.Decimal(12, 2)
+  // Bill-level discount applied to the whole sale (optional).
+  billDiscountType DiscountType?
+  billDiscountValue Decimal?      @db.Decimal(12, 2)
+  cashierId        String
+  cashier          User           @relation("CashierSales", fields: [cashierId], references: [id])
+  notes            String?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  cancelledById    String?
+  cancelledBy      User?          @relation("CancelledSales", fields: [cancelledById], references: [id])
+  cancelReason     String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  items    SaleItem[]
+  payments SalePayment[]
+
+  @@index([locationId])
+  @@index([status])
+  @@index([cashierId])
+  @@index([createdAt])
+  @@map("sale")
+}
+
+model SaleItem {
+  id                String      @id @default(uuid())
+  saleId            String
+  sale              Sale        @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product     @relation(fields: [productId], references: [id])
+  unitId            String
+  unit              Unit        @relation(fields: [unitId], references: [id])
+  // Quantity entered by the cashier, in the selected unit.
+  quantity          Decimal     @db.Decimal(14, 3)
+  // Quantity normalized to the product base unit at sale time.
+  baseQuantity      Decimal     @db.Decimal(14, 3)
+  // ProductUnit conversion factor used at sale time (baseQuantity = quantity x factor).
+  conversionFactor  Decimal     @db.Decimal(12, 4)
+  // ProductUnit.sellPrice at sale time (configured price).
+  originalUnitPrice Decimal     @db.Decimal(12, 2)
+  // Price actually charged (equals originalUnitPrice unless overridden).
+  actualUnitPrice   Decimal     @db.Decimal(12, 2)
+  // Item-level discount (optional).
+  discountType      DiscountType?
+  discountValue     Decimal?    @db.Decimal(12, 2)
+  discountAmount    Decimal     @default(0) @db.Decimal(12, 2)
+  // Final line total after the item discount: actualUnitPrice x quantity - discountAmount.
+  lineTotal         Decimal     @db.Decimal(12, 2)
+  createdAt         DateTime    @default(now())
+
+  batchAllocations SaleItemBatch[]
+
+  @@index([saleId])
+  @@index([productId])
+  @@index([unitId])
+  @@map("sale_item")
+}
+
+// One row per Batch consumed by a SaleItem (FEFO allocation at sale time).
+// A single sale item can therefore span several batches; cashiers never pick
+// batches manually.
+model SaleItemBatch {
+  id           String  @id @default(uuid())
+  saleItemId   String
+  saleItem     SaleItem @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  batchId      String
+  batch        Batch   @relation(fields: [batchId], references: [id])
+  // Base-unit quantity taken from this batch.
+  baseQuantity Decimal @db.Decimal(14, 3)
+  createdAt    DateTime @default(now())
+
+  @@unique([saleItemId, batchId])
+  @@index([batchId])
+  @@map("sale_item_batch")
+}
+
+// Split payments for a sale (CASH / CARD / DIGITAL_TRANSFER).
+model SalePayment {
+  id        String        @id @default(uuid())
+  saleId    String
+  sale      Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  method    PaymentMethod
+  amount    Decimal       @db.Decimal(12, 2)
+  // Optional reference (card/transfer reference number).
+  reference String?
+  createdAt DateTime      @default(now())
+
+  @@index([saleId])
+  @@map("sale_payment")
 }

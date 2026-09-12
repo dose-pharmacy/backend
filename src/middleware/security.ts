@@ -9,17 +9,17 @@ export const helmetMiddleware = helmet({
 });
 
 export const corsOptions: CorsOptions = {
-  origin(origin, callback) {
-    if (!origin) {
-      callback(null, true);
-      return;
-    }
-    if (env.corsOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-    callback(new Error("Origin not allowed by CORS"));
-  },
+  // Development/testing: reflect any request Origin so local and tunnelled
+  // frontends can use credentialed requests. Production keeps the allowlist.
+  origin: env.isProduction
+    ? (origin, callback) => {
+        if (!origin || env.corsOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error("Origin not allowed by CORS"));
+      }
+    : true,
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],

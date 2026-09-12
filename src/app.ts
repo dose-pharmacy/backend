@@ -9,6 +9,7 @@ import {
 } from "./middleware/rate-limit.js";
 import { requestLogger } from "./middleware/request-logger.js";
 import { corsMiddleware, helmetMiddleware } from "./middleware/security.js";
+import { docsRouter } from "./routes/docs.js";
 import { healthRouter } from "./routes/health.js";
 import { v1Router } from "./routes/v1.js";
 
@@ -37,6 +38,7 @@ app.use(express.json({ limit: env.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: env.bodyLimit }));
 
 app.use("/health", healthRouter);
+app.use("/api-docs", docsRouter);
 app.use(env.apiPrefix, v1Router);
 
 app.use(notFoundHandler);

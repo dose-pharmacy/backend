@@ -40,6 +40,9 @@ export const productRepository = {
       where: { id },
       include: {
         units: {
+          include: {
+            unit: { select: { id: true, name: true, symbol: true, isActive: true } },
+          },
           orderBy: [{ isBaseUnit: "desc" }, { createdAt: "asc" }],
         },
       },

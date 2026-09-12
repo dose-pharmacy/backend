@@ -1,12 +1,14 @@
 import { Prisma } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
+import { prisma } from "../../database/prisma.js";
 import { productRepository } from "../../repositories/inventory/product.repository.js";
 import { productUnitRepository } from "../../repositories/inventory/product-unit.repository.js";
+import { unitRepository } from "../../repositories/inventory/unit.repository.js";
 import { roundTo, toDecimal } from "../../utils/decimal.js";
 
 export type CreateUnitInput = {
-  name: string;
+  unitId: string;
   conversionFactor: number;
   sellPrice?: number;
   purchasePrice?: number;
@@ -14,7 +16,6 @@ export type CreateUnitInput = {
 };
 
 export type UpdateUnitInput = Partial<{
-  name: string;
   conversionFactor: number;
   sellPrice: number | null;
   purchasePrice: number | null;
@@ -39,6 +40,20 @@ async function assertProductExists(productId: string): Promise<void> {
   }
 }
 
+/**
+ * Asserts the master unit exists and is active. Inactive units can keep
+ * serving historical records but cannot be attached to products/transfers.
+ */
+export async function assertUnitAvailable(unitId: string): Promise<void> {
+  const unit = await unitRepository.findById(unitId);
+  if (!unit) {
+    throw new AppError(404, ErrorCode.UNIT_NOT_FOUND, "Unit not found");
+  }
+  if (!unit.isActive) {
+    throw new AppError(409, ErrorCode.UNIT_INACTIVE, "Unit is not active");
+  }
+}
+
 export const productUnitService = {
   async listUnits(productId: string) {
     await assertProductExists(productId);
@@ -47,13 +62,33 @@ export const productUnitService = {
 
   async createUnit(productId: string, input: CreateUnitInput) {
     await assertProductExists(productId);
+    await assertUnitAvailable(input.unitId);
 
-    const existingName = await productUnitRepository.findByName(productId, input.name);
-    if (existingName) {
-      throw new AppError(409, ErrorCode.DUPLICATE_UNIT, "A unit with this name already exists");
+    const existing = await productUnitRepository.findByProductAndUnit(productId, input.unitId);
+    if (existing) {
+      throw new AppError(
+        409,
+        ErrorCode.DUPLICATE_UNIT,
+        "This unit is already configured for the product",
+      );
+    }
+
+    if (input.conversionFactor <= 0) {
+      throw new AppError(
+        422,
+        ErrorCode.INVALID_CONVERSION_FACTOR,
+        "Conversion factor must be greater than zero",
+      );
     }
 
     const wantsBaseUnit = input.isBaseUnit === true;
+    if (wantsBaseUnit && input.conversionFactor !== 1) {
+      throw new AppError(
+        409,
+        ErrorCode.BASE_UNIT_FORBIDDEN,
+        "The base unit of a product always has a conversion factor of 1",
+      );
+    }
     if (wantsBaseUnit) {
       const currentBase = await productUnitRepository.findBaseUnit(productId);
       if (currentBase) {
@@ -68,7 +103,7 @@ export const productUnitService = {
     try {
       return await productUnitRepository.create({
         productId,
-        name: input.name,
+        unitId: input.unitId,
         conversionFactor: toDecimal(input.conversionFactor),
         sellPrice: input.sellPrice !== undefined ? toDecimal(input.sellPrice) : null,
         purchasePrice: input.purchasePrice !== undefined ? toDecimal(input.purchasePrice) : null,
@@ -81,7 +116,11 @@ export const productUnitService = {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       ) {
-        throw new AppError(409, ErrorCode.DUPLICATE_UNIT, "A unit with this name already exists");
+        throw new AppError(
+          409,
+          ErrorCode.DUPLICATE_UNIT,
+          "This unit is already configured for the product",
+        );
       }
       throw error;
     }
@@ -96,13 +135,6 @@ export const productUnitService = {
       throw unitMismatchError();
     }
 
-    if (input.name !== undefined && input.name !== unit.name) {
-      const existing = await productUnitRepository.findByName(productId, input.name, unitId);
-      if (existing) {
-        throw new AppError(409, ErrorCode.DUPLICATE_UNIT, "A unit with this name already exists");
-      }
-    }
-
     if (input.conversionFactor !== undefined) {
       if (unit.isBaseUnit && input.conversionFactor !== 1) {
         throw new AppError(
@@ -111,10 +143,16 @@ export const productUnitService = {
           "The base unit of a product always has a conversion factor of 1",
         );
       }
+      if (!unit.isBaseUnit && input.conversionFactor <= 0) {
+        throw new AppError(
+          422,
+          ErrorCode.INVALID_CONVERSION_FACTOR,
+          "Conversion factor must be greater than zero",
+        );
+      }
     }
 
     return productUnitRepository.update(unitId, {
-      name: input.name,
       conversionFactor:
         input.conversionFactor !== undefined ? toDecimal(input.conversionFactor) : undefined,
       sellPrice:
@@ -144,7 +182,7 @@ export const productUnitService = {
       throw new AppError(
         409,
         ErrorCode.BASE_UNIT_FORBIDDEN,
-        "The base unit cannot be deleted",
+        "The base unit cannot be deleted; a product must always have exactly one base unit",
       );
     }
     await productUnitRepository.deleteById(unitId);
@@ -153,14 +191,25 @@ export const productUnitService = {
   /**
    * Converts a quantity expressed in a product unit into base units.
    * baseQuantity = quantity x conversionFactor (rounded to the stock scale).
+   *
+   * This is the ONLY place user-facing units are converted to base units.
+   * The stock movement engine is unit-agnostic and receives base units.
+   *
+   * `client` lets callers run the lookup inside their own transaction
+   * (e.g. transfer item creation/completion).
    */
-  async toBaseQuantity(productId: string, unitId: string, quantity: number) {
-    const unit = await productUnitRepository.findById(unitId);
+  async toBaseQuantity(
+    productId: string,
+    unitId: string,
+    quantity: number,
+    client: Prisma.TransactionClient | typeof prisma = prisma,
+  ) {
+    const unit = await productUnitRepository.findByProductAndUnit(productId, unitId, client);
     if (!unit) {
-      throw new AppError(422, ErrorCode.INVALID_UNIT, "Unit not found");
+      throw new AppError(422, ErrorCode.INVALID_UNIT, "The unit is not configured for the given product");
     }
-    if (unit.productId !== productId) {
-      throw new AppError(422, ErrorCode.INVALID_UNIT, "The unit does not belong to the given product");
+    if (!unit.unit.isActive) {
+      throw new AppError(409, ErrorCode.UNIT_INACTIVE, "Unit is not active");
     }
 
     const baseQuantity = roundTo(
@@ -177,23 +226,17 @@ export const productUnitService = {
   async convert(
     productId: string,
     input: { quantity: number; fromUnitId: string; toUnitId: string },
+    client: Prisma.TransactionClient | typeof prisma = prisma,
   ) {
     const [fromUnit, toUnit] = await Promise.all([
-      productUnitRepository.findById(input.fromUnitId),
-      productUnitRepository.findById(input.toUnitId),
+      productUnitRepository.findByProductAndUnit(productId, input.fromUnitId, client),
+      productUnitRepository.findByProductAndUnit(productId, input.toUnitId, client),
     ]);
     if (!fromUnit) {
-      throw new AppError(422, ErrorCode.INVALID_UNIT, "Source unit not found");
+      throw new AppError(422, ErrorCode.INVALID_UNIT, "Source unit is not configured for the given product");
     }
     if (!toUnit) {
-      throw new AppError(422, ErrorCode.INVALID_UNIT, "Target unit not found");
-    }
-    if (fromUnit.productId !== productId || toUnit.productId !== productId) {
-      throw new AppError(
-        422,
-        ErrorCode.UNIT_PRODUCT_MISMATCH,
-        "Both units must belong to the given product",
-      );
+      throw new AppError(422, ErrorCode.INVALID_UNIT, "Target unit is not configured for the given product");
     }
 
     const convertedQuantity = roundTo(
@@ -205,8 +248,8 @@ export const productUnitService = {
 
     return {
       originalQuantity: input.quantity,
-      fromUnit: fromUnit.name,
-      toUnit: toUnit.name,
+      fromUnit: fromUnit.unit.name,
+      toUnit: toUnit.unit.name,
       convertedQuantity: convertedQuantity.toNumber(),
     };
   },

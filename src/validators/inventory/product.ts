@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
+  conversionFactorSchema,
   idParamSchema,
+  moneySchema,
   optionalQueryString,
   paginationQuerySchema,
   productIdParamSchema,
@@ -10,6 +12,29 @@ import {
 } from "./common.js";
 
 const optionalShortText = (max: number) => z.string().trim().max(max).optional();
+
+/**
+ * Product-specific unit configuration referencing a reusable master Unit.
+ * purchasePrice is the DEFAULT / reference purchase price — actual received
+ * cost is recorded on the Batch and never overwritten by this value.
+ */
+export const productUnitConfigSchema = z
+  .object({
+    unitId: uuidSchema,
+    conversionFactor: conversionFactorSchema,
+    sellPrice: moneySchema.optional(),
+    purchasePrice: moneySchema.optional(),
+    isBaseUnit: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.isBaseUnit === true && value.conversionFactor !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["conversionFactor"],
+        message: "The base unit must have a conversion factor of exactly 1",
+      });
+    }
+  });
 
 export const createProductSchema = z.object({
   name: requiredString(200, "Name"),
@@ -22,6 +47,8 @@ export const createProductSchema = z.object({
   minimumStock: thresholdSchema.optional(),
   reorderPoint: thresholdSchema.optional(),
   isActive: z.boolean().optional(),
+  // Optional embedded unit configuration created atomically with the product.
+  units: z.array(productUnitConfigSchema).optional(),
 });
 
 export const updateProductSchema = z
@@ -36,6 +63,7 @@ export const updateProductSchema = z
     minimumStock: thresholdSchema.optional(),
     reorderPoint: thresholdSchema.nullable().optional(),
     isActive: z.boolean().optional(),
+    units: z.array(productUnitConfigSchema).optional(),
   })
   .partial();
 

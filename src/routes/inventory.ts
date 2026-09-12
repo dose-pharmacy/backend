@@ -8,6 +8,7 @@ import { expiryController } from "../controllers/inventory/expiry.controller.js"
 import { inventoryProductController } from "../controllers/inventory/inventory-product.controller.js";
 import { locationController } from "../controllers/inventory/location.controller.js";
 import { locationStockController } from "../controllers/inventory/location-stock.controller.js";
+import { masterUnitController } from "../controllers/inventory/master-unit.controller.js";
 import { productController } from "../controllers/inventory/product.controller.js";
 import { productGroupController } from "../controllers/inventory/product-group.controller.js";
 import { reorderController } from "../controllers/inventory/reorder.controller.js";
@@ -60,9 +61,13 @@ import {
   stockListQuerySchema,
 } from "../validators/inventory/stock.js";
 import {
+  createTransferItemSchema,
   createTransferSchema,
+  transferItemCreateParamsSchema,
+  transferItemParamsSchema,
   transferListQuerySchema,
   transferParamsSchema,
+  updateTransferItemSchema,
   updateTransferSchema,
 } from "../validators/inventory/stock-transfer.js";
 import {
@@ -76,6 +81,12 @@ import {
   unitParamsSchema,
   updateProductUnitSchema,
 } from "../validators/inventory/unit.js";
+import {
+  createMasterUnitSchema,
+  masterUnitListQuerySchema,
+  masterUnitParamsSchema,
+  updateMasterUnitSchema,
+} from "../validators/inventory/master-unit.js";
 
 export const inventoryRouter = Router();
 
@@ -124,6 +135,40 @@ inventoryRouter.delete(
   ...admin,
   validate({ params: productGroupParamsSchema }),
   productGroupController.remove,
+);
+
+// ---------------------------------------------------------------------------
+// Master units (reusable across products)
+// ---------------------------------------------------------------------------
+inventoryRouter.get(
+  "/units",
+  ...admin,
+  validate({ query: masterUnitListQuerySchema }),
+  masterUnitController.list,
+);
+inventoryRouter.post(
+  "/units",
+  ...admin,
+  validate({ body: createMasterUnitSchema }),
+  masterUnitController.create,
+);
+inventoryRouter.get(
+  "/units/:id",
+  ...admin,
+  validate({ params: masterUnitParamsSchema }),
+  masterUnitController.getById,
+);
+inventoryRouter.patch(
+  "/units/:id",
+  ...admin,
+  validate({ params: masterUnitParamsSchema, body: updateMasterUnitSchema }),
+  masterUnitController.update,
+);
+inventoryRouter.delete(
+  "/units/:id",
+  ...admin,
+  validate({ params: masterUnitParamsSchema }),
+  masterUnitController.remove,
 );
 
 // ---------------------------------------------------------------------------
@@ -434,6 +479,27 @@ inventoryRouter.patch(
   validate({ params: transferParamsSchema, body: updateTransferSchema }),
   stockTransferController.update,
 );
+
+// Draft transfer item editing (only while the transfer is editable)
+inventoryRouter.post(
+  "/transfers/:transferId/items",
+  ...admin,
+  validate({ params: transferItemCreateParamsSchema, body: createTransferItemSchema }),
+  stockTransferController.addItem,
+);
+inventoryRouter.patch(
+  "/transfers/:transferId/items/:itemId",
+  ...admin,
+  validate({ params: transferItemParamsSchema, body: updateTransferItemSchema }),
+  stockTransferController.updateItem,
+);
+inventoryRouter.delete(
+  "/transfers/:transferId/items/:itemId",
+  ...admin,
+  validate({ params: transferItemParamsSchema }),
+  stockTransferController.removeItem,
+);
+
 inventoryRouter.post(
   "/transfers/:id/complete",
   ...admin,
