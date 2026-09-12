@@ -92,6 +92,34 @@ enum PurchaseReturnReason {
   INCORRECT_DELIVERY
 }
 
+// ============================================================
+// Financials, Reporting & Analytics (Phase 4)
+// ============================================================
+
+enum SaleStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  DIGITAL_TRANSFER
+}
+
+enum DiscountScope {
+  ITEM
+  BILL
+}
+
+enum SlowMovingDefinition {
+  DAYS_30
+  DAYS_60
+  DAYS_90
+  DAYS_180
+  CUSTOM
+}
+
 model User {
   id                        String              @id
   name                      String
@@ -113,6 +141,8 @@ model User {
   supplierInvoices          SupplierInvoice[]   @relation("CreatedSupplierInvoices")
   supplierPayments          SupplierPayment[]   @relation("RecordedSupplierPayments")
   purchaseReturns           PurchaseReturn[]    @relation("RecordedPurchaseReturns")
+  processedSales            Sale[]              @relation("ProcessedSales")
+  recordedPayments          Payment[]           @relation("RecordedPayments")
 
   @@unique([email])
   @@map("user")
@@ -190,38 +220,7 @@ model ProductGroup {
   @@map("product_group")
 }
 
-model Product {
-  id            String    @id @default(uuid())
-  name          String
-  genericName   String?
-  brand         String?
-  sku           String
-  description   String?
-  imageUrl      String?
-  minimumStock  Decimal   @default(0) @db.Decimal(14, 3)
-  reorderPoint  Decimal?  @db.Decimal(14, 3)
-  isActive      Boolean   @default(true)
-  productGroupId String
-  productGroup  ProductGroup @relation(fields: [productGroupId], references: [id])
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
 
-  units                      ProductUnit[]
-  batches                    Batch[]
-  stock                      InventoryStock[]
-  transactions               StockTransaction[]
-  transferItems              StockTransferItem[]
-  reorderConfig              ReorderConfiguration?
-  purchaseRequirementLines   PurchaseRequirementLine[]
-  purchaseOrderItems         PurchaseOrderItem[]
-  purchaseReturns            PurchaseReturn[]
-
-  @@unique([sku])
-  @@index([productGroupId])
-  @@index([name])
-  @@index([isActive])
-  @@map("product")
-}
 
 model ProductUnit {
   id               String  @id @default(uuid())
@@ -257,6 +256,7 @@ model InventoryLocation {
   expiryActions ExpiryAction[]
   goodsReceiptItems GoodsReceiptItem[]
   purchaseReturns PurchaseReturn[]
+  sales         Sale[]
 
   @@unique([name])
   @@index([isActive])
@@ -657,4 +657,164 @@ model PurchaseReturn {
   @@index([productId])
   @@index([batchId])
   @@map("purchase_return")
+}
+
+// ============================================================
+// Financials, Reporting & Analytics (Phase 4)
+// ============================================================
+
+model GenericProduct {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  products    Product[]
+
+  @@unique([name])
+  @@index([name])
+  @@map("generic_product")
+}
+
+model Manufacturer {
+  id          String   @id @default(uuid())
+  name        String
+  contactInfo String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  products    Product[]
+
+  @@unique([name])
+  @@index([isActive])
+  @@map("manufacturer")
+}
+
+model Product {
+  id                String    @id @default(uuid())
+  name              String
+  genericName       String?
+  brand             String?
+  sku               String
+  description       String?
+  imageUrl          String?
+  minimumStock      Decimal   @default(0) @db.Decimal(14, 3)
+  reorderPoint      Decimal?  @db.Decimal(14, 3)
+  isActive          Boolean   @default(true)
+  productGroupId    String
+  productGroup      ProductGroup @relation(fields: [productGroupId], references: [id])
+  genericProductId  String?
+  genericProduct    GenericProduct? @relation(fields: [genericProductId], references: [id])
+  manufacturerId    String?
+  manufacturer      Manufacturer? @relation(fields: [manufacturerId], references: [id])
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  units                      ProductUnit[]
+  batches                    Batch[]
+  stock                      InventoryStock[]
+  transactions               StockTransaction[]
+  transferItems              StockTransferItem[]
+  reorderConfig              ReorderConfiguration?
+  purchaseRequirementLines   PurchaseRequirementLine[]
+  purchaseOrderItems         PurchaseOrderItem[]
+  purchaseReturns            PurchaseReturn[]
+  saleLines                  SaleLine[]
+  slowMovingConfiguration    SlowMovingConfiguration?
+
+  @@unique([sku])
+  @@index([productGroupId])
+  @@index([genericProductId])
+  @@index([manufacturerId])
+  @@index([name])
+  @@index([isActive])
+  @@map("product")
+}
+
+model Sale {
+  id                  String    @id @default(uuid())
+  saleNumber          String
+  cashierId           String
+  cashier             User      @relation("ProcessedSales", fields: [cashierId], references: [id])
+  locationId          String
+  location            InventoryLocation @relation(fields: [locationId], references: [id])
+  subtotal            Decimal   @db.Decimal(12, 2)
+  billDiscountAmount  Decimal   @default(0) @db.Decimal(12, 2)
+  totalAmount         Decimal   @db.Decimal(12, 2)
+  status              SaleStatus @default(COMPLETED)
+  voidReason          String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  lines               SaleLine[]
+  payments            Payment[]
+
+  @@unique([saleNumber])
+  @@index([cashierId])
+  @@index([locationId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("sale")
+}
+
+model SaleLine {
+  id                  String   @id @default(uuid())
+  saleId              String
+  sale                Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  productId           String
+  product             Product  @relation(fields: [productId], references: [id])
+  unitSold            String
+  quantity            Decimal  @db.Decimal(14, 3)
+  quantityBaseUnits   Decimal  @db.Decimal(14, 3)
+  unitPrice           Decimal  @db.Decimal(12, 2)
+  itemDiscountAmount  Decimal  @default(0) @db.Decimal(12, 2)
+  lineTotal           Decimal  @db.Decimal(12, 2)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_line")
+}
+
+model Payment {
+  id              String       @id @default(uuid())
+  saleId          String
+  sale            Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  method          PaymentMethod
+  amount          Decimal      @db.Decimal(12, 2)
+  referenceNumber String?
+  recordedById    String
+  recordedBy      User         @relation("RecordedPayments", fields: [recordedById], references: [id])
+  createdAt       DateTime     @default(now())
+
+  @@index([saleId])
+  @@index([method])
+  @@map("payment")
+}
+
+model DiscountAuthorizationRule {
+  id              String        @id @default(uuid())
+  scope           DiscountScope
+  maxDiscountPct  Decimal       @db.Decimal(5, 2)
+  roleRequiredAbove String?
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("discount_authorization_rule")
+}
+
+model SlowMovingConfiguration {
+  id                  String   @id @default(uuid())
+  productId           String   @unique
+  product             Product  @relation(fields: [productId], references: [id])
+  definitionType      SlowMovingDefinition
+  customDays          Int?
+  lastSaleDate        DateTime?
+  daysSinceLastSale   Int?
+  isFlagged           Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@map("slow_moving_configuration")
 }
