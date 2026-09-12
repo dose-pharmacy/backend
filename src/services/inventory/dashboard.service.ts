@@ -1,6 +1,5 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.js";
-import { startOfTodayUtc, isExpired, addUtcDays } from "../../utils/date-time.js";
+import { startOfTodayUtc, addUtcDays } from "../../utils/date-time.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
 const DEFAULT_THRESHOLDS = [30, 60, 90];

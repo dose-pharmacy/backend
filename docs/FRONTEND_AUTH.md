@@ -9,6 +9,26 @@ Base URLs:
 
 Use the official Better Auth client (`better-auth/client`) against `{API_ORIGIN}/api/auth`.
 
+## Required `Origin` header
+
+Every request to `/api/auth/*` must include an `Origin` header whose value is
+the configured frontend origin. This is used by Better Auth for trusted-origin
+and CSRF checks. In a browser, the browser normally adds this header
+automatically; do not replace it with the API origin.
+
+For manual HTTP clients, send it explicitly:
+
+```http
+Origin: http://localhost:5173
+```
+
+The value must match `FRONTEND_URL` or one of the origins in `CORS_ORIGINS`,
+including the scheme and port. Swagger UI exposes this as the `authOrigin`
+security scheme; authorize it with the frontend URL before trying an auth
+endpoint. Browsers may not allow JavaScript to set the forbidden `Origin`
+header directly, so browser clients should use the official Better Auth client
+or a normal browser request and let the browser set it.
+
 ## Cookies and credentials
 
 Sessions are cookie-based (`better-auth.session_token`).
@@ -20,7 +40,13 @@ Sessions are cookie-based (`better-auth.session_token`).
 Browser `fetch` / Axios:
 
 ```ts
-credentials: "include"
+{
+  credentials: "include",
+  headers: {
+    "Content-Type": "application/json",
+    // The browser supplies Origin automatically for cross-origin requests.
+  },
+}
 ```
 
 CORS:
@@ -67,6 +93,14 @@ Better Auth client:
 await authClient.signUp.email({ name, email, password });
 ```
 
+Equivalent HTTP request:
+
+```http
+POST {API_ORIGIN}/api/auth/sign-up/email
+Origin: {FRONTEND_URL}
+Content-Type: application/json
+```
+
 ## Login
 
 `POST /api/auth/sign-in/email`
@@ -84,6 +118,14 @@ Invalid credentials and unknown users return 4xx. Do not distinguish those cases
 await authClient.signIn.email({ email, password });
 ```
 
+Equivalent HTTP request:
+
+```http
+POST {API_ORIGIN}/api/auth/sign-in/email
+Origin: {FRONTEND_URL}
+Content-Type: application/json
+```
+
 ## Logout
 
 `POST /api/auth/sign-out`
@@ -94,9 +136,14 @@ Must include the session cookie. After logout, `GET /api/auth/get-session` is `n
 await authClient.signOut();
 ```
 
+The request must include both `Origin: {FRONTEND_URL}` and the session cookie.
+
 ## Session check
 
 `GET /api/auth/get-session`
+
+Send `Origin: {FRONTEND_URL}` and the session cookie. The official client sets
+the request up correctly when used from the frontend.
 
 - Authenticated: JSON with `user` and `session` (no password, no raw session token for you to persist).
 - Unauthenticated: `null` with HTTP 200.

@@ -51,8 +51,11 @@ function loadEnv() {
   const isProduction = raw.NODE_ENV === "production";
   const isTest = raw.NODE_ENV === "test";
   const corsOrigins = parseCorsOrigins(raw.FRONTEND_URL, raw.CORS_ORIGINS);
-  const cookieSecure =
-    raw.COOKIE_SECURE !== undefined
+  // Tests always run over plain HTTP, so secure cookies (and the
+  // `__Secure-` prefix they force) must be disabled there.
+  const cookieSecure = isTest
+    ? false
+    : raw.COOKIE_SECURE !== undefined
       ? raw.COOKIE_SECURE === "true"
       : isProduction;
 

@@ -15,9 +15,15 @@ export type InventoryProductItem = {
   isActive: boolean;
   minimumStock: Prisma.Decimal;
   reorderPoint: Prisma.Decimal | null;
+  baseUnit: { id: string; name: string; symbol: string | null } | null;
   totalStock: number;
   selectedLocationStock: number | null;
-  nearestExpiry: Date | null;
+  nearestExpiry: {
+    batchId: string;
+    batchNumber: string;
+    expiryDate: Date;
+    quantity: number;
+  } | null;
   stockStatus: StockStatus;
 };
 
@@ -70,7 +76,7 @@ export const inventoryProductService = {
     // If filtering by stockStatus, we need to filter after aggregation
     // For locationId filter, we'll need to join with inventory stock
 
-    const [products, total] = await prisma.$transaction([
+    const [products] = await prisma.$transaction([
       prisma.product.findMany({
         where,
         select: {
@@ -83,6 +89,13 @@ export const inventoryProductService = {
           isActive: true,
           minimumStock: true,
           reorderPoint: true,
+          units: {
+            where: { isBaseUnit: true },
+            take: 1,
+            select: {
+              unit: { select: { id: true, name: true, symbol: true } },
+            },
+          },
         },
         orderBy: { createdAt: "desc" },
         skip,
@@ -123,6 +136,8 @@ export const inventoryProductService = {
     }
 
     // Get nearest expiry per product
+    // Note: since we need stock quantity as well, we fetch batches with their stock sum
+    // For simplicity, we just fetch the batch that expires soonest and its total stock
     const nearestExpiry = await prisma.batch.findMany({
       where: {
         productId: { in: productIds },
@@ -130,15 +145,32 @@ export const inventoryProductService = {
         stock: { some: { quantity: { gt: 0 } } },
       },
       select: {
+        id: true,
         productId: true,
+        batchNumber: true,
         expiryDate: true,
+        stock: {
+          select: { quantity: true },
+        },
       },
       orderBy: { expiryDate: "asc" },
-      distinct: ["productId"],
     });
-    const nearestExpiryMap = new Map(
-      nearestExpiry.map((row) => [row.productId, row.expiryDate]),
-    );
+    
+    // Process nearest expiry to get only the first one per product and sum its stock
+    const nearestExpiryMap = new Map<string, { batchId: string; batchNumber: string; expiryDate: Date; quantity: number }>();
+    for (const batch of nearestExpiry) {
+      if (!nearestExpiryMap.has(batch.productId)) {
+        const batchQuantity = batch.stock.reduce((sum, s) => sum + s.quantity.toNumber(), 0);
+        if (batchQuantity > 0) {
+          nearestExpiryMap.set(batch.productId, {
+            batchId: batch.id,
+            batchNumber: batch.batchNumber,
+            expiryDate: batch.expiryDate,
+            quantity: batchQuantity,
+          });
+        }
+      }
+    }
 
     // Build items with inventory data
     let items: InventoryProductItem[] = products.map((product) => {
@@ -150,8 +182,18 @@ export const inventoryProductService = {
         product.reorderPoint,
       );
 
+      const baseUnit = product.units[0]?.unit ?? null;
       return {
-        ...product,
+        id: product.id,
+        name: product.name,
+        genericName: product.genericName,
+        brand: product.brand,
+        sku: product.sku,
+        productGroup: product.productGroup,
+        isActive: product.isActive,
+        minimumStock: product.minimumStock,
+        reorderPoint: product.reorderPoint,
+        baseUnit,
         totalStock,
         selectedLocationStock,
         nearestExpiry: nearestExpiryMap.get(product.id) ?? null,

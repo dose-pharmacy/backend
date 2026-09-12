@@ -4,14 +4,13 @@ import {
   moneySchema,
   productIdParamSchema,
   quantitySchema,
-  requiredString,
   unitParamsSchema,
   uuidSchema,
 } from "./common.js";
 
 export const createProductUnitSchema = z
   .object({
-    name: requiredString(50, "Unit name"),
+    unitId: uuidSchema,
     conversionFactor: conversionFactorSchema,
     sellPrice: moneySchema.optional(),
     purchasePrice: moneySchema.optional(),
@@ -29,7 +28,6 @@ export const createProductUnitSchema = z
 
 export const updateProductUnitSchema = z
   .object({
-    name: requiredString(50, "Unit name"),
     conversionFactor: conversionFactorSchema,
     sellPrice: moneySchema.nullable().optional(),
     purchasePrice: moneySchema.nullable().optional(),

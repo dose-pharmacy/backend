@@ -42,7 +42,7 @@ Frontend authentication contract: [docs/FRONTEND_AUTH.md](docs/FRONTEND_AUTH.md)
 This repository includes `render.yaml` for Blueprint deployments. For a manually
 created Render web service, use:
 
-- Build command: `npm ci && npm run build`
+- Build command: `npm ci --include=dev && npm run build`
 - Start command: `npx prisma migrate deploy && npm start`
 - Health check path: `/health`
 

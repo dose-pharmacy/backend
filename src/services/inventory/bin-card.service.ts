@@ -3,7 +3,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { startOfTodayUtc } from "../../utils/date-time.js";
-import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
+import { resolvePagination } from "../../utils/pagination.js";
 import type { PageQuery } from "../../utils/pagination.js";
 
 export type BinCardQuery = PageQuery & {
@@ -15,6 +15,7 @@ export type BinCardQuery = PageQuery & {
 };
 
 export type BinCardTransaction = {
+  transactionId: string;
   date: Date;
   reference: string | null;
   transactionType: string;
@@ -22,10 +23,18 @@ export type BinCardTransaction = {
   in: number;
   out: number;
   balance: number;
+  notes: string | null;
+  batch: {
+    id: string;
+    batchNumber: string;
+    expiryDate: Date;
+  } | null;
+  costPrice: number | null;
   user: { id: string; name: string; email: string } | null;
 };
 
 export type BinCardResult = {
+  baseUnit: { id: string; name: string; symbol: string | null } | null;
   openingBalance: number;
   transactions: BinCardTransaction[];
   closingBalance: number;
@@ -35,18 +44,29 @@ export const binCardService = {
   async getBinCard(query: BinCardQuery): Promise<BinCardResult> {
     const { productId, locationId, batchId, startDate, endDate } = query;
 
-    // Validate product and location exist
-    const [product, location] = await Promise.all([
-      prisma.product.findUnique({ where: { id: productId }, select: { id: true } }),
+    // Validate product and location exist and fetch base unit in one go
+    const [productData, location] = await Promise.all([
+      prisma.product.findUnique({
+        where: { id: productId },
+        select: {
+          id: true,
+          units: {
+            where: { isBaseUnit: true },
+            take: 1,
+            select: { unit: { select: { id: true, name: true, symbol: true } } },
+          },
+        },
+      }),
       prisma.inventoryLocation.findUnique({ where: { id: locationId }, select: { id: true } }),
     ]);
 
-    if (!product) {
+    if (!productData) {
       throw new AppError(404, ErrorCode.PRODUCT_NOT_FOUND, "Product not found");
     }
     if (!location) {
       throw new AppError(404, ErrorCode.LOCATION_NOT_FOUND, "Location not found");
     }
+    const baseUnit = productData.units[0]?.unit ?? null;
 
     // Build where clause for transactions
     const transactionWhere: Prisma.StockTransactionWhereInput = {
@@ -62,14 +82,6 @@ export const binCardService = {
         lt: startDate ?? startOfTodayUtc(),
       },
     };
-
-    // Calculate opening balance by aggregating all transactions before startDate
-    const openingBalanceAgg = await prisma.stockTransaction.aggregate({
-      where: openingBalanceWhere,
-      _sum: {
-        quantity: true,
-      },
-    });
 
     // We need to calculate opening balance correctly: sum IN - sum OUT
     const openingBalanceResult = await prisma.stockTransaction.groupBy({
@@ -97,12 +109,13 @@ export const binCardService = {
       },
     };
 
-    const { page, limit, skip, take } = resolvePagination(query);
+    const { skip, take } = resolvePagination(query);
 
-    const [transactions, total] = await prisma.$transaction([
+    const [transactions] = await prisma.$transaction([
       prisma.stockTransaction.findMany({
         where: rangeWhere,
         include: {
+          batch: { select: { id: true, batchNumber: true, expiryDate: true, purchaseCost: true } },
           createdBy: { select: { id: true, name: true, email: true } },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -126,20 +139,27 @@ export const binCardService = {
       }
 
       return {
+        transactionId: tx.id,
         date: tx.createdAt,
         reference: tx.referenceType && tx.referenceId
           ? `${tx.referenceType}:${tx.referenceId}`
-          : tx.notes ?? null,
+          : null,
         transactionType: tx.transactionType,
         direction: tx.direction,
         in: inQty,
         out: outQty,
         balance: runningBalance,
+        notes: tx.notes ?? null,
+        batch: tx.batch
+          ? { id: tx.batch.id, batchNumber: tx.batch.batchNumber, expiryDate: tx.batch.expiryDate }
+          : null,
+        costPrice: tx.batch?.purchaseCost?.toNumber() ?? null,
         user: tx.createdBy,
       };
     });
 
     return {
+      baseUnit,
       openingBalance,
       transactions: binCardTransactions,
       closingBalance: runningBalance,

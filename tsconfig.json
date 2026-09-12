@@ -5,7 +5,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "rootDir": "src",
-    "outDir": "build",
+    "outDir": "./build",
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

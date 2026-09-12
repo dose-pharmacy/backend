@@ -33,9 +33,7 @@ export type ReorderDashboardQuery = PageQuery & {
 };
 
 export type ReorderItem = {
-  productId: string;
-  productName: string;
-  productSku: string;
+  product: { id: string; name: string; sku: string; brand: string | null; baseUnit: { id: string; name: string; symbol: string | null } | null };
   currentStock: number;
   minimumThreshold: number;
   reorderPoint: number;
@@ -61,9 +59,7 @@ export type ReorderDashboardResult = {
 export type ReorderSuggestionsQuery = PageQuery;
 
 export type ReorderSuggestionItem = {
-  productId: string;
-  productName: string;
-  productSku: string;
+  product: { id: string; name: string; sku: string; brand: string | null; baseUnit: { id: string; name: string; symbol: string | null } | null };
   currentStock: number;
   reorderPoint: number;
   minimumStockLevel: number;
@@ -144,13 +140,23 @@ export const reorderService = {
   },
 
   async getDashboard(query: ReorderDashboardQuery): Promise<ReorderDashboardResult> {
-    const { page, limit, skip, take } = resolvePagination(query);
+    const { skip, take } = resolvePagination(query);
 
     // Get all products with reorder config
     const configs = await prisma.reorderConfiguration.findMany({
       include: {
         product: {
-          select: { id: true, name: true, sku: true },
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            brand: true,
+            units: {
+              where: { isBaseUnit: true },
+              take: 1,
+              select: { unit: { select: { id: true, name: true, symbol: true } } },
+            },
+          },
         },
       },
     });
@@ -205,9 +211,13 @@ export const reorderService = {
       }
 
       return {
-        productId: config.productId,
-        productName: config.product.name,
-        productSku: config.product.sku,
+        product: {
+          id: config.product.id,
+          name: config.product.name,
+          sku: config.product.sku,
+          brand: config.product.brand,
+          baseUnit: config.product.units[0]?.unit ?? null,
+        },
         currentStock,
         minimumThreshold: minimumStockLevel,
         reorderPoint,
@@ -239,7 +249,6 @@ export const reorderService = {
 
     // Apply pagination after sorting/filtering
     const paginatedItems = items.slice(skip, skip + take);
-    const meta = buildPaginationMeta(items.length, page, limit);
 
     return { items: paginatedItems, summary };
   },
@@ -251,7 +260,17 @@ export const reorderService = {
     const configs = await prisma.reorderConfiguration.findMany({
       include: {
         product: {
-          select: { id: true, name: true, sku: true },
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            brand: true,
+            units: {
+              where: { isBaseUnit: true },
+              take: 1,
+              select: { unit: { select: { id: true, name: true, symbol: true } } },
+            },
+          },
         },
       },
     });
@@ -304,9 +323,13 @@ export const reorderService = {
         }
 
         return {
-          productId: config.productId,
-          productName: config.product.name,
-          productSku: config.product.sku,
+          product: {
+            id: config.product.id,
+            name: config.product.name,
+            sku: config.product.sku,
+            brand: config.product.brand,
+            baseUnit: config.product.units[0]?.unit ?? null,
+          },
           currentStock,
           reorderPoint,
           minimumStockLevel,

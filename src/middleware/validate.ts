@@ -1,10 +1,10 @@
 import type { RequestHandler } from "express";
-import type { AnyZodObject, ZodEffects, ZodTypeAny } from "zod";
+import type { ZodTypeAny } from "zod";
 import { ZodError } from "zod";
 import { AppError } from "../errors/app-error.js";
 import { ErrorCode } from "../errors/error-codes.js";
 
-type ZodSchema = AnyZodObject | ZodEffects<ZodTypeAny>;
+type ZodSchema = ZodTypeAny;
 
 type ValidationTarget = {
   body?: ZodSchema;

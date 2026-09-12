@@ -1,55 +1,65 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.js";
 
+type DbClient = Prisma.TransactionClient | typeof prisma;
+
+const unitSelect = {
+  unit: {
+    select: { id: true, name: true, symbol: true, isActive: true },
+  },
+} satisfies Prisma.ProductUnitInclude;
+
 export const productUnitRepository = {
-  findById(id: string) {
-    return prisma.productUnit.findUnique({ where: { id } });
+  findById(id: string, client: DbClient = prisma) {
+    return client.productUnit.findUnique({
+      where: { id },
+      include: unitSelect,
+    });
   },
 
-  findByProductId(productId: string) {
-    return prisma.productUnit.findMany({
+  findByProductId(productId: string, client: DbClient = prisma) {
+    return client.productUnit.findMany({
       where: { productId },
+      include: unitSelect,
       orderBy: [{ isBaseUnit: "desc" }, { createdAt: "asc" }],
     });
   },
 
-  findBaseUnit(productId: string) {
-    return prisma.productUnit.findFirst({
+  findBaseUnit(productId: string, client: DbClient = prisma) {
+    return client.productUnit.findFirst({
       where: { productId, isBaseUnit: true },
+      include: unitSelect,
     });
   },
 
-  findByName(productId: string, name: string, excludeId?: string) {
-    return prisma.productUnit.findFirst({
-      where: {
-        productId,
-        name: { equals: name, mode: "insensitive" },
-        ...(excludeId ? { id: { not: excludeId } } : {}),
-      },
+  /** Finds the ProductUnit for a (product, master unit) pair. */
+  findByProductAndUnit(productId: string, unitId: string, client: DbClient = prisma) {
+    return client.productUnit.findFirst({
+      where: { productId, unitId },
+      include: unitSelect,
     });
   },
 
   create(data: {
     productId: string;
-    name: string;
+    unitId: string;
     conversionFactor: Prisma.Decimal;
     sellPrice?: Prisma.Decimal | null;
     purchasePrice?: Prisma.Decimal | null;
     isBaseUnit?: boolean;
   }) {
-    return prisma.productUnit.create({ data });
+    return prisma.productUnit.create({ data, include: unitSelect });
   },
 
   update(
     id: string,
     data: Partial<{
-      name: string;
       conversionFactor: Prisma.Decimal;
       sellPrice: Prisma.Decimal | null;
       purchasePrice: Prisma.Decimal | null;
     }>,
   ) {
-    return prisma.productUnit.update({ where: { id }, data });
+    return prisma.productUnit.update({ where: { id }, data, include: unitSelect });
   },
 
   deleteById(id: string) {

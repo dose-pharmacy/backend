@@ -44,9 +44,9 @@ export const reorderController = {
     const { items } = await reorderService.getSuggestions({ page: 1, limit: 1000 });
 
     const requirements = items.map((item) => ({
-      productId: item.productId,
-      productName: item.productName,
-      productSku: item.productSku,
+      productId: item.product.id,
+      productName: item.product.name,
+      productSku: item.product.sku,
       suggestedQuantity: item.suggestedQuantity,
       calculationMethod: item.calculationMethod,
       currentStock: item.currentStock,

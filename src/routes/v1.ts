@@ -6,6 +6,7 @@ import {
   requireRole,
 } from "../middleware/authorize.js";
 import { inventoryRouter } from "./inventory.js";
+import { posRouter } from "./pos.js";
 import { purchasingRouter } from "./purchasing.js";
 import { financialsRouter } from "./financials.js";
 
@@ -19,5 +20,6 @@ v1Router.get(
 );
 
 v1Router.use("/inventory", inventoryRouter);
+v1Router.use("/pos", posRouter);
 v1Router.use("/purchasing", purchasingRouter);
 v1Router.use("/financials", financialsRouter);

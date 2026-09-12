@@ -306,10 +306,16 @@ describe("inventory: products", () => {
     const productId = product.body.data.id as string;
     productIds.push(productId);
 
+    const masterUnit = await request(app)
+      .post("/api/v1/inventory/units")
+      .set("Cookie", cookie)
+      .send({ name: `Tablet ${Date.now()}` })
+      .expect(201);
+
     await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Tablet", conversionFactor: 1, isBaseUnit: true })
+      .send({ unitId: masterUnit.body.data.id, conversionFactor: 1, isBaseUnit: true })
       .expect(201);
 
     const res = await request(app)
@@ -326,11 +332,23 @@ describe("inventory: units & conversion", () => {
   const groupIds: string[] = [];
   const productIds: string[] = [];
   const unitIds: string[] = [];
+  const productUnitIds: string[] = [];
 
   let baseUnitId: string;
   let stripUnitId: string;
   let boxUnitId: string;
+  let baseProductUnitId: string;
   let productId: string;
+
+  async function makeMasterUnit(name: string): Promise<string> {
+    const res = await request(app)
+      .post("/api/v1/inventory/units")
+      .set("Cookie", cookie)
+      .send({ name })
+      .expect(201);
+    unitIds.push(res.body.data.id as string);
+    return res.body.data.id as string;
+  }
 
   async function makeProduct(name: string, skuSuffix: string): Promise<string> {
     const group = await request(app)
@@ -354,30 +372,33 @@ describe("inventory: units & conversion", () => {
     userIds.push(admin.userId);
 
     productId = await makeProduct("Aspirin", "ASP");
+
+    // Reusable master units shared across products.
+    baseUnitId = await makeMasterUnit("Tablet");
+    stripUnitId = await makeMasterUnit("Strip");
+    boxUnitId = await makeMasterUnit("Box");
+
     const base = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Tablet", conversionFactor: 1, isBaseUnit: true })
+      .send({ unitId: baseUnitId, conversionFactor: 1, isBaseUnit: true })
       .expect(201);
-    baseUnitId = base.body.data.id as string;
-    unitIds.push(baseUnitId);
+    baseProductUnitId = base.body.data.id as string;
+    productUnitIds.push(baseProductUnitId);
 
     const strip = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Strip", conversionFactor: 10, sellPrice: 5.0 })
+      .send({ unitId: stripUnitId, conversionFactor: 10, sellPrice: 5.0 })
       .expect(201);
-    stripUnitId = strip.body.data.id as string;
-    unitIds.push(stripUnitId);
-    void stripUnitId;
+    productUnitIds.push(strip.body.data.id as string);
 
     const box = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Box", conversionFactor: 100 })
+      .send({ unitId: boxUnitId, conversionFactor: 100 })
       .expect(201);
-    boxUnitId = box.body.data.id as string;
-    unitIds.push(boxUnitId);
+    productUnitIds.push(box.body.data.id as string);
   });
 
   afterAll(async () => {
@@ -387,39 +408,51 @@ describe("inventory: units & conversion", () => {
     await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
+    await prisma.unit.deleteMany({ where: { id: { in: unitIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
 
   it("rejects a second base unit for the same product", async () => {
+    const pieceUnitId = await makeMasterUnit("Piece");
     const res = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Piece", conversionFactor: 1, isBaseUnit: true })
+      .send({ unitId: pieceUnitId, conversionFactor: 1, isBaseUnit: true })
       .expect(409);
     expect(res.body.error.code).toBe("BASE_UNIT_EXISTS");
   });
 
-  it("rejects duplicate unit names", async () => {
+  it("rejects duplicate master unit names", async () => {
+    const res = await request(app)
+      .post("/api/v1/inventory/units")
+      .set("Cookie", cookie)
+      .send({ name: "Box" })
+      .expect(409);
+    expect(res.body.error.code).toBe("DUPLICATE_UNIT");
+  });
+
+  it("rejects configuring the same master unit twice for a product", async () => {
     const res = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Strip", conversionFactor: 20 })
+      .send({ unitId: stripUnitId, conversionFactor: 20 })
       .expect(409);
     expect(res.body.error.code).toBe("DUPLICATE_UNIT");
   });
 
   it("rejects invalid conversion factors", async () => {
+    const badUnitId = await makeMasterUnit("Bad");
     const negative = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Bad", conversionFactor: -5 })
+      .send({ unitId: badUnitId, conversionFactor: -5 })
       .expect(422);
     expect(negative.body.error.code).toBe("VALIDATION_ERROR");
 
     const baseWithWrongFactor = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "BadBase", conversionFactor: 2, isBaseUnit: true })
+      .send({ unitId: badUnitId, conversionFactor: 2, isBaseUnit: true })
       .expect(422);
     expect(baseWithWrongFactor.body.error.code).toBe("VALIDATION_ERROR");
   });
@@ -442,30 +475,36 @@ describe("inventory: units & conversion", () => {
     expect(reverse.body.data.convertedQuantity).toBe(2);
   });
 
-  it("rejects a unit from another product in a conversion", async () => {
+  it("rejects a unit that is not configured for the product in a conversion", async () => {
     const otherProductId = await makeProduct("Ibuprofen", "IBU");
-    const otherUnit = await request(app)
+    const tubeUnitId = await makeMasterUnit("Tube");
+    await request(app)
       .post(`/api/v1/inventory/products/${otherProductId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Tablet", conversionFactor: 1, isBaseUnit: true })
+      .send({ unitId: tubeUnitId, conversionFactor: 1, isBaseUnit: true })
       .expect(201);
-    unitIds.push(otherUnit.body.data.id as string);
 
     const res = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units/convert`)
       .set("Cookie", cookie)
-      .send({
-        quantity: 1,
-        fromUnitId: baseUnitId,
-        toUnitId: otherUnit.body.data.id,
-      })
+      .send({ quantity: 1, fromUnitId: tubeUnitId, toUnitId: baseUnitId })
       .expect(422);
-    expect(res.body.error.code).toBe("UNIT_PRODUCT_MISMATCH");
+    expect(res.body.error.code).toBe("INVALID_UNIT");
+  });
+
+  it("allows the same master unit to be configured for another product", async () => {
+    const otherProductId = await makeProduct("Ibuprofen", "IBU2");
+    const res = await request(app)
+      .post(`/api/v1/inventory/products/${otherProductId}/units`)
+      .set("Cookie", cookie)
+      .send({ unitId: baseUnitId, conversionFactor: 1, isBaseUnit: true })
+      .expect(201);
+    productUnitIds.push(res.body.data.id as string);
   });
 
   it("protects the base unit from deletion", async () => {
     const res = await request(app)
-      .delete(`/api/v1/inventory/products/${productId}/units/${baseUnitId}`)
+      .delete(`/api/v1/inventory/products/${productId}/units/${baseProductUnitId}`)
       .set("Cookie", cookie)
       .expect(409);
     expect(res.body.error.code).toBe("BASE_UNIT_FORBIDDEN");
@@ -473,7 +512,7 @@ describe("inventory: units & conversion", () => {
 
   it("prevents changing the base unit conversion factor", async () => {
     const res = await request(app)
-      .patch(`/api/v1/inventory/products/${productId}/units/${baseUnitId}`)
+      .patch(`/api/v1/inventory/products/${productId}/units/${baseProductUnitId}`)
       .set("Cookie", cookie)
       .send({ conversionFactor: 2 })
       .expect(409);
@@ -485,26 +524,26 @@ describe("inventory: units & conversion", () => {
       .get(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
       .expect(200);
-    expect(res.body.data.map((u: { name: string }) => u.name)).toEqual(
+    expect(res.body.data.map((u: { unit: { name: string } }) => u.unit.name)).toEqual(
       expect.arrayContaining(["Tablet", "Strip", "Box"]),
     );
   });
 
-  it("allows deleting a non-base unit with no history", async () => {
+  it("allows deleting a non-base unit configuration with no history", async () => {
+    const sachetUnitId = await makeMasterUnit("Sachet");
     const extra = await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Sachet", conversionFactor: 5 })
+      .send({ unitId: sachetUnitId, conversionFactor: 5 })
       .expect(201);
     const extraId = extra.body.data.id as string;
+    productUnitIds.push(extraId);
 
     await request(app)
       .delete(`/api/v1/inventory/products/${productId}/units/${extraId}`)
       .set("Cookie", cookie)
       .expect(200);
-    unitIds.splice(unitIds.indexOf(extraId), 1);
   });
-
 });
 
 describe("inventory: locations", () => {
@@ -761,21 +800,35 @@ describe("inventory: stock movements", () => {
     productId = product.body.data.id as string;
     productIds.push(productId);
 
-    const base = await request(app)
-      .post(`/api/v1/inventory/products/${productId}/units`)
+    // Master units are referenced by id in stock requests; ProductUnit
+    // configs are created from them below.
+    const capsuleMaster = await request(app)
+      .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "Capsule", conversionFactor: 1, isBaseUnit: true })
+      .send({ name: "Capsule" })
       .expect(201);
-    baseUnitId = base.body.data.id as string;
+    baseUnitId = capsuleMaster.body.data.id as string;
     unitIds.push(baseUnitId);
 
-    const box = await request(app)
+    await request(app)
       .post(`/api/v1/inventory/products/${productId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Box", conversionFactor: 100 })
+      .send({ unitId: baseUnitId, conversionFactor: 1, isBaseUnit: true })
       .expect(201);
-    boxUnitId = box.body.data.id as string;
+
+    const boxMaster = await request(app)
+      .post("/api/v1/inventory/units")
+      .set("Cookie", cookie)
+      .send({ name: "Box" })
+      .expect(201);
+    boxUnitId = boxMaster.body.data.id as string;
     unitIds.push(boxUnitId);
+
+    await request(app)
+      .post(`/api/v1/inventory/products/${productId}/units`)
+      .set("Cookie", cookie)
+      .send({ unitId: boxUnitId, conversionFactor: 100 })
+      .expect(201);
 
     const batch = await request(app)
       .post("/api/v1/inventory/batches")
@@ -807,13 +860,19 @@ describe("inventory: stock movements", () => {
       .expect(201);
     otherProductId = otherProduct.body.data.id as string;
     productIds.push(otherProductId);
-    const otherUnit = await request(app)
+    const tubeMaster = await request(app)
+      .post("/api/v1/inventory/units")
+      .set("Cookie", cookie)
+      .send({ name: "Tube" })
+      .expect(201);
+    otherUnitId = tubeMaster.body.data.id as string;
+    unitIds.push(otherUnitId);
+
+    await request(app)
       .post(`/api/v1/inventory/products/${otherProductId}/units`)
       .set("Cookie", cookie)
-      .send({ name: "Tube", conversionFactor: 1, isBaseUnit: true })
+      .send({ unitId: otherUnitId, conversionFactor: 1, isBaseUnit: true })
       .expect(201);
-    otherUnitId = otherUnit.body.data.id as string;
-    unitIds.push(otherUnitId);
   });
 
   afterAll(async () => {
@@ -824,6 +883,7 @@ describe("inventory: stock movements", () => {
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.inventoryLocation.deleteMany({ where: { id: { in: locationIds } } });
+    await prisma.unit.deleteMany({ where: { id: { in: unitIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   });
 

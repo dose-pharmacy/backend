@@ -1,4 +1,5 @@
 import { StockDirection, StockTransactionType } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { batchRepository } from "../../repositories/inventory/batch.repository.js";
@@ -10,6 +11,37 @@ import type { AuthenticatedUser } from "../../types/auth.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import { productUnitService } from "./product-unit.service.js";
 import { stockMovementService } from "./stock-movement.service.js";
+import type { StockStatus } from "./inventory-product.service.js";
+
+function computeStockStatus(
+  quantity: number,
+  minimumStock: Prisma.Decimal,
+  reorderPoint: Prisma.Decimal | null,
+): StockStatus {
+  if (quantity <= 0) return "OUT_OF_STOCK";
+  const min = minimumStock.toNumber();
+  const reorder = reorderPoint?.toNumber() ?? min;
+  if (quantity <= reorder) return "LOW_STOCK";
+  return "IN_STOCK";
+}
+
+function enrichStockItem(item: Awaited<ReturnType<typeof inventoryStockRepository.list>>["items"][number]) {
+  const baseUnit = item.product.units[0]?.unit ?? null;
+  const quantity = item.quantity.toNumber();
+  const reservedQuantity = item.reservedQuantity.toNumber();
+  const availableQuantity = Math.max(0, quantity - reservedQuantity);
+  const stockStatus = computeStockStatus(
+    quantity,
+    item.product.minimumStock,
+    item.product.reorderPoint,
+  );
+  return {
+    ...item,
+    baseUnit,
+    availableQuantity,
+    stockStatus,
+  };
+}
 
 export type OpeningStockInput = {
   productId: string;
@@ -67,13 +99,13 @@ export const stockService = {
    */
   async openingStock(input: OpeningStockInput, actor: Pick<AuthenticatedUser, "id">) {
     await validateBatchProduct(input.batchId, input.productId);
-    const { baseQuantity } = await productUnitService.toBaseQuantity(
+    const { baseQuantity, unit } = await productUnitService.toBaseQuantity(
       input.productId,
       input.unitId,
       input.quantity,
     );
 
-    return stockMovementService.recordMovement({
+    const result = await stockMovementService.recordMovement({
       productId: input.productId,
       batchId: input.batchId,
       locationId: input.locationId,
@@ -83,6 +115,16 @@ export const stockService = {
       notes: input.notes,
       actor,
     });
+
+    return {
+      ...result,
+      entered: {
+        quantity: input.quantity,
+        unitId: unit.unitId,
+        unitName: unit.unit.name,
+        unitSymbol: unit.unit.symbol,
+      },
+    };
   },
 
   /**
@@ -91,7 +133,7 @@ export const stockService = {
    */
   async adjustment(input: StockAdjustmentInput, actor: Pick<AuthenticatedUser, "id">) {
     await validateBatchProduct(input.batchId, input.productId);
-    const { baseQuantity } = await productUnitService.toBaseQuantity(
+    const { baseQuantity, unit } = await productUnitService.toBaseQuantity(
       input.productId,
       input.unitId,
       input.quantity,
@@ -102,7 +144,7 @@ export const stockService = {
         ? StockTransactionType.ADJUSTMENT_IN
         : StockTransactionType.ADJUSTMENT_OUT;
 
-    return stockMovementService.recordMovement({
+    const result = await stockMovementService.recordMovement({
       productId: input.productId,
       batchId: input.batchId,
       locationId: input.locationId,
@@ -112,6 +154,16 @@ export const stockService = {
       notes: input.reason,
       actor,
     });
+
+    return {
+      ...result,
+      entered: {
+        quantity: input.quantity,
+        unitId: unit.unitId,
+        unitName: unit.unit.name,
+        unitSymbol: unit.unit.symbol,
+      },
+    };
   },
 
   /** Current stock across products/batches/locations. */
@@ -125,7 +177,7 @@ export const stockService = {
       skip,
       take,
     });
-    return { items, meta: buildPaginationMeta(total, page, limit) };
+    return { items: items.map(enrichStockItem), meta: buildPaginationMeta(total, page, limit) };
   },
 
   /** Stock rows for one product (dashboard/list support). */
@@ -137,7 +189,7 @@ export const stockService = {
       skip,
       take,
     });
-    return { items, meta: buildPaginationMeta(total, page, limit) };
+    return { items: items.map(enrichStockItem), meta: buildPaginationMeta(total, page, limit) };
   },
 
   /** Paginated immutable transaction history for one product. */
