@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { paginationQuerySchema, uuidSchema } from "../inventory/common.js";
+import { paginationQuerySchema, optionalUuidQuery } from "../inventory/common.js";
 
 export const profitMarginReportQuerySchema = z
   .object({
-    productGroupId: uuidSchema.optional(),
+    productGroupId: optionalUuidQuery(),
     dateFrom: z.coerce.date().optional(),
     dateTo: z.coerce.date().optional(),
   })
@@ -12,8 +12,8 @@ export const profitMarginReportQuerySchema = z
 export const profitabilityReportQuerySchema = z
   .object({
     groupBy: z.enum(["BRAND", "MANUFACTURER", "PRODUCT_GROUP", "PRODUCT"]).optional(),
-    productGroupId: uuidSchema.optional(),
-    manufacturerId: uuidSchema.optional(),
+    productGroupId: optionalUuidQuery(),
+    manufacturerId: optionalUuidQuery(),
     dateFrom: z.coerce.date().optional(),
     dateTo: z.coerce.date().optional(),
   })
@@ -21,8 +21,8 @@ export const profitabilityReportQuerySchema = z
 
 export const slowMovingReportQuerySchema = z
   .object({
-    productGroupId: uuidSchema.optional(),
-    manufacturerId: uuidSchema.optional(),
+    productGroupId: optionalUuidQuery(),
+    manufacturerId: optionalUuidQuery(),
     isFlagged: z.enum(["true", "false"]).optional(),
     definitionType: z.enum(["DAYS_30", "DAYS_60", "DAYS_90", "DAYS_180", "CUSTOM"]).optional(),
   })
@@ -33,18 +33,18 @@ export const salesReportQuerySchema = z
     period: z.enum(["DAILY", "MONTHLY", "ANNUAL"]).optional(),
     dateFrom: z.coerce.date().optional(),
     dateTo: z.coerce.date().optional(),
-    productGroupId: uuidSchema.optional(),
-    manufacturerId: uuidSchema.optional(),
-    locationId: uuidSchema.optional(),
+    productGroupId: optionalUuidQuery(),
+    manufacturerId: optionalUuidQuery(),
+    locationId: optionalUuidQuery(),
   })
   .merge(paginationQuerySchema);
 
 export const salesDetailQuerySchema = z
   .object({
-    saleId: uuidSchema.optional(),
-    productId: uuidSchema.optional(),
-    cashierId: uuidSchema.optional(),
-    locationId: uuidSchema.optional(),
+    saleId: optionalUuidQuery(),
+    productId: optionalUuidQuery(),
+    cashierId: optionalUuidQuery(),
+    locationId: optionalUuidQuery(),
     dateFrom: z.coerce.date().optional(),
     dateTo: z.coerce.date().optional(),
   })

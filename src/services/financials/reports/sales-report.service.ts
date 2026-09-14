@@ -38,32 +38,33 @@ async function getSalesReportFn(query: SalesReportQuery) {
     ...(query.locationId ? { locationId: query.locationId } : {}),
   };
 
-  // Get sales with lines for detailed breakdown
-  const sales = await prisma.sale.findMany({
-    where,
-    include: {
-      lines: {
-        include: {
-          product: {
-            select: {
-              id: true,
-              name: true,
-              sku: true,
-              productGroup: { select: { id: true, name: true } },
-              manufacturer: { select: { id: true, name: true } },
+  const [sales, total] = await prisma.$transaction([
+    prisma.sale.findMany({
+      where,
+      include: {
+        lines: {
+          include: {
+            product: {
+              select: {
+                id: true,
+                name: true,
+                sku: true,
+                productGroup: { select: { id: true, name: true } },
+                manufacturer: { select: { id: true, name: true } },
+              },
             },
           },
-        },
-      payments: true,
-      location: { select: { id: true, name: true } },
-      cashier: { select: { id: true, name: true } },
-    },
-    orderBy: { createdAt: "desc" },
-    skip,
-    take,
-  });
-
-  const total = await prisma.sale.count({ where });
+        }, // <-- closes lines.include
+        payments: true,
+        location: { select: { id: true, name: true } },
+        cashier: { select: { id: true, name: true } },
+      }, // <-- closes sale.include
+      orderBy: { createdAt: "desc" },
+      skip,
+      take,
+    }),
+    prisma.sale.count({ where }),
+  ]);
 
   return { items: sales, meta: buildPaginationMeta(total, page, limit) };
 }
@@ -77,10 +78,10 @@ async function getSalesSummaryFn(query: SalesReportQuery) {
     ...(query.locationId ? { locationId: query.locationId } : {}),
   };
 
-  const [salesAgg, paymentAgg, topProducts] = await prisma.$transaction([
+  const [salesAgg, paymentAgg, lines] = await prisma.$transaction([
     prisma.sale.aggregate({
       where,
-      _sum: { totalAmount: true, subtotal: true, billDiscountAmount: true },
+      _sum: { totalAmount: true, subtotal: true, totalDiscount: true },
       _count: true,
     }),
     prisma.payment.groupBy({
@@ -102,13 +103,18 @@ async function getSalesSummaryFn(query: SalesReportQuery) {
     }),
   ]);
 
-  // Top products by revenue
-  const productRevenue = new Map<string, { name: string; sku: string; revenue: number; quantity: number }>();
-  for (const line of topProducts) {
+  const productRevenue = new Map<
+    string,
+    { name: string; sku: string; revenue: number; quantity: number }
+  >();
+
+  for (const line of lines) {
     const key = line.productId;
     const rev = line.lineTotal.toNumber();
     const qty = line.quantityBaseUnits.toNumber();
-    const existing = productRevenue.get(key) ?? { name: line.product.name, sku: line.product.sku, revenue: 0, quantity: 0 };
+    const existing =
+      productRevenue.get(key) ??
+      { name: line.product.name, sku: line.product.sku, revenue: 0, quantity: 0 };
     existing.revenue += rev;
     existing.quantity += qty;
     productRevenue.set(key, existing);
@@ -119,16 +125,19 @@ async function getSalesSummaryFn(query: SalesReportQuery) {
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, 10);
 
+  const totalAmount = salesAgg._sum.totalAmount?.toNumber() ?? 0;
+  const transactionCount = salesAgg._count ?? 0;
+
   return {
-    totalSales: salesAgg._sum.totalAmount?.toNumber() ?? 0,
+    totalSales: totalAmount,
     totalSubtotal: salesAgg._sum.subtotal?.toNumber() ?? 0,
-    totalDiscount: salesAgg._sum.billDiscountAmount?.toNumber() ?? 0,
-    transactionCount: salesAgg._count ?? 0,
-    averageTransaction: salesAgg._count ? (salesAgg._sum.totalAmount?.toNumber() ?? 0) / salesAgg._count : 0,
+    totalDiscount: salesAgg._sum.totalDiscount?.toNumber() ?? 0,
+    transactionCount,
+    averageTransaction: transactionCount ? totalAmount / transactionCount : 0,
     paymentsByMethod: paymentAgg.map((p) => ({
       method: p.method,
-      amount: p._sum.amount?.toNumber() ?? 0,
-    }),
+      amount: p._sum?.amount?.toNumber() ?? 0,
+    })),
     topProducts: topProductsList,
   };
 }
@@ -160,10 +169,16 @@ async function getSalesDetailFn(query: SalesDetailQuery) {
             location: { select: { id: true, name: true } },
             cashier: { select: { id: true, name: true } },
           },
-        },
+        }, // <-- closes sale.include
         product: {
-          select: { id: true, name: true, sku: true, productGroup: { select: { id: true, name: true } } },
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            productGroup: { select: { id: true, name: true } },
+          },
         },
+      }, // <-- closes saleLine.include
       orderBy: { sale: { createdAt: "desc" } },
       skip,
       take,

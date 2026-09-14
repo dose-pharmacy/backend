@@ -9,7 +9,7 @@ export const saleController = {
     const input: SaleListQuery = {
       page: query.page ? Number(query.page) : undefined,
       limit: query.limit ? Number(query.limit) : undefined,
-      status: query.status as "COMPLETED" | "VOIDED" | undefined,
+      status: query.status as "COMPLETED" | "CANCELLED" | undefined,
       locationId: query.locationId,
       cashierId: query.cashierId,
       dateFrom: query.dateFrom ? new Date(query.dateFrom) : undefined,

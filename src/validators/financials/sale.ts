@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema, moneySchema, decimalNumber } from "../inventory/common.js";
 
-const saleStatusEnum = z.enum(["COMPLETED", "VOIDED"]);
+const saleStatusEnum = z.enum(["COMPLETED", "CANCELLED"]);
 const paymentMethodEnum = z.enum(["CASH", "CARD", "DIGITAL_TRANSFER"]);
 
 const positiveMoneySchema = decimalNumber({
@@ -27,7 +27,7 @@ export const createSaleSchema = z.object({
   payments: z.array(z.object({
     method: paymentMethodEnum,
     amount: positiveMoneySchema,
-    referenceNumber: z.string().trim().max(100).optional(),
+reference: z.string().trim().max(100).optional(),
   })).min(1, "At least one payment is required"),
 });
 
@@ -45,7 +45,7 @@ export const createPaymentSchema = z.object({
 
 export const saleListQuerySchema = z
   .object({
-    status: z.enum(["COMPLETED", "VOIDED"]).optional(),
+    status: z.enum(["COMPLETED", "CANCELLED"]).optional(),
     locationId: uuidSchema.optional(),
     cashierId: uuidSchema.optional(),
     dateFrom: z.coerce.date().optional(),

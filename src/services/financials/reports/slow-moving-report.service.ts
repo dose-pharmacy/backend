@@ -22,7 +22,7 @@ function getThresholdDays(definitionType: string, customDays?: number | null): n
     case "DAYS_180":
       return 180;
     case "CUSTOM":
-      return 90;
+      return customDays ?? 90;
     default:
       return 90;
   }
@@ -51,14 +51,18 @@ async function getSlowMovingReportFn(query: SlowMovingReportQuery) {
             id: true,
             name: true,
             sku: true,
-            costPrice: true,
             productGroup: { select: { id: true, name: true } },
             manufacturer: { select: { id: true, name: true } },
-            stock: {
-              select: { quantity: true },
+            // Reference cost lives on the base ProductUnit.
+            units: {
+              where: { isBaseUnit: true },
+              select: { purchasePrice: true },
+              take: 1,
             },
+            stock: { select: { quantity: true } },
           },
         },
+      }, // <-- this closing brace was missing
       orderBy: { updatedAt: "desc" },
       skip,
       take,
@@ -66,13 +70,22 @@ async function getSlowMovingReportFn(query: SlowMovingReportQuery) {
     prisma.slowMovingConfiguration.count({ where }),
   ]);
 
-  const itemsWithStock = items.map((config) => ({
-    ...config,
-    product: {
-      ...config.product,
-      totalStock: config.product.stock.reduce((sum, s) => sum + s.quantity.toNumber(), 0),
-      stockValue: config.product.stock.reduce((sum, s) => sum + s.quantity.toNumber() * (config.product.costPrice?.toNumber() ?? 0), 0),
-    },
+  const itemsWithStock = items.map((config) => {
+    const unitCost = config.product.units[0]?.purchasePrice?.toNumber() ?? 0;
+    const totalStock = config.product.stock.reduce(
+      (sum, s) => sum + s.quantity.toNumber(),
+      0,
+    );
+    const stockValue = totalStock * unitCost;
+
+    return {
+      ...config,
+      product: {
+        ...config.product,
+        totalStock,
+        stockValue,
+      },
+    };
   });
 
   return { items: itemsWithStock, meta: buildPaginationMeta(total, page, limit) };

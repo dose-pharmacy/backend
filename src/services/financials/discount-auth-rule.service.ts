@@ -100,7 +100,7 @@ export const discountAuthRuleService = {
       return { authorized: true }; // No rule = no limit
     }
 
-    if (discountPct <= rule.maxDiscountPct) {
+    if (discountPct <= rule.maxDiscountPct.toNumber()) {
       return { authorized: true };
     }
 

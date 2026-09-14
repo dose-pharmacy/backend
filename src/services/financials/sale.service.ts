@@ -22,17 +22,17 @@ export type CreateSaleInput = {
   payments: Array<{
     method: "CASH" | "CARD" | "DIGITAL_TRANSFER";
     amount: number;
-    referenceNumber?: string | null;
+    reference?: string | null;
   }>;
 };
 
 export type UpdateSaleInput = Partial<{
   voidReason: string | null;
-  status: "COMPLETED" | "VOIDED";
+  status: "COMPLETED" | "CANCELLED";
 }>;
 
 export type SaleListQuery = PageQuery & {
-  status?: "COMPLETED" | "VOIDED";
+  status?: "COMPLETED" | "CANCELLED";
   locationId?: string;
   cashierId?: string;
   dateFrom?: Date;
@@ -208,8 +208,9 @@ export const saleService = {
           cashierId: actor.id,
           locationId: input.locationId,
           subtotal,
-          billDiscountAmount,
+          totalDiscount: billDiscountAmount,
           totalAmount,
+          paidAmount: paymentSum,
           status: "COMPLETED",
           lines: {
             create: input.lines.map((line, i) => ({
@@ -226,8 +227,7 @@ export const saleService = {
             create: input.payments.map((p) => ({
               method: p.method,
               amount: p.amount,
-              referenceNumber: p.referenceNumber,
-              recordedById: actor.id,
+              reference: p.reference,
             })),
           },
         },
@@ -285,9 +285,7 @@ export const saleService = {
             product: { select: { id: true, name: true, sku: true } },
           },
         },
-        payments: {
-          include: { recordedBy: { select: { id: true, name: true } } },
-        },
+        payments: true,
       },
     });
 
@@ -308,13 +306,16 @@ export const saleService = {
     }
 
     // If voiding, check it's not already voided
-    if (input.status === "VOIDED" && sale.status === "VOIDED") {
+    if (input.status === "CANCELLED" && sale.status === "CANCELLED") {
       throw new AppError(409, ErrorCode.SALE_ALREADY_VOIDED, "Sale is already voided");
     }
 
     return prisma.sale.update({
       where: { id },
-      data: input,
+      data: {
+        status: input.status,
+        cancelReason: input.voidReason ?? undefined,
+      },
     });
   },
 
@@ -331,7 +332,7 @@ export const saleService = {
     if (!sale) {
       throw new AppError(404, ErrorCode.SALE_NOT_FOUND, "Sale not found");
     }
-    if (sale.status === "VOIDED") {
+    if (sale.status === "CANCELLED") {
       throw new AppError(409, ErrorCode.SALE_ALREADY_VOIDED, "Sale is already voided");
     }
 
@@ -369,8 +370,8 @@ export const saleService = {
       await tx.sale.update({
         where: { id: sale.id },
         data: {
-          status: "VOIDED",
-          voidReason,
+          status: "CANCELLED",
+          cancelReason: voidReason,
         },
       });
     });

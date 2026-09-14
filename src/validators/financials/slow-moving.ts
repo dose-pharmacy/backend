@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { paginationQuerySchema, uuidSchema } from "../inventory/common.js";
+import { paginationQuerySchema, uuidSchema, optionalUuidQuery } from "../inventory/common.js";
 
 const definitionTypeEnum = z.enum(["DAYS_30", "DAYS_60", "DAYS_90", "DAYS_180", "CUSTOM"]);
 
@@ -16,7 +16,7 @@ export const updateSlowMovingConfigSchema = z.object({
 
 export const slowMovingConfigListQuerySchema = z
   .object({
-    productId: uuidSchema.optional(),
+    productId: optionalUuidQuery(),
     isFlagged: z.enum(["true", "false"]).optional(),
     definitionType: definitionTypeEnum.optional(),
   })

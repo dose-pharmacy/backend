@@ -46,7 +46,6 @@ import {
 import {
   createSaleSchema,
   updateSaleSchema,
-  createPaymentSchema,
   saleListQuerySchema,
   saleParamsSchema,
   voidSaleSchema,
@@ -181,16 +180,26 @@ financialsRouter.post(
   slowMovingConfigController.create,
 );
 financialsRouter.get(
-  "/slow-moving-configs/:id",
+  "/slow-moving-configs/flagged",
   ...admin,
-  validate({ params: slowMovingConfigParamsSchema }),
-  slowMovingConfigController.getById,
+  slowMovingConfigController.getFlagged,
+);
+financialsRouter.post(
+  "/slow-moving-configs/evaluate",
+  ...admin,
+  slowMovingConfigController.evaluate,
 );
 financialsRouter.get(
   "/slow-moving-configs/product/:productId",
   ...admin,
   validate({ params: slowMovingConfigProductParamsSchema }),
   slowMovingConfigController.getByProductId,
+);
+financialsRouter.get(
+  "/slow-moving-configs/:id",
+  ...admin,
+  validate({ params: slowMovingConfigParamsSchema }),
+  slowMovingConfigController.getById,
 );
 financialsRouter.patch(
   "/slow-moving-configs/:id",
@@ -203,16 +212,6 @@ financialsRouter.delete(
   ...admin,
   validate({ params: slowMovingConfigParamsSchema }),
   slowMovingConfigController.remove,
-);
-financialsRouter.post(
-  "/slow-moving-configs/evaluate",
-  ...admin,
-  slowMovingConfigController.evaluate,
-);
-financialsRouter.get(
-  "/slow-moving-configs/flagged",
-  ...admin,
-  slowMovingConfigController.getFlagged,
 );
 
 // ---------------------------------------------------------------------------
@@ -270,6 +269,12 @@ financialsRouter.post(
   saleController.create,
 );
 financialsRouter.get(
+  "/sales/detail",
+  ...admin,
+  validate({ query: saleDetailQuerySchema }),
+  saleController.getDetail,
+);
+financialsRouter.get(
   "/sales/:id",
   ...admin,
   validate({ params: saleParamsSchema }),
@@ -286,10 +291,4 @@ financialsRouter.post(
   ...admin,
   validate({ params: saleParamsSchema, body: voidSaleSchema }),
   saleController.voidSale,
-);
-financialsRouter.get(
-  "/sales/detail",
-  ...admin,
-  validate({ query: saleDetailQuerySchema }),
-  saleController.getDetail,
 );

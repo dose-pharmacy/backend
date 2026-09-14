@@ -186,7 +186,7 @@ export const slowMovingConfigService = {
 
     for (const config of configs) {
       const thresholdDays = getThresholdDays(config.definitionType, config.customDays);
-      const cutoffDate = addUtcDays(startOfTodayUtc(), -thresholdDays);
+      const _cutoffDate = addUtcDays(startOfTodayUtc(), -thresholdDays);
 
       // Find the last sale date for this product
       const lastSale = await prisma.saleLine.findFirst({

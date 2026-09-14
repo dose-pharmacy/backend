@@ -40,7 +40,7 @@ async function assertManufacturerExists(id: string) {
   }
 }
 
-async function assertManufacturerActive(id: string) {
+async function _assertManufacturerActive(id: string) {
   const m = await prisma.manufacturer.findUnique({
     where: { id },
     select: { id: true, isActive: true },

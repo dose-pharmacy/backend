@@ -18,6 +18,20 @@ export const unitParamsSchema = z.object({
 
 export const booleanQuerySchema = z.enum(["true", "false"]);
 
+/** Optional UUID filter that becomes undefined when blank/omitted. */
+export function optionalUuidQuery() {
+  return z.preprocess(
+    (value) => {
+      if (typeof value !== "string") {
+        return value;
+      }
+      const trimmed = value.trim();
+      return trimmed === "" ? undefined : trimmed;
+    },
+    uuidSchema.optional(),
+  );
+}
+
 /** Optional query string that becomes undefined when blank/omitted. */
 export function optionalQueryString(max = 200) {
   return z.preprocess(

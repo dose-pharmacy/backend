@@ -22,7 +22,7 @@ async function getProfitabilityReportFn(query: ProfitabilityReportQuery) {
   const { page, limit, skip, take } = resolvePagination(query);
   const { start, end } = getDateRange(query.dateFrom, query.dateTo);
 
-  const where: Prisma.SaleLineWhereInput = {
+  const where: Prisma.SaleItemWhereInput = {
     sale: {
       status: "COMPLETED",
       createdAt: { gte: start, lte: end },
@@ -35,14 +35,13 @@ async function getProfitabilityReportFn(query: ProfitabilityReportQuery) {
       : {}),
   };
 
-  const lines = await prisma.saleLine.findMany({
+  // Use SaleItem (has batch allocations) so we can compute real batch-level COGS.
+  const lines = await prisma.saleItem.findMany({
     where,
     select: {
       productId: true,
-      quantityBaseUnits: true,
+      baseQuantity: true,
       lineTotal: true,
-      itemDiscountAmount: true,
-      unitPrice: true,
       product: {
         select: {
           id: true,
@@ -52,13 +51,17 @@ async function getProfitabilityReportFn(query: ProfitabilityReportQuery) {
           genericProduct: { select: { id: true, name: true } },
           manufacturer: { select: { id: true, name: true } },
           productGroup: { select: { id: true, name: true } },
-          costPrice: true,
+        },
+      },
+      batchAllocations: {
+        select: {
+          baseQuantity: true,
+          batch: { select: { purchaseCost: true } },
         },
       },
     },
-  );
+  });
 
-  // Group by selected dimension
   const groupKeyFn = (line: typeof lines[0]) => {
     switch (query.groupBy) {
       case "BRAND":
@@ -73,22 +76,34 @@ async function getProfitabilityReportFn(query: ProfitabilityReportQuery) {
     }
   };
 
-  const groups = new Map<string, {
-    key: string;
-    revenue: number;
-    cost: number;
-    quantity: number;
-    productCount: Set<string>;
-  }>();
+  const groups = new Map<
+    string,
+    {
+      key: string;
+      revenue: number;
+      cost: number;
+      quantity: number;
+      productCount: Set<string>;
+    }
+  >();
 
   for (const line of lines) {
     const key = groupKeyFn(line);
     const revenue = line.lineTotal.toNumber();
-    const cost = line.product.costPrice?.toNumber() ?? 0;
-    const qty = line.quantityBaseUnits.toNumber();
-    const existing = groups.get(key) ?? { key, revenue: 0, cost: 0, quantity: 0, productCount: new Set() };
+    const qty = line.baseQuantity.toNumber();
+
+    let cost = 0;
+    for (const alloc of line.batchAllocations) {
+      const allocQty = alloc.baseQuantity.toNumber();
+      const batchCost = alloc.batch.purchaseCost?.toNumber() ?? 0;
+      cost += batchCost * allocQty;
+    }
+
+    const existing =
+      groups.get(key) ??
+      { key, revenue: 0, cost: 0, quantity: 0, productCount: new Set<string>() };
     existing.revenue += revenue;
-    existing.cost += cost * qty;
+    existing.cost += cost;
     existing.quantity += qty;
     existing.productCount.add(line.productId);
     groups.set(key, existing);
@@ -103,7 +118,7 @@ async function getProfitabilityReportFn(query: ProfitabilityReportQuery) {
     margin: g.revenue > 0 ? ((g.revenue - g.cost) / g.revenue) * 100 : 0,
     quantity: g.quantity,
     productCount: g.productCount.size,
-  });
+  }));
 
   items.sort((a, b) => b.profit - a.profit);
   const paginatedItems = items.slice(skip, skip + take);

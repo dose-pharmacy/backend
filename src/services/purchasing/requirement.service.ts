@@ -443,7 +443,7 @@ export const requirementService = {
         createdById: actor.id,
         lines: {
           create: items.map((item) => ({
-            productId: item.productId,
+            productId: item.product.id,
             quantityNeeded: item.suggestedQuantity,
             reasonCode: "REORDER_ALERT",
             notes: `Suggested by reorder (${item.calculationMethod})`,
