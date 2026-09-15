@@ -1,0 +1,861 @@
+{
+  "info": {
+    "name": "Pharmacy Purchasing & Supplier Management API",
+    "description": "Postman collection for Purchasing & Supplier Management module",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000",
+      "type": "string"
+    },
+    {
+      "key": "apiPrefix",
+      "value": "/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "authToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "supplierId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "requirementId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "requirementLineId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "purchaseOrderId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "goodsReceiptId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "invoiceId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "returnId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{authToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login (Email/Password)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/auth/sign-in/email",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@pharmacy.com\",\n  \"password\": \"your-password\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.session?.token) {",
+                  "    pm.collectionVariables.set('authToken', res.session.token);",
+                  "    console.log('Auth token saved');",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Suppliers",
+      "item": [
+        {
+          "name": "List Suppliers",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/suppliers?page=1&limit=20&search=",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Create Supplier",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/suppliers",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"ABC Pharmaceuticals\",\n  \"contactPerson\": \"John Smith\",\n  \"email\": \"john@abcpharma.com\",\n  \"phone\": \"+251-911-123456\",\n  \"address\": \"Bole Road, Addis Ababa\",\n  \"paymentTerms\": \"Net 30\",\n  \"isActive\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('supplierId', res.data.id);",
+                  "  console.log('Supplier ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Supplier by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/suppliers/{{supplierId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Update Supplier",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/suppliers/{{supplierId}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contactPerson\": \"Jane Doe\",\n  \"phone\": \"+251-922-654321\",\n  \"paymentTerms\": \"Net 45\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete Supplier",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/suppliers/{{supplierId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Purchase Requirements",
+      "item": [
+        {
+          "name": "List Requirements",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements?page=1&limit=20&status=OPEN",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Create Requirement",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requiredBy\": \"2026-10-15\",\n  \"notes\": \"Monthly restock for high-demand items\",\n  \"lines\": [\n    {\n      \"productId\": \"PRODUCT-UUID-HERE\",\n      \"quantityNeeded\": 500,\n      \"reasonCode\": \"LOW_STOCK\",\n      \"notes\": \"Paracetamol 500mg running low\"\n    },\n    {\n      \"productId\": \"ANOTHER-PRODUCT-UUID\",\n      \"quantityNeeded\": 200,\n      \"reasonCode\": \"REORDER_ALERT\",\n      \"notes\": \"Amoxicillin 250mg reorder point reached\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('requirementId', res.data.id);",
+                  "  console.log('Requirement ID saved:', res.data.id);",
+                  "  if (res.data.lines.length > 0) {",
+                  "    pm.collectionVariables.set('requirementLineId', res.data.lines[0].id);",
+                  "    console.log('First line ID saved:', res.data.lines[0].id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Requirement by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Update Requirement",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Updated: urgent restock needed\",\n  \"requiredBy\": \"2026-10-10\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Close Requirement",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}/close",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Delete Requirement",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Add Line to Requirement",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}/lines",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"THIRD-PRODUCT-UUID\",\n  \"quantityNeeded\": 100,\n  \"reasonCode\": \"MANUAL\",\n  \"notes\": \"Vitamin C 1000mg - seasonal demand\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Requirement Line",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/lines/{{requirementLineId}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantityNeeded\": 150,\n  \"notes\": \"Increased quantity based on latest sales\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Assign Supplier to Line",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/lines/{{requirementLineId}}/assign-supplier",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": \"{{supplierId}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Remove Requirement Line",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/lines/{{requirementLineId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Generate from Reorder Suggestions",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/generate-from-reorder",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Purchase Orders",
+      "item": [
+        {
+          "name": "List Purchase Orders",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders?page=1&limit=20&status=REGISTERED",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Create Purchase Order",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"expectedDeliveryDate\": \"2026-10-20\",\n  \"notes\": \"PO for monthly restock\",\n  \"items\": [\n    {\n      \"productId\": \"PRODUCT-UUID-HERE\",\n      \"quantityOrdered\": 500,\n      \"unitCost\": 15.50,\n      \"requirementLineId\": \"{{requirementLineId}}\"\n    },\n    {\n      \"productId\": \"ANOTHER-PRODUCT-UUID\",\n      \"quantityOrdered\": 200,\n      \"unitCost\": 45.00,\n      \"requirementLineId\": \"\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('purchaseOrderId', res.data.id);",
+                  "  console.log('Purchase Order ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Purchase Order by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Update Purchase Order",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"expectedDeliveryDate\": \"2026-10-25\",\n  \"notes\": \"Updated delivery date\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Mark as Awaiting Delivery",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/mark-delivered",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Cancel Purchase Order",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/cancel",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Close Purchase Order",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/close",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Goods Receipts",
+      "item": [
+        {
+          "name": "List Goods Receipts",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/goods-receipts?page=1&limit=20",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Create Goods Receipt (for PO)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/goods-receipts",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"receivedDate\": \"2026-10-22\",\n  \"discrepancyNote\": \"\",\n  \"items\": [\n    {\n      \"purchaseOrderItemId\": \"PO-ITEM-UUID-HERE\",\n      \"locationId\": \"LOCATION-UUID-HERE\",\n      \"deliveredQty\": 500,\n      \"actualQty\": 500,\n      \"batchNumber\": \"BATCH-2026-001\",\n      \"manufacturingDate\": \"2026-09-01\",\n      \"expiryDate\": \"2028-09-01\"\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('goodsReceiptId', res.data.id);",
+                  "  console.log('Goods Receipt ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Goods Receipt by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/goods-receipts/{{goodsReceiptId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Resolve Discrepancy",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/goods-receipts/{{goodsReceiptId}}/resolve",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"discrepancyNote\": \"Supplier confirmed 10 units damaged in transit\",\n  \"items\": [\n    {\n      \"id\": \"GR-ITEM-UUID-HERE\",\n      \"actualQty\": 490\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "Confirm Goods Receipt",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/goods-receipts/{{goodsReceiptId}}/confirm",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Delete Goods Receipt (unconfirmed)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/goods-receipts/{{goodsReceiptId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Supplier Invoices",
+      "item": [
+        {
+          "name": "List Supplier Invoices",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/supplier-invoices?page=1&limit=20&status=OPEN",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Create Supplier Invoice",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/supplier-invoices",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"invoiceNumber\": \"INV-2026-001\",\n  \"supplierId\": \"{{supplierId}}\",\n  \"purchaseOrderId\": \"{{purchaseOrderId}}\",\n  \"invoiceDate\": \"2026-10-25\",\n  \"dueDate\": \"2026-11-24\",\n  \"invoiceAmount\": 15500.00,\n  \"paymentTerms\": \"Net 30\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('invoiceId', res.data.id);",
+                  "  console.log('Invoice ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Invoice by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/supplier-invoices/{{invoiceId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Record Payment",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/supplier-invoices/{{invoiceId}}/payments",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 5000.00,\n  \"paymentDate\": \"2026-11-01\",\n  \"notes\": \"Partial payment via bank transfer\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Invoice",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/supplier-invoices/{{invoiceId}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dueDate\": \"2026-12-01\",\n  \"paymentTerms\": \"Net 45\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete Invoice",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/supplier-invoices/{{invoiceId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Purchase Returns",
+      "item": [
+        {
+          "name": "List Purchase Returns",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-returns?page=1&limit=20",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Create Purchase Return",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-returns",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"productId\": \"PRODUCT-UUID-HERE\",\n  \"batchId\": \"BATCH-UUID-HERE\",\n  \"locationId\": \"LOCATION-UUID-HERE\",\n  \"reason\": \"EXPIRED\",\n  \"quantity\": 50,\n  \"unitCost\": 15.50,\n  \"debitNoteAmount\": 775.00,\n  \"notes\": \"Return of expired batch BATCH-2026-001\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('returnId', res.data.id);",
+                  "  console.log('Return ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Purchase Return by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-returns/{{returnId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Delete Purchase Return",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-returns/{{returnId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

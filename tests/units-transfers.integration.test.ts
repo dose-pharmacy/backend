@@ -992,6 +992,10 @@ describe("inventory: transfer atomicity", () => {
   let locationAId: string;
   let locationBId: string;
 
+  function uniqueName(base: string): string {
+    return `${base} ${Date.now()}.${Math.random().toString(16).slice(2)}`;
+  }
+
   beforeAll(async () => {
     const admin = await signUpUser("units-atomicity");
     cookie = admin.cookie;
@@ -1001,7 +1005,7 @@ describe("inventory: transfer atomicity", () => {
     const tablet = await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
-      .send({ name: "Tablet" })
+      .send({ name: uniqueName("Tablet") })
       .expect(201);
     tabletId = tablet.body.data.id as string;
     unitIds.push(tabletId);
