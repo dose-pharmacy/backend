@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: pharmacy
       POSTGRES_DB: pharmacy
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
