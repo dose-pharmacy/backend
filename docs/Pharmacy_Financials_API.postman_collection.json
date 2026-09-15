@@ -1,0 +1,103 @@
+{
+  "info": {
+    "name": "Pharmacy Financials, Reporting & Analytics API",
+    "description": "Postman collection for Financials, Reporting & Analytics module (Module 5)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000", "type": "string" },
+    { "key": "apiPrefix", "value": "/api/v1", "type": "string" },
+    { "key": "authToken", "value": "", "type": "string" },
+    { "key": "genericProductId", "value": "", "type": "string" },
+    { "key": "manufacturerId", "value": "", "type": "string" },
+    { "key": "discountRuleId", "value": "", "type": "string" },
+    { "key": "slowMovingConfigId", "value": "", "type": "string" },
+    { "key": "saleId", "value": "", "type": "string" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{authToken}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login (Email/Password)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/auth/sign-in/email",
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"admin@pharmacy.com\",\n  \"password\": \"your-password\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 200) {", "  const res = pm.response.json();", "  if (res.session?.token) {", "    pm.collectionVariables.set('authToken', res.session.token);", "    console.log('Auth token saved');", "  }", "}"] } }]
+        }
+      ]
+    },
+    {
+      "name": "Generic Products",
+      "item": [
+        { "name": "List Generic Products", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/generic-products?page=1&limit=20&search=", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Create Generic Product", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/generic-products", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"name\": \"Paracetamol\",\n  \"description\": \"Generic analgesic and antipyretic\"\n}" } }, "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) {", "  const res = pm.response.json();", "  pm.collectionVariables.set('genericProductId', res.data.id);", "  console.log('Generic Product ID saved:', res.data.id);", "}"] } }] },
+        { "name": "Get Generic Product by ID", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/generic-products/{{genericProductId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Update Generic Product", "request": { "method": "PATCH", "url": "{{baseUrl}}{{apiPrefix}}/financials/generic-products/{{genericProductId}}", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"description\": \"Updated generic analgesic\"\n}" } } },
+        { "name": "Delete Generic Product", "request": { "method": "DELETE", "url": "{{baseUrl}}{{apiPrefix}}/financials/generic-products/{{genericProductId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
+      ]
+    },
+    {
+      "name": "Manufacturers",
+      "item": [
+        { "name": "List Manufacturers", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/manufacturers?page=1&limit=20&search=", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Create Manufacturer", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/manufacturers", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"name\": \"GSK\",\n  \"contactInfo\": \"GlaxoSmithKline Pharmaceuticals\",\n  \"isActive\": true\n}" } }, "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) {", "  const res = pm.response.json();", "  pm.collectionVariables.set('manufacturerId', res.data.id);", "  console.log('Manufacturer ID saved:', res.data.id);", "}"] } }] },
+        { "name": "Get Manufacturer by ID", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/manufacturers/{{manufacturerId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Update Manufacturer", "request": { "method": "PATCH", "url": "{{baseUrl}}{{apiPrefix}}/financials/manufacturers/{{manufacturerId}}", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"contactInfo\": \"Updated contact info\"\n}" } } },
+        { "name": "Delete Manufacturer", "request": { "method": "DELETE", "url": "{{baseUrl}}{{apiPrefix}}/financials/manufacturers/{{manufacturerId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
+      ]
+    },
+    {
+      "name": "Discount Authorization Rules",
+      "item": [
+        { "name": "List Discount Rules", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/discount-auth-rules?page=1&limit=20&scope=ITEM", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Create Discount Rule", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/discount-auth-rules", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"scope\": \"ITEM\",\n  \"maxDiscountPct\": 15.00,\n  \"roleRequiredAbove\": \"MANAGER\",\n  \"isActive\": true\n}" } }, "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) {", "  const res = pm.response.json();", "  pm.collectionVariables.set('discountRuleId', res.data.id);", "  console.log('Discount Rule ID saved:', res.data.id);", "}"] } }] },
+        { "name": "Get Discount Rule by ID", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/discount-auth-rules/{{discountRuleId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Update Discount Rule", "request": { "method": "PATCH", "url": "{{baseUrl}}{{apiPrefix}}/financials/discount-auth-rules/{{discountRuleId}}", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"maxDiscountPct\": 20.00\n}" } } },
+        { "name": "Delete Discount Rule", "request": { "method": "DELETE", "url": "{{baseUrl}}{{apiPrefix}}/financials/discount-auth-rules/{{discountRuleId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Check Discount Authorization", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/discount-auth-rules/check", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"scope\": \"ITEM\",\n  \"discountPct\": 20,\n  \"userRole\": \"CASHIER\"\n}" } } }
+      ]
+    },
+    {
+      "name": "Slow Moving Configuration",
+      "item": [
+        { "name": "List Slow Moving Configs", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs?page=1&limit=20", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Create Slow Moving Config", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"productId\": \"PRODUCT-UUID-HERE\",\n  \"definitionType\": \"DAYS_90\",\n  \"customDays\": 90\n}" } }, "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) {", "  const res = pm.response.json();", "  pm.collectionVariables.set('slowMovingConfigId', res.data.id);", "  console.log('Slow Moving Config ID saved:', res.data.id);", "}"] } }] },
+        { "name": "Get Slow Moving Config by ID", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs/{{slowMovingConfigId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Get Slow Moving Config by Product", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs/product/PRODUCT-UUID-HERE", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Update Slow Moving Config", "request": { "method": "PATCH", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs/{{slowMovingConfigId}}", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"definitionType\": \"CUSTOM\",\n  \"customDays\": 120\n}" } } },
+        { "name": "Delete Slow Moving Config", "request": { "method": "DELETE", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs/{{slowMovingConfigId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Evaluate Slow Moving (Run Analysis)", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs/evaluate", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Get Flagged Slow Moving Products", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/slow-moving-configs/flagged?page=1&limit=20", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
+      ]
+    },
+    {
+      "name": "Financial Reports",
+      "item": [
+        { "name": "Profit Margin Report", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/profit-margin?page=1&limit=20&productGroupId=&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Profitability Report", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/profitability?page=1&limit=20&groupBy=PRODUCT_GROUP&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Slow Moving Report", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/slow-moving?page=1&limit=20&isFlagged=true", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Sales Report (List)", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales?page=1&limit=20&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Sales Summary", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales/summary?dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Sales Detail (Drill-down)", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales/detail?page=1&limit=20&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
+      ]
+    },
+    {
+      "name": "Sales (POS)",
+      "item": [
+        { "name": "List Sales", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/sales?page=1&limit=20&status=COMPLETED", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Create Sale (POS)", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/sales", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"locationId\": \"LOCATION-UUID-HERE\",\n  \"lines\": [\n    {\n      \"productId\": \"PRODUCT-UUID-HERE\",\n      \"unitSold\": \"Tablet\",\n      \"quantity\": 10,\n      \"quantityBaseUnits\": 10,\n      \"unitPrice\": 5.00,\n      \"itemDiscountAmount\": 0\n    }\n  ],\n  \"billDiscountAmount\": 0,\n  \"payments\": [\n    {\n      \"method\": \"CASH\",\n      \"amount\": 50.00,\n      \"referenceNumber\": \"\"\n    }\n  ]\n}" } }, "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["if (pm.response.code === 201) {", "  const res = pm.response.json();", "  pm.collectionVariables.set('saleId', res.data.id);", "  console.log('Sale ID saved:', res.data.id);", "}"] } }] },
+        { "name": "Get Sale by ID", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/sales/{{saleId}}", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Void Sale", "request": { "method": "POST", "url": "{{baseUrl}}{{apiPrefix}}/financials/sales/{{saleId}}/void", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{authToken}}" }], "body": { "mode": "raw", "raw": "{\n  \"voidReason\": \"Customer returned items\"\n}" } } },
+        { "name": "Get Sales Detail (Drill-down)", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/sales/detail?page=1&limit=20&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
+      ]
+    }
+  ]
+}
