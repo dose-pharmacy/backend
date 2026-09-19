@@ -393,26 +393,33 @@ DELETE /slow-moving-configs/:id
 POST /slow-moving-configs/evaluate
 ```
 
-**Action:** Evaluates all configs against sales data, updates `isFlagged`, `lastSaleDate`, `daysSinceLastSale`
+**Action:** Recomputes `lastSaleDate`, `daysSinceLastSale` and `isFlagged` for every slow moving configuration.
+
+**Behaviour**
+- Uses **one grouped query** to fetch the latest valid (COMPLETED) sale per product — no per-config query.
+- Applies every configuration in **one atomic bulk update** inside a single transaction: the evaluation state is never partially written.
+- Guarded by a PostgreSQL transaction-scoped **advisory lock**: a second evaluation started while one is running exits with `409 CONFLICT`.
+- **Idempotent**: re-running with unchanged sales/configuration produces the same state, with no duplicate rows or side effects.
+- Thresholds: `DAYS_30` → 30, `DAYS_60` → 60, `DAYS_90` → 90, `DAYS_180` → 180, `CUSTOM` → `customDays` (must be 1–365). A product is flagged when `daysSinceLastSale >= thresholdDays`.
+- Products that have **never been sold** keep `lastSaleDate = null`, `daysSinceLastSale = null` and stay unflagged.
+- Configurations with an invalid stored `CUSTOM` definition are skipped (reported in `skipped`) rather than failing the run.
 
 **Response 200:**
 ```json
 {
   "success": true,
-  "data": [
-    {
-      "productId": "string",
-      "productName": "string",
-      "sku": "string",
-      "definitionType": "string",
-      "thresholdDays": "integer",
-      "lastSaleDate": "ISO8601 datetime|null",
-      "daysSinceLastSale": "integer|null",
-      "isFlagged": "boolean"
-    }
-  ]
+  "data": {
+    "evaluated": 420,
+    "flagged": 24,
+    "unflagged": 396,
+    "skipped": 0,
+    "evaluatedAt": "2026-09-19T18:30:00.000Z",
+    "durationMs": 350
+  }
 }
 ```
+
+**Response 409:** another evaluation is already running.
 
 ---
 
@@ -428,6 +435,24 @@ GET /slow-moving-configs/flagged
 ---
 
 ## 📊 Financial Reports
+
+### Reporting conventions
+
+All report endpoints share one predictable contract.
+
+**Envelope**
+- Paginated endpoints: `{ "success": true, "data": [...], "meta": { "page", "limit", "total", "totalPages" } }`. `total`/`totalPages` describe the **entire filtered dataset**, never just the fetched page.
+- Summary/trend endpoints: `{ "success": true, "data": ... }` with no pagination metadata.
+
+**Pagination** — `page >= 1` (default 1) and `1 <= limit <= 100` (default 20). Out-of-range values are rejected with `422`.
+
+**Date filtering** — `dateFrom` / `dateTo` are ISO8601 and are **inclusive of the whole UTC day**: `dateTo = 2026-09-19` includes everything up to `2026-09-19T23:59:59.999Z`. Omitting both defaults to the last 30 days ending today. `dateFrom > dateTo` is rejected with `422`.
+
+**Sorting** — list endpoints accept `sortBy` + `sortOrder` (`asc` | `desc`). `sortBy` is validated against a per-endpoint allowlist and rejected with `422` when unknown; arbitrary column names can never reach the database.
+
+**Valid sales** — every report counts only sales with `status = COMPLETED` (cancelled/voided sales are excluded) and reads sale lines from the canonical `SaleItem` table, using batch allocations for real cost of goods sold.
+
+---
 
 ### Profit Margin Report
 ```
@@ -466,6 +491,32 @@ GET /reports/profit-margin
 }
 ```
 
+**Sorting:** `productName`, `actualMargin`, `targetMargin`, `revenue`, `cost`, `quantitySold`, `sellingPrice`
+
+---
+
+### Profit Margin Summary
+```
+GET /reports/profit-margin/summary
+```
+
+**Query Parameters:** `productGroupId`, `dateFrom`, `dateTo`
+
+Aggregates over the **complete filtered product set** (no pagination). Products with no sales in the window keep `actualMargin = targetMargin`, so they are not reported as below target. Zero revenue, zero quantity and missing target margins are handled without yielding `NaN` or `Infinity`.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": {
+    "productCount": 120,
+    "belowTargetCount": 18,
+    "averageTargetMargin": 30,
+    "averageActualMargin": 27.5
+  }
+}
+```
+
 ---
 
 ### Profitability Report
@@ -501,6 +552,34 @@ GET /reports/profitability
 }
 ```
 
+**Sorting:** `profit`, `revenue`, `cost`, `margin`, `quantity`, `productCount`, `value`
+
+---
+
+### Profitability Summary
+```
+GET /reports/profitability/summary
+```
+
+**Query Parameters:** `groupBy`, `productGroupId`, `manufacturerId`, `dateFrom`, `dateTo`
+
+Totals for the **entire filtered dataset**, computed in the database — the frontend must never sum a page of records to derive financial totals. `margin` is a percentage and is `0` when revenue is `0`.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": {
+    "revenue": 1500000,
+    "cost": 900000,
+    "profit": 600000,
+    "margin": 40,
+    "quantity": 5000,
+    "productCount": 120
+  }
+}
+```
+
 ---
 
 ### Slow Moving Report
@@ -514,6 +593,32 @@ GET /reports/slow-moving
 
 ---
 
+### Sales Trend (time series)
+```
+GET /reports/sales/trend
+```
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `period` | enum | `DAILY` (default), `MONTHLY`, `ANNUAL` |
+| `dateFrom`, `dateTo` | ISO8601 | Inclusive UTC day range |
+| `locationId` | UUID | Filter by location |
+
+Buckets are produced **in the database** (`date_trunc` + `GROUP BY`). Revenue and `transactionCount` come from the sale header, so a sale with several lines is counted once; `quantitySold` comes from the sale lines. Periods with no sales are returned as zero buckets rather than omitted, and `period` is formatted as `YYYY-MM-DD` / `YYYY-MM` / `YYYY`.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": [
+    { "period": "2026-09-01", "revenue": 85000, "transactionCount": 12, "quantitySold": 320 }
+  ]
+}
+```
+
+---
+
 ### Sales Report (List)
 ```
 GET /reports/sales
@@ -522,13 +627,12 @@ GET /reports/sales
 **Query Parameters:**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `period` | enum | DAILY, MONTHLY, ANNUAL |
-| `dateFrom`, `dateTo` | ISO8601 | Date range |
-| `productGroupId` | UUID | Filter by group |
-| `manufacturerId` | UUID | Filter by manufacturer |
+| `dateFrom`, `dateTo` | ISO8601 | Inclusive UTC day range |
 | `locationId` | UUID | Filter by location |
+| `page`, `limit` | integer | Pagination |
+| `sortBy`, `sortOrder` | enum | `createdAt` (default), `saleNumber`, `totalAmount`, `paidAmount` |
 
-**Response 200:** Sales with lines, payments, location, cashier
+**Response 200:** Sales with their lines (`items`), payments, location and cashier. `lines` was replaced by `items` because the previous field read a legacy, unpopulated table.
 
 ---
 
@@ -790,9 +894,12 @@ Config created → Manual/auto evaluate → isFlagged updated
 | POST | `/slow-moving-configs/evaluate` | Run evaluation |
 | GET | `/slow-moving-configs/flagged` | Get flagged products |
 | GET | `/reports/profit-margin` | Profit margin report |
+| GET | `/reports/profit-margin/summary` | Profit margin summary |
 | GET | `/reports/profitability` | Profitability report |
+| GET | `/reports/profitability/summary` | Profitability summary |
 | GET | `/reports/slow-moving` | Slow moving report |
 | GET | `/reports/sales` | Sales report |
+| GET | `/reports/sales/trend` | Sales trend time series |
 | GET | `/reports/sales/summary` | Sales summary |
 | GET | `/reports/sales/detail` | Sales detail |
 | GET | `/sales` | List sales |
@@ -802,4 +909,4 @@ Config created → Manual/auto evaluate → isFlagged updated
 | POST | `/sales/:id/void` | Void sale |
 | GET | `/sales/detail` | Sales detail drill-down |
 
-**Total: 44 endpoints**
+**Total: 47 endpoints**

@@ -39,8 +39,8 @@ export const purchaseOrderController = {
     sendSuccess(res, data);
   }),
 
-  markDelivered: asyncHandler(async (req: Request, res: Response) => {
-    const data = await purchaseOrderService.markDelivered(req.params.id as string);
+  markAwaitingDelivery: asyncHandler(async (req: Request, res: Response) => {
+    const data = await purchaseOrderService.markAwaitingDelivery(req.params.id as string);
     sendSuccess(res, data);
   }),
 

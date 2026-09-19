@@ -22,7 +22,6 @@ import {
   updateRequirementSchema,
   addRequirementLineSchema,
   updateRequirementLineSchema,
-  assignSupplierToLineSchema,
   requirementListQuerySchema,
   requirementParamsSchema,
   requirementLineParamsSchema,
@@ -149,12 +148,7 @@ purchasingRouter.patch(
   validate({ params: requirementLineParamsSchema, body: updateRequirementLineSchema }),
   requirementController.updateLine,
 );
-purchasingRouter.post(
-  "/requirements/lines/:lineId/assign-supplier",
-  ...admin,
-  validate({ params: requirementLineParamsSchema, body: assignSupplierToLineSchema }),
-  requirementController.assignSupplier,
-);
+
 purchasingRouter.delete(
   "/requirements/lines/:lineId",
   ...admin,
@@ -196,10 +190,10 @@ purchasingRouter.post(
   purchaseOrderController.cancel,
 );
 purchasingRouter.post(
-  "/purchase-orders/:id/mark-delivered",
+  "/purchase-orders/:id/mark-awaiting-delivery",
   ...admin,
   validate({ params: purchaseOrderParamsSchema }),
-  purchaseOrderController.markDelivered,
+  purchaseOrderController.markAwaitingDelivery,
 );
 purchasingRouter.post(
   "/purchase-orders/:id/close",

@@ -10,6 +10,7 @@ import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.j
 import { toDecimal } from "../../utils/decimal.js";
 import { prisma } from "../../database/prisma.js";
 import type { PageQuery } from "../../utils/pagination.js";
+import { calculateStockStatus } from "./inventory-product.service.js";
 
 export type ProductUnitConfigInput = {
   /** Id of a reusable master Unit (e.g. \"Box\"). */
@@ -184,6 +185,9 @@ export const productService = {
       productRepository.countUsages(id),
     ]);
 
+    // stock status
+    const StockStatus = calculateStockStatus(totalQuantity.toNumber(), product.minimumStock, product.reorderPoint);
+
     const baseUnit = units.find((u) => u.isBaseUnit)?.unit ?? null;
 
     return {
@@ -191,6 +195,7 @@ export const productService = {
       baseUnit,
       units,
       stockSummary: {
+        stockStatus: StockStatus,
         totalQuantity,
         baseUnit,
         byLocation,

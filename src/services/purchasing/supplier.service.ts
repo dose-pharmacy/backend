@@ -259,7 +259,6 @@ export const supplierService = {
       prisma.purchaseOrder.count({ where: { supplierId: id } }),
       prisma.supplierInvoice.count({ where: { supplierId: id } }),
       prisma.purchaseReturn.count({ where: { supplierId: id } }),
-      prisma.purchaseRequirementLine.count({ where: { supplierId: id } }),
       prisma.expiryAction.count({ where: { supplierId: id } }),
       prisma.batch.count({ where: { supplierId: id } }),
     ]);
@@ -274,9 +273,8 @@ export const supplierService = {
           purchaseOrders: usages[0],
           supplierInvoices: usages[1],
           purchaseReturns: usages[2],
-          requirementLines: usages[3],
-          expiryActions: usages[4],
-          batches: usages[5],
+          expiryActions: usages[3],
+          batches: usages[4],
         }
       );
     }

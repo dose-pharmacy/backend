@@ -64,7 +64,6 @@ enum ExpiryActionType {
 
 enum PurchaseRequirementStatus {
   OPEN
-  ASSIGNED
   CLOSED
 }
 
@@ -518,7 +517,6 @@ model Supplier {
 
   batches            Batch[]
   expiryActions      ExpiryAction[]
-  requirements       PurchaseRequirementLine[]
   purchaseOrders     PurchaseOrder[]
   goodsReceipts      GoodsReceipt[]
   supplierInvoices   SupplierInvoice[]
@@ -557,8 +555,6 @@ model PurchaseRequirementLine {
   quantityNeeded      Decimal  @db.Decimal(14, 3)
   quantityDelivered   Decimal  @default(0) @db.Decimal(14, 3)
   reasonCode          PurchaseRequirementReason?
-  supplierId          String?
-  supplier            Supplier? @relation(fields: [supplierId], references: [id])
   status              PurchaseRequirementStatus @default(OPEN)
   notes               String?
   createdAt           DateTime @default(now())
@@ -567,7 +563,6 @@ model PurchaseRequirementLine {
 
   @@unique([requirementId, productId])
   @@index([productId])
-  @@index([supplierId])
   @@map("purchase_requirement_line")
 }
 
@@ -770,6 +765,11 @@ model Sale {
   @@index([status])
   @@index([cashierId])
   @@index([createdAt])
+  // Reporting scans filter on status + a createdAt range (optionally by
+  // location). Composite indexes match those predicates directly instead of
+  // intersecting the single-column indexes above.
+  @@index([status, createdAt])
+  @@index([status, locationId, createdAt])
   @@map("sale")
 }
 
@@ -918,5 +918,7 @@ model SlowMovingConfiguration {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  @@index([isFlagged])
+  @@index([definitionType])
   @@map("slow_moving_configuration")
 }

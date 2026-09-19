@@ -435,10 +435,9 @@ export const goodsReceiptService = {
             where: { requirementId: reqLine.requirementId },
             select: { status: true },
           });
-          let newStatus: "OPEN" | "ASSIGNED" | "CLOSED";
-          if (lines.every((l) => l.status === "CLOSED")) newStatus = "CLOSED";
-          else if (lines.some((l) => l.status === "ASSIGNED")) newStatus = "ASSIGNED";
-          else newStatus = "OPEN";
+          const newStatus = lines.length > 0 && lines.every((l) => l.status === "CLOSED")
+            ? "CLOSED"
+            : "OPEN";
 
           await prisma.purchaseRequirement.update({
             where: { id: reqLine.requirementId },

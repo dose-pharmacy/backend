@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { requirementService, type CreateRequirementInput, type RequirementListQuery, type UpdateRequirementInput, type AddRequirementLineInput, type UpdateRequirementLineInput, type AssignSupplierToLineInput } from "../../services/purchasing/requirement.service.js";
+import { requirementService, type CreateRequirementInput, type RequirementListQuery, type UpdateRequirementInput, type AddRequirementLineInput, type UpdateRequirementLineInput } from "../../services/purchasing/requirement.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
@@ -52,10 +52,7 @@ export const requirementController = {
     sendSuccess(res, data);
   }),
 
-  assignSupplier: asyncHandler(async (req: Request, res: Response) => {
-    const data = await requirementService.assignSupplier(req.params.lineId as string, req.body as AssignSupplierToLineInput);
-    sendSuccess(res, data);
-  }),
+
 
   removeLine: asyncHandler(async (req: Request, res: Response) => {
     await requirementService.removeLine(req.params.lineId as string);

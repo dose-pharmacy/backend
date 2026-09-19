@@ -61,21 +61,18 @@ async function assertProductActive(productId: string): Promise<void> {
   }
 }
 
-async function assertRequirementLine(lineId: string, supplierId: string): Promise<void> {
+async function assertRequirementLine(lineId: string): Promise<{ id: string; requirementId: string; quantityNeeded: number; status: string }> {
   const line = await prisma.purchaseRequirementLine.findUnique({
     where: { id: lineId },
-    select: { id: true, supplierId: true, status: true },
+    select: { id: true, requirementId: true, quantityNeeded: true, status: true },
   });
   if (!line) {
     throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
   }
-  if (line.supplierId && line.supplierId !== supplierId) {
-    throw new AppError(
-      422,
-      ErrorCode.PO_REQUIREMENT_LINE_SUPPLIER_MISMATCH,
-      "Requirement line is assigned to a different supplier"
-    );
+  if (line.status === "CLOSED") {
+    throw new AppError(409, ErrorCode.REQUIREMENT_CLOSED, "Requirement line is already closed");
   }
+  return { ...line, quantityNeeded: Number(line.quantityNeeded) };
 }
 
 export const purchaseOrderService = {
@@ -122,10 +119,28 @@ export const purchaseOrderService = {
       await assertProductActive(pid);
     }
 
-    // Validate requirement lines if provided
+    // Validate requirement lines and check for over-ordering
     for (const item of input.items) {
       if (item.requirementLineId) {
-        await assertRequirementLine(item.requirementLineId, input.supplierId);
+        const reqLine = await assertRequirementLine(item.requirementLineId);
+
+        // Sum already-ordered quantities (excluding cancelled POs) within a serialisable check
+        const existingOrdered = await prisma.purchaseOrderItem.aggregate({
+          where: {
+            requirementLineId: item.requirementLineId,
+            purchaseOrder: { status: { notIn: ["CANCELLED"] } },
+          },
+          _sum: { quantityOrdered: true },
+        });
+        const alreadyOrdered = existingOrdered._sum.quantityOrdered?.toNumber() ?? 0;
+        const newTotal = alreadyOrdered + item.quantityOrdered;
+        if (newTotal > reqLine.quantityNeeded) {
+          throw new AppError(
+            422,
+            ErrorCode.PO_OVER_ORDER,
+            `Over-ordering: need ${reqLine.quantityNeeded}, already ordered ${alreadyOrdered}, cannot add ${item.quantityOrdered} more`
+          );
+        }
       }
     }
 
@@ -159,37 +174,6 @@ export const purchaseOrderService = {
         },
       },
     });
-
-    // Update requirement lines status to ASSIGNED if linked
-    const requirementLineIds = input.items
-      .filter((i) => i.requirementLineId)
-      .map((i) => i.requirementLineId!);
-    if (requirementLineIds.length > 0) {
-      await prisma.purchaseRequirementLine.updateMany({
-        where: { id: { in: requirementLineIds } },
-        data: { status: "ASSIGNED" },
-      });
-      // Recompute requirement statuses
-      const requirements = await prisma.purchaseRequirementLine.findMany({
-        where: { id: { in: requirementLineIds } },
-        select: { requirementId: true },
-        distinct: ["requirementId"],
-      });
-      for (const req of requirements) {
-        const lines = await prisma.purchaseRequirementLine.findMany({
-          where: { requirementId: req.requirementId },
-          select: { status: true },
-        });
-        let newStatus: "OPEN" | "ASSIGNED" | "CLOSED";
-        if (lines.every((l) => l.status === "CLOSED")) newStatus = "CLOSED";
-        else if (lines.some((l) => l.status === "ASSIGNED")) newStatus = "ASSIGNED";
-        else newStatus = "OPEN";
-        await prisma.purchaseRequirement.update({
-          where: { id: req.requirementId },
-          data: { status: newStatus },
-        });
-      }
-    }
 
     return po;
   },
@@ -273,34 +257,10 @@ export const purchaseOrderService = {
       data: { status: "CANCELLED" },
     });
 
-    // Reset linked requirement lines back to OPEN if no other POs cover them
-    const items = await prisma.purchaseOrderItem.findMany({
-      where: { purchaseOrderId: id, requirementLineId: { not: null } },
-      select: { requirementLineId: true },
-    });
-    const lineIds = [...new Set(items.map((i) => i.requirementLineId!).filter(Boolean))];
-    if (lineIds.length > 0) {
-      // Check if each line has other non-cancelled POs
-      for (const lineId of lineIds) {
-        const otherPOs = await prisma.purchaseOrderItem.count({
-          where: {
-            requirementLineId: lineId,
-            purchaseOrder: { status: { notIn: ["CANCELLED", "CLOSED"] } },
-          },
-        });
-        if (otherPOs === 0) {
-          await prisma.purchaseRequirementLine.update({
-            where: { id: lineId },
-            data: { status: "OPEN" },
-          });
-        }
-      }
-    }
-
     return this.getById(id);
   },
 
-  async markDelivered(id: string) {
+  async markAwaitingDelivery(id: string) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id },
       select: { id: true, status: true },

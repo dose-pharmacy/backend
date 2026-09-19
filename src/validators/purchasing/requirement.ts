@@ -31,9 +31,6 @@ export const updateRequirementLineSchema = z.object({
   status: requirementStatusEnum.optional(),
 });
 
-export const assignSupplierToLineSchema = z.object({
-  supplierId: uuidSchema,
-});
 
 export const requirementListQuerySchema = z
   .object({

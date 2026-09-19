@@ -225,17 +225,15 @@ export const purchaseReturnService = {
     return returnRecord;
   },
 
-  async remove(id: string) {
-    const returnRecord = await prisma.purchaseReturn.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (!returnRecord) {
-      throw new AppError(404, ErrorCode.PURCHASE_RETURN_NOT_FOUND, "Purchase return not found");
-    }
-
-    // Note: This does NOT reverse the stock movement - returns are typically not deleted
-    // but we allow it with a warning. The stock movement remains for audit trail.
-    await prisma.purchaseReturn.delete({ where: { id } });
+  async remove(_id: string) {
+    // Purchase returns are immutable once created because a RETURN_TO_SUPPLIER
+    // stock movement has already been recorded. Deleting the return record
+    // without reversing the movement would create an audit inconsistency.
+    // Use a cancellation/reversal workflow instead if needed in the future.
+    throw new AppError(
+      409,
+      ErrorCode.PURCHASE_RETURN_IMMUTABLE,
+      "Purchase returns cannot be deleted. The associated stock movement has already been recorded. Contact your administrator if a reversal is required."
+    );
   },
 };

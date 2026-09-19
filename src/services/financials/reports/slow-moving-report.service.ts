@@ -1,7 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../../utils/pagination.js";
-import { startOfTodayUtc, addUtcDays } from "../../../utils/date-time.js";
+import { resolveSort, type SortOrder } from "../../../utils/reporting/sort.js";
+import { resolveThresholdDays } from "./slow-moving-evaluation.js";
 import type { PageQuery } from "../../../utils/pagination.js";
 
 export type SlowMovingReportQuery = PageQuery & {
@@ -9,22 +10,33 @@ export type SlowMovingReportQuery = PageQuery & {
   manufacturerId?: string;
   isFlagged?: boolean;
   definitionType?: "DAYS_30" | "DAYS_60" | "DAYS_90" | "DAYS_180" | "CUSTOM";
+  sortBy?: string;
+  sortOrder?: string;
 };
 
-function getThresholdDays(definitionType: string, customDays?: number | null): number {
-  switch (definitionType) {
-    case "DAYS_30":
-      return 30;
-    case "DAYS_60":
-      return 60;
-    case "DAYS_90":
-      return 90;
-    case "DAYS_180":
-      return 180;
-    case "CUSTOM":
-      return customDays ?? 90;
+export const SLOW_MOVING_REPORT_SORT_FIELDS = [
+  "daysSinceLastSale",
+  "lastSaleDate",
+  "productName",
+  "updatedAt",
+] as const;
+export type SlowMovingReportSortField =
+  (typeof SLOW_MOVING_REPORT_SORT_FIELDS)[number];
+
+function buildSlowMovingOrderBy(
+  field: SlowMovingReportSortField,
+  order: SortOrder,
+): Prisma.SlowMovingConfigurationOrderByWithRelationInput {
+  switch (field) {
+    case "daysSinceLastSale":
+      return { daysSinceLastSale: order };
+    case "lastSaleDate":
+      return { lastSaleDate: order };
+    case "productName":
+      return { product: { name: order } };
+    case "updatedAt":
     default:
-      return 90;
+      return { updatedAt: order };
   }
 }
 
@@ -41,6 +53,12 @@ async function getSlowMovingReportFn(query: SlowMovingReportQuery) {
       ? { product: { manufacturerId: query.manufacturerId } }
       : {}),
   };
+
+  const { field, order } = resolveSort(query, {
+    allowed: SLOW_MOVING_REPORT_SORT_FIELDS,
+    defaultField: "updatedAt",
+    defaultOrder: "desc",
+  });
 
   const [items, total] = await prisma.$transaction([
     prisma.slowMovingConfiguration.findMany({
@@ -62,8 +80,8 @@ async function getSlowMovingReportFn(query: SlowMovingReportQuery) {
             stock: { select: { quantity: true } },
           },
         },
-      }, // <-- this closing brace was missing
-      orderBy: { updatedAt: "desc" },
+      },
+      orderBy: buildSlowMovingOrderBy(field, order),
       skip,
       take,
     }),
@@ -73,17 +91,20 @@ async function getSlowMovingReportFn(query: SlowMovingReportQuery) {
   const itemsWithStock = items.map((config) => {
     const unitCost = config.product.units[0]?.purchasePrice?.toNumber() ?? 0;
     const totalStock = config.product.stock.reduce(
-      (sum, s) => sum + s.quantity.toNumber(),
+      (sum, level) => sum + level.quantity.toNumber(),
       0,
     );
-    const stockValue = totalStock * unitCost;
 
     return {
       ...config,
+      thresholdDays: resolveThresholdDays(
+        config.definitionType,
+        config.customDays,
+      ),
       product: {
         ...config.product,
         totalStock,
-        stockValue,
+        stockValue: totalStock * unitCost,
       },
     };
   });

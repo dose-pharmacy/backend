@@ -34,15 +34,11 @@ export type UpdateRequirementLineInput = Partial<{
   quantityNeeded: number;
   reasonCode: "LOW_STOCK" | "REORDER_ALERT" | "MANUAL";
   notes: string | null;
-  status: "OPEN" | "ASSIGNED" | "CLOSED";
+  status: "OPEN" | "CLOSED";
 }>;
 
-export type AssignSupplierToLineInput = {
-  supplierId: string;
-};
-
 export type RequirementListQuery = PageQuery & {
-  status?: "OPEN" | "ASSIGNED" | "CLOSED";
+  status?: "OPEN" | "CLOSED";
   search?: string;
 };
 
@@ -52,10 +48,12 @@ export type RequirementLineWithRelations = {
   productId: string;
   product: { id: string; name: string; sku: string };
   quantityNeeded: number;
+  quantityOrdered: number;
   quantityDelivered: number;
+  quantityRemaining: number;
+  remainingToOrder: number;
+  remainingToReceive: number;
   reasonCode: string | null;
-  supplierId: string | null;
-  supplier: { id: string; name: string } | null;
   status: string;
   notes: string | null;
   createdAt: Date;
@@ -106,11 +104,9 @@ async function recomputeRequirementStatus(requirementId: string): Promise<void> 
     select: { status: true },
   });
 
-  let newStatus: "OPEN" | "ASSIGNED" | "CLOSED";
-  if (lines.every((l) => l.status === "CLOSED")) {
+  let newStatus: "OPEN" | "CLOSED";
+  if (lines.length > 0 && lines.every((l) => l.status === "CLOSED")) {
     newStatus = "CLOSED";
-  } else if (lines.some((l) => l.status === "ASSIGNED")) {
-    newStatus = "ASSIGNED";
   } else {
     newStatus = "OPEN";
   }
@@ -150,7 +146,10 @@ export const requirementService = {
           lines: {
             include: {
               product: { select: { id: true, name: true, sku: true } },
-              supplier: { select: { id: true, name: true } },
+              purchaseOrderItems: {
+                where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
+                select: { quantityOrdered: true },
+              },
             },
           },
           createdBy: { select: { id: true, name: true } },
@@ -162,7 +161,38 @@ export const requirementService = {
       prisma.purchaseRequirement.count({ where }),
     ]);
 
-    return { items, meta: buildPaginationMeta(total, page, limit) };
+    // Map lines to include calculated progress
+    const mappedItems = items.map(req => ({
+      ...req,
+      lines: req.lines.map(line => {
+        const qtyNeeded = line.quantityNeeded.toNumber();
+        const qtyDelivered = line.quantityDelivered.toNumber();
+        const qtyOrdered = line.purchaseOrderItems.reduce(
+          (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+          0
+        );
+
+        return {
+          id: line.id,
+          requirementId: line.requirementId,
+          productId: line.productId,
+          product: line.product,
+          quantityNeeded: qtyNeeded,
+          quantityOrdered: qtyOrdered,
+          quantityDelivered: qtyDelivered,
+          quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+          remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+          remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+          reasonCode: line.reasonCode,
+          status: line.status,
+          notes: line.notes,
+          createdAt: line.createdAt,
+          updatedAt: line.updatedAt,
+        };
+      }),
+    }));
+
+    return { items: mappedItems, meta: buildPaginationMeta(total, page, limit) };
   },
 
   async create(input: CreateRequirementInput, actor: Pick<AuthenticatedUser, "id">) {
@@ -199,14 +229,43 @@ export const requirementService = {
         lines: {
           include: {
             product: { select: { id: true, name: true, sku: true } },
-            supplier: { select: { id: true, name: true } },
+            purchaseOrderItems: {
+              where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
+              select: { quantityOrdered: true },
+            },
           },
         },
         createdBy: { select: { id: true, name: true } },
       },
     });
 
-    return requirement;
+    const mappedLines = requirement.lines.map((line) => {
+      const qtyNeeded = line.quantityNeeded.toNumber();
+      const qtyDelivered = line.quantityDelivered.toNumber();
+      const qtyOrdered = line.purchaseOrderItems.reduce(
+        (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+        0
+      );
+      return {
+        id: line.id,
+        requirementId: line.requirementId,
+        productId: line.productId,
+        product: line.product,
+        quantityNeeded: qtyNeeded,
+        quantityOrdered: qtyOrdered,
+        quantityDelivered: qtyDelivered,
+        quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+        remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+        remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+        reasonCode: line.reasonCode,
+        status: line.status,
+        notes: line.notes,
+        createdAt: line.createdAt,
+        updatedAt: line.updatedAt,
+      };
+    });
+
+    return { ...requirement, lines: mappedLines };
   },
 
   async getById(id: string): Promise<RequirementWithLines> {
@@ -216,8 +275,8 @@ export const requirementService = {
         lines: {
           include: {
             product: { select: { id: true, name: true, sku: true } },
-            supplier: { select: { id: true, name: true } },
             purchaseOrderItems: {
+              where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
               select: { id: true, purchaseOrderId: true, quantityOrdered: true },
             },
           },
@@ -230,21 +289,39 @@ export const requirementService = {
       throw new AppError(404, ErrorCode.REQUIREMENT_NOT_FOUND, "Requirement not found");
     }
 
-    // Convert Decimal fields to numbers for API compatibility
-    return {
-      ...requirement,
-      lines: requirement.lines.map((line) => ({
-        ...line,
-        quantityNeeded: line.quantityNeeded.toNumber(),
-        quantityDelivered: line.quantityDelivered.toNumber(),
-      })),
-    };
+    const mappedLines = requirement.lines.map((line) => {
+      const qtyNeeded = line.quantityNeeded.toNumber();
+      const qtyDelivered = line.quantityDelivered.toNumber();
+      const qtyOrdered = line.purchaseOrderItems.reduce(
+        (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+        0
+      );
+      return {
+        id: line.id,
+        requirementId: line.requirementId,
+        productId: line.productId,
+        product: line.product,
+        quantityNeeded: qtyNeeded,
+        quantityOrdered: qtyOrdered,
+        quantityDelivered: qtyDelivered,
+        quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+        remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+        remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+        reasonCode: line.reasonCode,
+        status: line.status,
+        notes: line.notes,
+        createdAt: line.createdAt,
+        updatedAt: line.updatedAt,
+      };
+    });
+
+    return { ...requirement, lines: mappedLines };
   },
 
   async update(id: string, input: UpdateRequirementInput) {
     await assertRequirementOpen(id);
 
-    return prisma.purchaseRequirement.update({
+    const updatedReq = await prisma.purchaseRequirement.update({
       where: { id },
       data: {
         requiredBy: input.requiredBy,
@@ -254,11 +331,42 @@ export const requirementService = {
         lines: {
           include: {
             product: { select: { id: true, name: true, sku: true } },
-            supplier: { select: { id: true, name: true } },
+            purchaseOrderItems: {
+              where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
+              select: { quantityOrdered: true },
+            },
           },
         },
       },
     });
+
+    const mappedLines = updatedReq.lines.map((line) => {
+      const qtyNeeded = line.quantityNeeded.toNumber();
+      const qtyDelivered = line.quantityDelivered.toNumber();
+      const qtyOrdered = line.purchaseOrderItems.reduce(
+        (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+        0
+      );
+      return {
+        id: line.id,
+        requirementId: line.requirementId,
+        productId: line.productId,
+        product: line.product,
+        quantityNeeded: qtyNeeded,
+        quantityOrdered: qtyOrdered,
+        quantityDelivered: qtyDelivered,
+        quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+        remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+        remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+        reasonCode: line.reasonCode,
+        status: line.status,
+        notes: line.notes,
+        createdAt: line.createdAt,
+        updatedAt: line.updatedAt,
+      };
+    });
+
+    return { ...updatedReq, lines: mappedLines };
   },
 
   async addLine(requirementId: string, input: AddRequirementLineInput) {
@@ -284,12 +392,39 @@ export const requirementService = {
       },
       include: {
         product: { select: { id: true, name: true, sku: true } },
-        supplier: { select: { id: true, name: true } },
+        purchaseOrderItems: {
+          where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
+          select: { quantityOrdered: true },
+        },
       },
     });
 
     await recomputeRequirementStatus(requirementId);
-    return line;
+
+    const qtyNeeded = line.quantityNeeded.toNumber();
+    const qtyDelivered = line.quantityDelivered.toNumber();
+    const qtyOrdered = line.purchaseOrderItems.reduce(
+      (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+      0
+    );
+
+    return {
+      id: line.id,
+      requirementId: line.requirementId,
+      productId: line.productId,
+      product: line.product,
+      quantityNeeded: qtyNeeded,
+      quantityOrdered: qtyOrdered,
+      quantityDelivered: qtyDelivered,
+      quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+      remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+      remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+      reasonCode: line.reasonCode,
+      status: line.status,
+      notes: line.notes,
+      createdAt: line.createdAt,
+      updatedAt: line.updatedAt,
+    };
   },
 
   async updateLine(lineId: string, input: UpdateRequirementLineInput) {
@@ -308,51 +443,39 @@ export const requirementService = {
       data: input,
       include: {
         product: { select: { id: true, name: true, sku: true } },
-        supplier: { select: { id: true, name: true } },
+        purchaseOrderItems: {
+          where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
+          select: { quantityOrdered: true },
+        },
       },
     });
 
     await recomputeRequirementStatus(line.requirementId);
-    return updated;
-  },
 
-  async assignSupplier(lineId: string, input: AssignSupplierToLineInput) {
-    const line = await prisma.purchaseRequirementLine.findUnique({
-      where: { id: lineId },
-      select: { id: true, requirementId: true, supplierId: true },
-    });
-    if (!line) {
-      throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
-    }
+    const qtyNeeded = updated.quantityNeeded.toNumber();
+    const qtyDelivered = updated.quantityDelivered.toNumber();
+    const qtyOrdered = updated.purchaseOrderItems.reduce(
+      (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+      0
+    );
 
-    await assertRequirementOpen(line.requirementId);
-
-    // Verify supplier exists and is active
-    const supplier = await prisma.supplier.findUnique({
-      where: { id: input.supplierId },
-      select: { id: true, isActive: true },
-    });
-    if (!supplier) {
-      throw new AppError(404, ErrorCode.SUPPLIER_NOT_FOUND, "Supplier not found");
-    }
-    if (!supplier.isActive) {
-      throw new AppError(409, ErrorCode.INACTIVE_SUPPLIER, "Supplier is not active");
-    }
-
-    const updated = await prisma.purchaseRequirementLine.update({
-      where: { id: lineId },
-      data: {
-        supplierId: input.supplierId,
-        status: "ASSIGNED",
-      },
-      include: {
-        product: { select: { id: true, name: true, sku: true } },
-        supplier: { select: { id: true, name: true } },
-      },
-    });
-
-    await recomputeRequirementStatus(line.requirementId);
-    return updated;
+    return {
+      id: updated.id,
+      requirementId: updated.requirementId,
+      productId: updated.productId,
+      product: updated.product,
+      quantityNeeded: qtyNeeded,
+      quantityOrdered: qtyOrdered,
+      quantityDelivered: qtyDelivered,
+      quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+      remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+      remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+      reasonCode: updated.reasonCode,
+      status: updated.status,
+      notes: updated.notes,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
   },
 
   async removeLine(lineId: string) {
@@ -455,12 +578,41 @@ export const requirementService = {
         lines: {
           include: {
             product: { select: { id: true, name: true, sku: true } },
-            supplier: { select: { id: true, name: true } },
+            purchaseOrderItems: {
+              where: { purchaseOrder: { status: { notIn: ["CANCELLED"] } } },
+              select: { quantityOrdered: true },
+            },
           },
         },
       },
     });
 
-    return requirement;
+    const mappedLines = requirement.lines.map((line) => {
+      const qtyNeeded = line.quantityNeeded.toNumber();
+      const qtyDelivered = line.quantityDelivered.toNumber();
+      const qtyOrdered = line.purchaseOrderItems.reduce(
+        (sum, poItem) => sum + poItem.quantityOrdered.toNumber(),
+        0
+      );
+      return {
+        id: line.id,
+        requirementId: line.requirementId,
+        productId: line.productId,
+        product: line.product,
+        quantityNeeded: qtyNeeded,
+        quantityOrdered: qtyOrdered,
+        quantityDelivered: qtyDelivered,
+        quantityRemaining: Math.max(0, qtyNeeded - qtyDelivered),
+        remainingToOrder: Math.max(0, qtyNeeded - qtyOrdered),
+        remainingToReceive: Math.max(0, qtyOrdered - qtyDelivered),
+        reasonCode: line.reasonCode,
+        status: line.status,
+        notes: line.notes,
+        createdAt: line.createdAt,
+        updatedAt: line.updatedAt,
+      };
+    });
+
+    return { ...requirement, lines: mappedLines };
   },
 };

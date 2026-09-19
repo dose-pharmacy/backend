@@ -72,6 +72,24 @@ const authOriginParameter = {
   schema: { type: "string", format: "uri", example: "http://localhost:5173" },
 };
 
+// ---- Shared query parameter fragments for the reporting endpoints ----------
+
+const reportPaginationParams = [
+  { name: "page", in: "query" as const, schema: { type: "integer", minimum: 1, default: 1 } },
+  { name: "limit", in: "query" as const, schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+];
+
+const reportDateRangeParams = [
+  { name: "dateFrom", in: "query" as const, schema: { type: "string", format: "date-time" }, description: "Inclusive UTC start-of-day (default: 30 days ago)" },
+  { name: "dateTo", in: "query" as const, schema: { type: "string", format: "date-time" }, description: "Inclusive UTC end-of-day (default: today)" },
+];
+
+/** `sortBy` is restricted to the given allowlist; unknown values are rejected. */
+const reportSortParams = (fields: string[]) => [
+  { name: "sortBy", in: "query" as const, schema: { type: "string", enum: fields } },
+  { name: "sortOrder", in: "query" as const, schema: { type: "string", enum: ["asc", "desc"] } },
+];
+
 /**
  * OpenAPI 3.0.3 specification for the inventory API.
  *
@@ -117,6 +135,7 @@ export const openApiDocument = {
     { name: "Stock", description: "Stock movements and current stock" },
     { name: "POS Products", description: "Sellable products for the point of sale" },
     { name: "Sales", description: "Retail point of sale (POS) sales" },
+    { name: "Financial Reports", description: "Sales, profitability, margin and slow-moving reporting (ADMIN only)" },
   ],
   paths: {
     "/api/auth/sign-up/email": {
@@ -993,6 +1012,178 @@ export const openApiDocument = {
           "200": { description: "Sale cancelled", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleResponse" } } } },
           "404": { description: "Sale not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           "409": { description: "Sale is not cancellable (completed or already cancelled)", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/sales/trend": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Sales trend time series",
+        description:
+          "Buckets valid (COMPLETED) sales by day, month or year. Revenue and transaction count come from the sale header (transactions are never double-counted), quantity sold from the sale lines. Buckets with no sales are returned with zeros. Revenue is consistent with /financials/reports/sales/summary.",
+        parameters: [
+          { name: "dateFrom", in: "query", schema: { type: "string", format: "date-time" }, description: "Inclusive UTC start-of-day (default: 30 days ago)" },
+          { name: "dateTo", in: "query", schema: { type: "string", format: "date-time" }, description: "Inclusive UTC end-of-day (default: today)" },
+          { name: "period", in: "query", schema: { type: "string", enum: ["DAILY", "MONTHLY", "ANNUAL"], default: "DAILY" } },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } },
+        ],
+        responses: {
+          "200": { description: "Trend buckets", content: { "application/json": { schema: { $ref: "#/components/schemas/SalesTrendResponse" } } } },
+          "422": { description: "Invalid date range or period", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/sales/summary": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Sales summary",
+        description: "Totals for the whole filtered dataset, payment totals per method, and the top 10 products by revenue.",
+        parameters: [...reportDateRangeParams, { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } }],
+        responses: {
+          "200": { description: "Sales summary", content: { "application/json": { schema: { $ref: "#/components/schemas/SalesSummaryResponse" } } } },
+          "422": { description: "Invalid date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/sales/detail": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Sales drill-down (sale lines)",
+        description: "Paginated sale lines (SaleItem) for the filtered window, with sale, product, unit, location and cashier context.",
+        parameters: [
+          ...reportPaginationParams,
+          ...reportSortParams(["createdAt", "lineTotal", "baseQuantity"]),
+          { name: "saleId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "productId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "cashierId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } },
+          ...reportDateRangeParams,
+        ],
+        responses: {
+          "200": { description: "Paginated sale lines", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } },
+          "422": { description: "Invalid page/limit, sort field or date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/sales": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Sales report (list)",
+        description: "Paginated completed sales with their lines (SaleItem), payments, location and cashier.",
+        parameters: [
+          ...reportPaginationParams,
+          ...reportSortParams(["createdAt", "saleNumber", "totalAmount", "paidAmount"]),
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } },
+          ...reportDateRangeParams,
+        ],
+        responses: {
+          "200": { description: "Paginated sales", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } },
+          "422": { description: "Invalid page/limit, sort field or date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/profitability/summary": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Profitability summary",
+        description: "Revenue, batch-level cost, profit, margin, quantity and distinct product count for the ENTIRE filtered dataset — never just one page.",
+        parameters: [
+          { name: "groupBy", in: "query", schema: { type: "string", enum: ["BRAND", "MANUFACTURER", "PRODUCT_GROUP", "PRODUCT"], default: "PRODUCT" } },
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "manufacturerId", in: "query", schema: { type: "string", format: "uuid" } },
+          ...reportDateRangeParams,
+        ],
+        responses: {
+          "200": { description: "Profitability totals", content: { "application/json": { schema: { $ref: "#/components/schemas/ProfitabilitySummaryResponse" } } } },
+          "422": { description: "Invalid date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/profitability": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Profitability report (grouped)",
+        description: "Groups valid sales by brand, manufacturer, product group or product, with batch-level cost of goods sold.",
+        parameters: [
+          ...reportPaginationParams,
+          ...reportSortParams(["profit", "revenue", "cost", "margin", "quantity", "productCount", "value"]),
+          { name: "groupBy", in: "query", schema: { type: "string", enum: ["BRAND", "MANUFACTURER", "PRODUCT_GROUP", "PRODUCT"], default: "PRODUCT" } },
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "manufacturerId", in: "query", schema: { type: "string", format: "uuid" } },
+          ...reportDateRangeParams,
+        ],
+        responses: {
+          "200": { description: "Profitability groups", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } },
+          "422": { description: "Invalid page/limit, sort field or date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/profit-margin/summary": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Profit margin summary",
+        description: "Product count, below-target count and average target/actual margins for the complete filtered product set. Zero revenue, zero quantity and missing target margins are handled without NaN or Infinity.",
+        parameters: [{ name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } }, ...reportDateRangeParams],
+        responses: {
+          "200": { description: "Margin summary", content: { "application/json": { schema: { $ref: "#/components/schemas/ProfitMarginSummaryResponse" } } } },
+          "422": { description: "Invalid date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/profit-margin": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Profit margin report (per product)",
+        parameters: [
+          ...reportPaginationParams,
+          ...reportSortParams(["productName", "actualMargin", "targetMargin", "revenue", "cost", "quantitySold", "sellingPrice"]),
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } },
+          ...reportDateRangeParams,
+        ],
+        responses: {
+          "200": { description: "Per-product margins", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } },
+          "422": { description: "Invalid page/limit, sort field or date range", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/reports/slow-moving": {
+      get: {
+        tags: ["Financial Reports"],
+        summary: "Slow-moving report",
+        description: "Slow-moving configurations with product stock value and the configured threshold in days.",
+        parameters: [
+          ...reportPaginationParams,
+          ...reportSortParams(["daysSinceLastSale", "lastSaleDate", "productName", "updatedAt"]),
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "manufacturerId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "isFlagged", in: "query", schema: { type: "string", enum: ["true", "false"] } },
+          { name: "definitionType", in: "query", schema: { type: "string", enum: ["DAYS_30", "DAYS_60", "DAYS_90", "DAYS_180", "CUSTOM"] } },
+        ],
+        responses: {
+          "200": { description: "Slow-moving configurations", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } },
+          "422": { description: "Invalid page/limit or sort field", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/slow-moving-configs/evaluate": {
+      post: {
+        tags: ["Financial Reports"],
+        summary: "Evaluate slow-moving configurations",
+        description:
+          "Recomputes lastSaleDate, daysSinceLastSale and isFlagged for every slow-moving configuration using one grouped query (no N+1) and one atomic bulk update. Concurrent evaluations are rejected with 409 via a PostgreSQL transaction-scoped advisory lock. Never-sold products keep lastSaleDate/daysSinceLastSale null and stay unflagged. Re-running with unchanged data is idempotent.",
+        responses: {
+          "200": { description: "Evaluation result", content: { "application/json": { schema: { $ref: "#/components/schemas/SlowMovingEvaluationResponse" } } } },
+          "409": { description: "Another evaluation is already running", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           ...authErrorResponses,
         },
       },
@@ -2555,6 +2746,91 @@ export const openApiDocument = {
         type: "object",
         properties: {
           reason: { type: "string", maxLength: 500, example: "Wrong items scanned" },
+        },
+      },
+      SalesTrendResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                period: { type: "string", example: "2026-09-19", description: "YYYY-MM-DD | YYYY-MM | YYYY depending on `period`" },
+                revenue: { type: "number", example: 85000 },
+                transactionCount: { type: "integer", example: 12 },
+                quantitySold: { type: "number", example: 320 },
+              },
+            },
+          },
+        },
+      },
+      SalesSummaryResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              totalSales: { type: "number" },
+              totalSubtotal: { type: "number" },
+              totalDiscount: { type: "number" },
+              transactionCount: { type: "integer" },
+              averageTransaction: { type: "number" },
+              paymentsByMethod: { type: "array", items: { type: "object", properties: { method: { type: "string", enum: ["CASH", "CARD", "DIGITAL_TRANSFER"] }, amount: { type: "number" } } } },
+              topProducts: { type: "array", items: { type: "object", properties: { productId: { type: "string", format: "uuid" }, name: { type: "string" }, sku: { type: "string" }, revenue: { type: "number" }, quantity: { type: "number" } } } },
+            },
+          },
+        },
+      },
+      ProfitabilitySummaryResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              revenue: { type: "number", example: 1500000 },
+              cost: { type: "number", example: 900000 },
+              profit: { type: "number", example: 600000 },
+              margin: { type: "number", example: 40, description: "Percentage; 0 when revenue is 0" },
+              quantity: { type: "number", example: 5000 },
+              productCount: { type: "integer", example: 120 },
+            },
+          },
+        },
+      },
+      ProfitMarginSummaryResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              productCount: { type: "integer", example: 120 },
+              belowTargetCount: { type: "integer", example: 18 },
+              averageTargetMargin: { type: "number", example: 30 },
+              averageActualMargin: { type: "number", example: 27.5 },
+            },
+          },
+        },
+      },
+      SlowMovingEvaluationResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              evaluated: { type: "integer", example: 420 },
+              flagged: { type: "integer", example: 24 },
+              unflagged: { type: "integer", example: 396 },
+              skipped: { type: "integer", example: 0, description: "Configs skipped because their stored CUSTOM definition is invalid" },
+              evaluatedAt: { type: "string", format: "date-time" },
+              durationMs: { type: "integer", example: 350 },
+            },
+          },
         },
       },
     },

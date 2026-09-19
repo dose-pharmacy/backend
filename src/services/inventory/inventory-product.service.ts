@@ -36,7 +36,7 @@ export type InventoryProductListQuery = PageQuery & {
   isActive?: boolean;
 };
 
-function calculateStockStatus(
+export function calculateStockStatus(
   totalStock: number,
   minimumStock: Prisma.Decimal,
   reorderPoint: Prisma.Decimal | null,
@@ -45,8 +45,8 @@ function calculateStockStatus(
     return "OUT_OF_STOCK";
   }
   const minStock = minimumStock.toNumber();
-  const reorderPt = reorderPoint?.toNumber() ?? minStock;
-  if (totalStock <= reorderPt) {
+  const _reorderPt = reorderPoint?.toNumber() ?? minStock;
+  if (totalStock <= minStock) {
     return "LOW_STOCK";
   }
   return "IN_STOCK";

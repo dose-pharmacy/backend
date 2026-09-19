@@ -3,24 +3,35 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
-import { startOfTodayUtc, addUtcDays } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
+import {
+  assertValidSlowMovingDefinition,
+  evaluateSlowMoving,
+  type SlowMovingEvaluationResult,
+} from "./reports/slow-moving-evaluation.js";
+
+export type SlowMovingDefinitionType =
+  | "DAYS_30"
+  | "DAYS_60"
+  | "DAYS_90"
+  | "DAYS_180"
+  | "CUSTOM";
 
 export type CreateSlowMovingConfigInput = {
   productId: string;
-  definitionType: "DAYS_30" | "DAYS_60" | "DAYS_90" | "DAYS_180" | "CUSTOM";
+  definitionType: SlowMovingDefinitionType;
   customDays?: number | null;
 };
 
 export type UpdateSlowMovingConfigInput = Partial<{
-  definitionType: "DAYS_30" | "DAYS_60" | "DAYS_90" | "DAYS_180" | "CUSTOM";
+  definitionType: SlowMovingDefinitionType;
   customDays: number | null;
 }>;
 
 export type SlowMovingConfigListQuery = PageQuery & {
   productId?: string;
   isFlagged?: boolean;
-  definitionType?: "DAYS_30" | "DAYS_60" | "DAYS_90" | "DAYS_180" | "CUSTOM";
+  definitionType?: SlowMovingDefinitionType;
 };
 
 async function assertProductExists(productId: string) {
@@ -42,24 +53,11 @@ async function assertConfigExists(id: string) {
     select: { id: true },
   });
   if (!config) {
-    throw new AppError(404, ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND, "Slow moving configuration not found");
-  }
-}
-
-function getThresholdDays(definitionType: string, customDays?: number | null): number {
-  switch (definitionType) {
-    case "DAYS_30":
-      return 30;
-    case "DAYS_60":
-      return 60;
-    case "DAYS_90":
-      return 90;
-    case "DAYS_180":
-      return 180;
-    case "CUSTOM":
-      return customDays ?? 90;
-    default:
-      return 90;
+    throw new AppError(
+      404,
+      ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND,
+      "Slow moving configuration not found",
+    );
   }
 }
 
@@ -78,7 +76,12 @@ export const slowMovingConfigService = {
         where,
         include: {
           product: {
-            select: { id: true, name: true, sku: true, productGroup: { select: { id: true, name: true } } },
+            select: {
+              id: true,
+              name: true,
+              sku: true,
+              productGroup: { select: { id: true, name: true } },
+            },
           },
         },
         orderBy: { createdAt: "desc" },
@@ -98,12 +101,14 @@ export const slowMovingConfigService = {
       where: { productId: input.productId },
     });
     if (existing) {
-      throw new AppError(409, ErrorCode.BAD_REQUEST, "Slow moving configuration already exists for this product");
+      throw new AppError(
+        409,
+        ErrorCode.BAD_REQUEST,
+        "Slow moving configuration already exists for this product",
+      );
     }
 
-    if (input.definitionType === "CUSTOM" && (!input.customDays || input.customDays <= 0)) {
-      throw new AppError(422, ErrorCode.INVALID_SLOW_MOVING_DEFINITION, "Custom days must be provided for CUSTOM definition type");
-    }
+    assertValidSlowMovingDefinition(input.definitionType, input.customDays);
 
     return prisma.slowMovingConfiguration.create({
       data: {
@@ -124,12 +129,21 @@ export const slowMovingConfigService = {
       where: { id },
       include: {
         product: {
-          select: { id: true, name: true, sku: true, productGroup: { select: { id: true, name: true } } },
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            productGroup: { select: { id: true, name: true } },
+          },
         },
       },
     });
     if (!config) {
-      throw new AppError(404, ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND, "Slow moving configuration not found");
+      throw new AppError(
+        404,
+        ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND,
+        "Slow moving configuration not found",
+      );
     }
     return config;
   },
@@ -144,17 +158,34 @@ export const slowMovingConfigService = {
       },
     });
     if (!config) {
-      throw new AppError(404, ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND, "Slow moving configuration not found for this product");
+      throw new AppError(
+        404,
+        ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND,
+        "Slow moving configuration not found for this product",
+      );
     }
     return config;
   },
 
   async update(id: string, input: UpdateSlowMovingConfigInput) {
-    await assertConfigExists(id);
-
-    if (input.definitionType === "CUSTOM" && (input.customDays === null || input.customDays === undefined || input.customDays <= 0)) {
-      throw new AppError(422, ErrorCode.INVALID_SLOW_MOVING_DEFINITION, "Custom days must be provided for CUSTOM definition type");
+    const existing = await prisma.slowMovingConfiguration.findUnique({
+      where: { id },
+      select: { id: true, definitionType: true, customDays: true },
+    });
+    if (!existing) {
+      throw new AppError(
+        404,
+        ErrorCode.SLOW_MOVING_CONFIG_NOT_FOUND,
+        "Slow moving configuration not found",
+      );
     }
+
+    // Validate the effective definition (payload merged over stored values) so
+    // switching to CUSTOM cannot leave an invalid threshold in the database.
+    const effectiveType = input.definitionType ?? existing.definitionType;
+    const effectiveCustomDays =
+      input.customDays !== undefined ? input.customDays : existing.customDays;
+    assertValidSlowMovingDefinition(effectiveType, effectiveCustomDays);
 
     return prisma.slowMovingConfiguration.update({
       where: { id },
@@ -172,64 +203,12 @@ export const slowMovingConfigService = {
     await prisma.slowMovingConfiguration.delete({ where: { id } });
   },
 
-  async evaluateSlowMoving() {
-    // Get all slow moving configurations
-    const configs = await prisma.slowMovingConfiguration.findMany({
-      include: {
-        product: {
-          select: { id: true, name: true, sku: true },
-        },
-      },
-    });
-
-    const results = [];
-
-    for (const config of configs) {
-      const thresholdDays = getThresholdDays(config.definitionType, config.customDays);
-      const _cutoffDate = addUtcDays(startOfTodayUtc(), -thresholdDays);
-
-      // Find the last sale date for this product
-      const lastSale = await prisma.saleLine.findFirst({
-        where: {
-          productId: config.productId,
-          sale: {
-            status: "COMPLETED",
-          },
-        },
-        select: { sale: { select: { createdAt: true } } },
-        orderBy: { sale: { createdAt: "desc" } },
-      });
-
-      const lastSaleDate = lastSale?.sale.createdAt ?? null;
-      const daysSinceLastSale = lastSaleDate
-        ? Math.floor((startOfTodayUtc().getTime() - lastSaleDate.getTime()) / 86400000)
-        : null;
-
-      const isFlagged = lastSaleDate ? daysSinceLastSale! > thresholdDays : false;
-
-      // Update configuration
-      await prisma.slowMovingConfiguration.update({
-        where: { id: config.id },
-        data: {
-          lastSaleDate,
-          daysSinceLastSale,
-          isFlagged,
-        },
-      });
-
-      results.push({
-        productId: config.productId,
-        productName: config.product.name,
-        sku: config.product.sku,
-        definitionType: config.definitionType,
-        thresholdDays,
-        lastSaleDate,
-        daysSinceLastSale,
-        isFlagged,
-      });
-    }
-
-    return results;
+  /**
+   * Runs the robust evaluation engine (single grouped query, advisory-lock
+   * concurrency guard, one atomic bulk update).
+   */
+  async evaluateSlowMoving(): Promise<SlowMovingEvaluationResult> {
+    return evaluateSlowMoving();
   },
 
   async getFlaggedProducts(query: PageQuery) {

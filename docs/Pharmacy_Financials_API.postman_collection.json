@@ -86,7 +86,10 @@
         { "name": "Slow Moving Report", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/slow-moving?page=1&limit=20&isFlagged=true", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
         { "name": "Sales Report (List)", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales?page=1&limit=20&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
         { "name": "Sales Summary", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales/summary?dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
-        { "name": "Sales Detail (Drill-down)", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales/detail?page=1&limit=20&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
+        { "name": "Sales Detail (Drill-down)", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales/detail?page=1&limit=20&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Sales Trend", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/sales/trend?period=DAILY&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Profitability Summary", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/profitability/summary?groupBy=PRODUCT_GROUP&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } },
+        { "name": "Profit Margin Summary", "request": { "method": "GET", "url": "{{baseUrl}}{{apiPrefix}}/financials/reports/profit-margin/summary?productGroupId=&dateFrom=2026-01-01&dateTo=2026-12-31", "header": [{ "key": "Authorization", "value": "Bearer {{authToken}}" }] } }
       ]
     },
     {

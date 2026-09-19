@@ -22,7 +22,6 @@ export type SaleItemInput = {
   quantity: number;
   /** Optional price override. Defaults to ProductUnit.sellPrice. */
   actualUnitPrice?: number;
-  discount?: { type: DiscountType; value: number };
 };
 
 export type SalePaymentInput = {
@@ -83,11 +82,7 @@ type PreparedItem = {
   conversionFactor: Prisma.Decimal;
   originalUnitPrice: Prisma.Decimal;
   actualUnitPrice: Prisma.Decimal;
-  lineSubtotal: Prisma.Decimal;
-  discountType: DiscountType | null;
-  discountValue: Prisma.Decimal | null;
-  discountAmount: Prisma.Decimal;
-  lineTotal: Prisma.Decimal;
+  lineTotal: Prisma.Decimal; // lineSubtotal (no item discount)
 };
 
 /**
@@ -157,26 +152,9 @@ async function prepareItem(
       ? toDecimal(item.actualUnitPrice)
       : originalUnitPrice;
 
-  const lineSubtotal = roundTo(actualUnitPrice.mul(toDecimal(item.quantity)), 2);
-  let discountAmount = new Prisma.Decimal(0);
-  let discountType: DiscountType | null = null;
-  let discountValue: Prisma.Decimal | null = null;
-  if (item.discount) {
-    discountType = item.discount.type;
-    discountValue = toDecimal(item.discount.value);
-    if (item.discount.type === "PERCENTAGE") {
-      discountAmount = roundTo(
-        lineSubtotal.mul(discountValue).div(100),
-        2,
-      );
-    } else {
-      // A fixed discount can never exceed the pre-discount line total.
-      discountAmount = discountValue.gt(lineSubtotal)
-        ? lineSubtotal
-        : discountValue;
-    }
-  }
-  const lineTotal = roundTo(lineSubtotal.minus(discountAmount), 2);
+  // Line total = quantity × unit price (no item-level discount; discount is
+  // applied at the bill level via billDiscount on the sale).
+  const lineTotal = roundTo(actualUnitPrice.mul(toDecimal(item.quantity)), 2);
 
   return {
     productId: product.id,
@@ -187,10 +165,6 @@ async function prepareItem(
     conversionFactor: unitConfig.conversionFactor,
     originalUnitPrice,
     actualUnitPrice,
-    lineSubtotal,
-    discountType,
-    discountValue,
-    discountAmount,
     lineTotal,
   };
 }
@@ -289,33 +263,26 @@ export const saleService = {
             preparedItems.push(await prepareItem(tx, item));
           }
 
-          // 3. Totals (subtotal before discounts, bill discount, final total).
+          // 3. Totals: subtotal = sum of all line totals; bill discount applied
+          //    on top; no item-level discounts.
           const zero = new Prisma.Decimal(0);
           let subtotal = zero;
-          let itemDiscountTotal = zero;
           for (const prepared of preparedItems) {
-            subtotal = subtotal.plus(prepared.lineSubtotal);
-            itemDiscountTotal = itemDiscountTotal.plus(prepared.discountAmount);
+            subtotal = subtotal.plus(prepared.lineTotal);
           }
-          const beforeBillDiscount = subtotal.minus(itemDiscountTotal);
           let billDiscountAmount = zero;
           if (input.billDiscount) {
             const value = toDecimal(input.billDiscount.value);
             if (input.billDiscount.type === "PERCENTAGE") {
               billDiscountAmount = roundTo(
-                beforeBillDiscount.mul(value).div(100),
+                subtotal.mul(value).div(100),
                 2,
               );
             } else {
-              billDiscountAmount = value.gt(beforeBillDiscount)
-                ? beforeBillDiscount
-                : value;
+              billDiscountAmount = value.gt(subtotal) ? subtotal : value;
             }
           }
-          const totalDiscount = roundTo(
-            itemDiscountTotal.plus(billDiscountAmount),
-            2,
-          );
+          const totalDiscount = roundTo(billDiscountAmount, 2);
           const totalAmount = roundTo(subtotal.minus(totalDiscount), 2);
 
           // 4. Payments (split payments supported). Total payments must
@@ -379,9 +346,9 @@ export const saleService = {
                   conversionFactor: prepared.conversionFactor,
                   originalUnitPrice: prepared.originalUnitPrice,
                   actualUnitPrice: prepared.actualUnitPrice,
-                  discountType: prepared.discountType,
-                  discountValue: prepared.discountValue,
-                  discountAmount: prepared.discountAmount,
+                  discountType: null,
+                  discountValue: null,
+                  discountAmount: new Prisma.Decimal(0),
                   lineTotal: prepared.lineTotal,
                   batchAllocations: {
                     create: allocationsPerItem[index].map((allocation) => ({

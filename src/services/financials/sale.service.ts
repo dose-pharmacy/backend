@@ -379,7 +379,7 @@ export const saleService = {
     return this.getById(id);
   },
 
-  async getDetail(query: any) {
+  async getDetail(query: { page?: number; limit?: number; saleId?: string; productId?: string; cashierId?: string; locationId?: string; dateFrom?: Date; dateTo?: Date }) {
     const { page, limit, skip, take } = resolvePagination(query);
     const { start, end } = getDateRange(query.dateFrom, query.dateTo);
 

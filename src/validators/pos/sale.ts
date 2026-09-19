@@ -41,13 +41,14 @@ export const salePaymentSchema = z.object({
  * `baseQuantity` is server-calculated from the ProductUnit conversion factor
  * and is never accepted from the client. `actualUnitPrice` (price override)
  * is optional — when omitted the configured ProductUnit.sellPrice is used.
+ * Discounts are applied at the bill level only (see `billDiscount` on the
+ * root `createSaleSchema`); item-level discounts are not accepted.
  */
 export const saleItemSchema = z.object({
   productId: uuidSchema,
   unitId: uuidSchema,
   quantity: quantitySchema,
   actualUnitPrice: moneySchema.optional(),
-  discount: discountSchema.optional(),
 });
 
 /**

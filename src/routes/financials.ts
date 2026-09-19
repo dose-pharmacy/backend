@@ -38,10 +38,14 @@ import {
 } from "../validators/financials/slow-moving.js";
 import {
   profitMarginReportQuerySchema,
+  profitMarginSummaryQuerySchema,
   profitabilityReportQuerySchema,
+  profitabilitySummaryQuerySchema,
   slowMovingReportQuerySchema,
   salesReportQuerySchema,
+  salesSummaryQuerySchema,
   salesDetailQuerySchema,
+  salesTrendQuerySchema,
 } from "../validators/financials/reports.js";
 import {
   createSaleSchema,
@@ -218,22 +222,22 @@ financialsRouter.delete(
 // Financial Reports
 // ---------------------------------------------------------------------------
 financialsRouter.get(
-  "/reports/profit-margin",
+  "/reports/sales/trend",
   ...admin,
-  validate({ query: profitMarginReportQuerySchema }),
-  financialReportController.getProfitMarginReport,
+  validate({ query: salesTrendQuerySchema }),
+  financialReportController.getSalesTrend,
 );
 financialsRouter.get(
-  "/reports/profitability",
+  "/reports/sales/summary",
   ...admin,
-  validate({ query: profitabilityReportQuerySchema }),
-  financialReportController.getProfitabilityReport,
+  validate({ query: salesSummaryQuerySchema }),
+  financialReportController.getSalesSummary,
 );
 financialsRouter.get(
-  "/reports/slow-moving",
+  "/reports/sales/detail",
   ...admin,
-  validate({ query: slowMovingReportQuerySchema }),
-  financialReportController.getSlowMovingReport,
+  validate({ query: salesDetailQuerySchema }),
+  financialReportController.getSalesDetail,
 );
 financialsRouter.get(
   "/reports/sales",
@@ -242,15 +246,34 @@ financialsRouter.get(
   financialReportController.getSalesReport,
 );
 financialsRouter.get(
-  "/reports/sales/summary",
+  "/reports/profitability/summary",
   ...admin,
-  financialReportController.getSalesSummary,
+  validate({ query: profitabilitySummaryQuerySchema }),
+  financialReportController.getProfitabilitySummary,
 );
 financialsRouter.get(
-  "/reports/sales/detail",
+  "/reports/profitability",
   ...admin,
-  validate({ query: salesDetailQuerySchema }),
-  financialReportController.getSalesDetail,
+  validate({ query: profitabilityReportQuerySchema }),
+  financialReportController.getProfitabilityReport,
+);
+financialsRouter.get(
+  "/reports/profit-margin/summary",
+  ...admin,
+  validate({ query: profitMarginSummaryQuerySchema }),
+  financialReportController.getProfitMarginSummary,
+);
+financialsRouter.get(
+  "/reports/profit-margin",
+  ...admin,
+  validate({ query: profitMarginReportQuerySchema }),
+  financialReportController.getProfitMarginReport,
+);
+financialsRouter.get(
+  "/reports/slow-moving",
+  ...admin,
+  validate({ query: slowMovingReportQuerySchema }),
+  financialReportController.getSlowMovingReport,
 );
 
 // ---------------------------------------------------------------------------
