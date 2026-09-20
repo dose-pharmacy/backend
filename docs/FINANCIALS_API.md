@@ -15,7 +15,8 @@
 4. [Slow Moving Configuration](#slow-moving-configuration)
 5. [Financial Reports](#financial-reports)
 6. [Sales (POS)](#sales-pos)
-7. [Error Codes](#error-codes)
+7. [Dashboard](#dashboard)
+8. [Error Codes](#error-codes)
 
 ---
 
@@ -783,6 +784,165 @@ GET /sales/detail
 
 ---
 
+## 📈 Dashboard
+
+**Base URL:** `http://localhost:4000/api/v1/dashboard`
+
+The Dashboard module answers **"what is happening right now and what needs my attention?"**. It is deliberately small and operational — it does NOT duplicate the Reports module. Detailed sales/profitability/inventory analysis remains in `/financials/reports/*`.
+
+### Backend audit — data sources reused
+
+The dashboard introduces no second definitions of business values. Every metric reuses existing backend logic:
+
+| Metric | Reused source |
+|--------|---------------|
+| Today's sales / transactions / average | `Sale` table, `status = COMPLETED` (same rule as reports), aggregated in the database from UTC midnight (`startOfTodayUtc`) |
+| Stock value | `SUM(inventory_stock.quantity × product_unit.purchasePrice)` on the **base unit** — the same formula as the slow-moving report |
+| Low stock / out of stock | Same logic as `inventory/dashboard.service.ts`: active products with `SUM(stock) > 0 AND <= minimumStock` (low) or no positive stock rows (out) |
+| Expiring soon / expired | `Batch.expiryDate` with **30-day window** (`EXPIRY_SOON_DAYS`), counted only when the batch still has positive stock |
+| Open requirements | `PurchaseRequirement.status = OPEN` |
+| Awaiting delivery | `PurchaseOrder.status = AWAITING_DELIVERY` |
+| Partially received | PO in `REGISTERED`/`AWAITING_DELIVERY` with at least one item where `0 < quantityReceived < quantityOrdered` (PO status alone is not authoritative) |
+| Outstanding invoices | `SupplierInvoice.status IN (OPEN, PARTIALLY_PAID)` |
+| Slow-moving flagged | Reads the **persisted** `isFlagged` on `SlowMovingConfiguration` only — it never triggers `POST /slow-moving-configs/evaluate` |
+
+**Performance:** each endpoint runs its independent queries in parallel via `Promise.all`; all aggregation is done in the database (no in-memory number crunching). Summary = 12 parallel queries; Attention = 4; Recent Activity = 3.
+
+### Dashboard Summary
+```
+GET /api/v1/dashboard/summary
+```
+
+**Auth:** session cookie, ADMIN role.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": {
+    "sales": {
+      "today": 125400,
+      "transactions": 84,
+      "averageTransaction": 1492.86
+    },
+    "inventory": {
+      "stockValue": 2400000,
+      "lowStockCount": 12,
+      "outOfStockCount": 4,
+      "expiringSoonCount": 7,
+      "expiredCount": 2
+    },
+    "purchasing": {
+      "openRequirements": 8,
+      "awaitingDelivery": 5,
+      "partiallyReceived": 2,
+      "outstandingInvoices": 3
+    },
+    "slowMoving": {
+      "flaggedCount": 24
+    }
+  }
+}
+```
+
+**Field notes**
+- `sales.today` — total of COMPLETED sales created today (UTC day boundary). `0` when no sales today.
+- `sales.averageTransaction` — `today / transactions`, rounded to 2 decimals; `0` (never NaN/Infinity) when `transactions = 0`.
+- `inventory.expiredCount` / `expiringSoonCount` — batches with remaining stock only; fully-depleted expired batches are not counted.
+- All numeric fields are always present numbers (`0` instead of `null`).
+
+**Error Responses:** `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+
+---
+
+### Dashboard Attention
+```
+GET /api/v1/dashboard/attention
+```
+
+**Auth:** session cookie, ADMIN role.
+
+Returns small actionable lists — **max 5 items per category** (low stock sorted by least available first, expiring batches by soonest expiry, POs by expected delivery date, invoices by due date).
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": {
+    "lowStock": [
+      {
+        "productId": "uuid",
+        "productName": "Amoxicillin",
+        "sku": "AMOX-300-200",
+        "availableStock": 4,
+        "reorderPoint": 20
+      }
+    ],
+    "expiringSoon": [
+      {
+        "batchId": "uuid",
+        "productId": "uuid",
+        "productName": "Amoxicillin",
+        "batchNumber": "B-2026-04",
+        "expiryDate": "2026-10-05T00:00:00.000Z",
+        "remainingQuantity": 25
+      }
+    ],
+    "awaitingDelivery": [
+      {
+        "purchaseOrderId": "uuid",
+        "poNumber": "PO-1024",
+        "supplierName": "MedSupply Ltd",
+        "expectedDeliveryDate": "2026-09-22T00:00:00.000Z"
+      }
+    ],
+    "outstandingInvoices": [
+      {
+        "invoiceId": "uuid",
+        "invoiceNumber": "INV-2026-001",
+        "supplierName": "MedSupply Ltd",
+        "outstandingBalance": 15000,
+        "dueDate": "2026-09-25T00:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+All lists are `[]` (empty array) when there is nothing to action. `expectedDeliveryDate`/`dueDate` may be `null`.
+
+**Error Responses:** `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+
+---
+
+### Dashboard Recent Activity
+```
+GET /api/v1/dashboard/recent-activity
+```
+
+**Auth:** session cookie, ADMIN role.
+
+Merges the last 5 events from each of three operational sources (completed sales, goods receipts, purchase orders — excluding cancelled), sorts newest-first and returns up to 10 items. No central audit log exists in the codebase, so this is query-based rather than event-store-based.
+
+**Response 200:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "type": "SALE_COMPLETED | GOODS_RECEIVED | PURCHASE_ORDER_CREATED",
+      "reference": "S-2026-0091",
+      "description": "Sale completed",
+      "createdAt": "2026-09-20T09:15:00.000Z"
+    }
+  ]
+}
+```
+
+**Error Responses:** `401 UNAUTHENTICATED`, `403 FORBIDDEN`
+
+---
+
 ## ❌ Error Codes Reference
 
 | Code | HTTP | Description |
@@ -908,5 +1068,8 @@ Config created → Manual/auto evaluate → isFlagged updated
 | PATCH | `/sales/:id` | Update sale |
 | POST | `/sales/:id/void` | Void sale |
 | GET | `/sales/detail` | Sales detail drill-down |
+| GET | `/dashboard/summary` | Operational KPI summary |
+| GET | `/dashboard/attention` | Actionable lists (≤5 per category) |
+| GET | `/dashboard/recent-activity` | Last 10 operational events |
 
-**Total: 47 endpoints**
+**Total: 50 endpoints**

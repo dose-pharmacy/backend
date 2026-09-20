@@ -24,10 +24,34 @@ export const createPurchaseOrderSchema = z.object({
   items: z.array(createPOItemSchema).min(1, "At least one item is required"),
 });
 
+// Ordering directly from a requirement: the product is derived from the requirement
+// line, so the client only supplies the line, quantity and unit cost.
+export const createPOFromRequirementItemSchema = z.object({
+  requirementLineId: uuidSchema,
+  quantityOrdered: quantitySchema,
+  unitCost: positiveMoneySchema,
+});
+
+export const createPurchaseOrderFromRequirementSchema = z.object({
+  supplierId: uuidSchema,
+  expectedDeliveryDate: z.coerce.date().optional(),
+  notes: z.string().trim().max(1000).optional(),
+  items: z.array(createPOFromRequirementItemSchema).min(1, "At least one item is required"),
+});
+
 export const updatePurchaseOrderSchema = z.object({
   expectedDeliveryDate: z.coerce.date().nullable().optional(),
   notes: z.string().trim().max(1000).nullable().optional(),
 });
+
+export const updatePurchaseOrderItemSchema = z
+  .object({
+    quantityOrdered: quantitySchema.optional(),
+    unitCost: positiveMoneySchema.optional(),
+  })
+  .refine((value) => value.quantityOrdered !== undefined || value.unitCost !== undefined, {
+    message: "At least one of quantityOrdered or unitCost is required",
+  });
 
 export const purchaseOrderListQuerySchema = z
   .object({
@@ -39,6 +63,10 @@ export const purchaseOrderListQuerySchema = z
 
 export const purchaseOrderParamsSchema = z.object({
   id: uuidSchema,
+});
+
+export const purchaseOrderItemParamsSchema = z.object({
+  itemId: uuidSchema,
 });
 
 export const poStatusActionSchema = z.object({

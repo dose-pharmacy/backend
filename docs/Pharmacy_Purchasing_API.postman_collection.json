@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Pharmacy Purchasing & Supplier Management API",
-    "description": "Postman collection for Purchasing & Supplier Management module",
+    "description": "Postman collection for Purchasing & Supplier Management module. Run requests top-to-bottom inside each folder: IDs are captured automatically from responses. Requirement fulfillment is allocation-based: ordering from a requirement line creates allocations, cancelling a PO releases them, and line statuses (OPEN / PARTIALLY_FULFILLED / FULFILLED / CLOSED) are derived by the backend.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -26,6 +26,11 @@
       "type": "string"
     },
     {
+      "key": "supplierIdB",
+      "value": "",
+      "type": "string"
+    },
+    {
       "key": "requirementId",
       "value": "",
       "type": "string"
@@ -41,7 +46,22 @@
       "type": "string"
     },
     {
+      "key": "purchaseOrderItemId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "requirementPurchaseOrderId",
+      "value": "",
+      "type": "string"
+    },
+    {
       "key": "goodsReceiptId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "grItemId",
       "value": "",
       "type": "string"
     },
@@ -159,6 +179,42 @@
           ]
         },
         {
+          "name": "Create Second Supplier (multi-supplier ordering)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/suppliers",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"XYZ Medical Supplies\",\n  \"contactPerson\": \"Sara Ahmed\",\n  \"email\": \"sara@xyzmedical.com\",\n  \"phone\": \"+251-911-654321\",\n  \"paymentTerms\": \"Net 15\",\n  \"isActive\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('supplierIdB', res.data.id);",
+                  "  console.log('Second supplier ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "Get Supplier by ID",
           "request": {
             "method": "GET",
@@ -209,6 +265,7 @@
     },
     {
       "name": "Purchase Requirements",
+      "description": "Requirement lines expose derived quantities (requiredQuantity / quantityOrdered / quantityRemaining / activeOrderCount) and allocations[]. Statuses are OPEN, PARTIALLY_FULFILLED, FULFILLED, CLOSED and are derived by the backend.",
       "item": [
         {
           "name": "List Requirements",
@@ -255,7 +312,7 @@
                   "  console.log('Requirement ID saved:', res.data.id);",
                   "  if (res.data.lines.length > 0) {",
                   "    pm.collectionVariables.set('requirementLineId', res.data.lines[0].id);",
-                  "    console.log('First line ID saved:', res.data.lines[0].id);",
+                  "    console.log('First line ID saved:', res.data.lines[0].id, '| remaining:', res.data.lines[0].quantityRemaining);",
                   "  }",
                   "}"
                 ]
@@ -295,32 +352,6 @@
               "mode": "raw",
               "raw": "{\n  \"notes\": \"Updated: urgent restock needed\",\n  \"requiredBy\": \"2026-10-10\"\n}"
             }
-          }
-        },
-        {
-          "name": "Close Requirement",
-          "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}/close",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{authToken}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "Delete Requirement",
-          "request": {
-            "method": "DELETE",
-            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{authToken}}"
-              }
-            ]
           }
         },
         {
@@ -366,31 +397,67 @@
           }
         },
         {
-          "name": "Assign Supplier to Line",
+          "name": "Get Line Order Preview",
           "request": {
-            "method": "POST",
-            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/lines/{{requirementLineId}}/assign-supplier",
+            "description": "Read-only prefill payload for ordering a requirement line. Returns requiredQuantity, orderedQuantity, remainingQuantity, suggestedOrderQuantity and activeOrderCount.",
+            "method": "GET",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/lines/{{requirementLineId}}/order-preview",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{authToken}}"
               }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"supplierId\": \"{{supplierId}}\"\n}"
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  console.log('Order preview:', JSON.stringify(res.data, null, 2));",
+                  "}"
+                ]
+              }
             }
-          }
+          ]
         },
         {
           "name": "Remove Requirement Line",
           "request": {
+            "description": "Fails with 409 REQUIREMENT_HAS_ACTIVE_ORDERS while the line still has non-cancelled purchase orders.",
             "method": "DELETE",
             "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/lines/{{requirementLineId}}",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Close Requirement",
+          "request": {
+            "description": "Blocked with 409 REQUIREMENT_HAS_ACTIVE_ORDERS while POs are still REGISTERED/AWAITING_DELIVERY. Cancel or receive them first.",
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}/close",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Delete Requirement",
+          "request": {
+            "description": "Fails with 409 REQUIREMENT_HAS_ACTIVE_ORDERS while the requirement still has non-cancelled purchase orders.",
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/requirements/{{requirementId}}",
             "header": [
               {
                 "key": "Authorization",
@@ -416,6 +483,7 @@
     },
     {
       "name": "Purchase Orders",
+      "description": "Recommended order: Create PO (standalone) and Create PO from Requirement, Get, Update PO, Update PO Item, Mark as Awaiting Delivery, then use the Goods Receipts folder before Close. Cancel releases requirement allocations automatically.",
       "item": [
         {
           "name": "List Purchase Orders",
@@ -433,6 +501,7 @@
         {
           "name": "Create Purchase Order",
           "request": {
+            "description": "Standalone PO (no requirement link). For requirement-linked items add \"requirementLineId\" to an item; quantity must not exceed the line's remaining quantity or you get 409 REQUIREMENT_QUANTITY_EXCEEDED.",
             "method": "POST",
             "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders",
             "header": [
@@ -447,7 +516,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"expectedDeliveryDate\": \"2026-10-20\",\n  \"notes\": \"PO for monthly restock\",\n  \"items\": [\n    {\n      \"productId\": \"PRODUCT-UUID-HERE\",\n      \"quantityOrdered\": 500,\n      \"unitCost\": 15.50,\n      \"requirementLineId\": \"{{requirementLineId}}\"\n    },\n    {\n      \"productId\": \"ANOTHER-PRODUCT-UUID\",\n      \"quantityOrdered\": 200,\n      \"unitCost\": 45.00,\n      \"requirementLineId\": \"\"\n    }\n  ]\n}"
+              "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"expectedDeliveryDate\": \"2026-10-20\",\n  \"notes\": \"PO for monthly restock\",\n  \"items\": [\n    {\n      \"productId\": \"PRODUCT-UUID-HERE\",\n      \"quantityOrdered\": 500,\n      \"unitCost\": 15.50\n    },\n    {\n      \"productId\": \"ANOTHER-PRODUCT-UUID\",\n      \"quantityOrdered\": 200,\n      \"unitCost\": 45.00\n    }\n  ]\n}"
             }
           },
           "event": [
@@ -459,7 +528,50 @@
                   "if (pm.response.code === 201) {",
                   "  const res = pm.response.json();",
                   "  pm.collectionVariables.set('purchaseOrderId', res.data.id);",
+                  "  if (res.data.items.length > 0) {",
+                  "    pm.collectionVariables.set('purchaseOrderItemId', res.data.items[0].id);",
+                  "  }",
                   "  console.log('Purchase Order ID saved:', res.data.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Purchase Order from Requirement",
+          "request": {
+            "description": "Products are derived from the requirement lines - no productId needed. Creates allocations; the line becomes PARTIALLY_FULFILLED. Order less than remainingQuantity for a partial order, and run again with supplierIdB to order across suppliers.",
+            "method": "POST",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/from-requirement",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": \"{{supplierId}}\",\n  \"expectedDeliveryDate\": \"2026-10-20\",\n  \"notes\": \"PO created from requirement\",\n  \"items\": [\n    {\n      \"requirementLineId\": \"{{requirementLineId}}\",\n      \"quantityOrdered\": 50,\n      \"unitCost\": 16.00\n    }\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  const res = pm.response.json();",
+                  "  pm.collectionVariables.set('requirementPurchaseOrderId', res.data.id);",
+                  "  console.log('Requirement PO saved:', res.data.id);",
+                  "  res.data.items.forEach(function (item) {",
+                  "    console.log('Item', item.id, 'allocations:', JSON.stringify(item.allocations));",
+                  "  });",
                   "}"
                 ]
               }
@@ -501,10 +613,32 @@
           }
         },
         {
+          "name": "Update Purchase Order Item",
+          "request": {
+            "description": "Edits quantity/cost on one item. On requirement-linked items the allocation is resized and revalidated. Not allowed on RECEIVED/CANCELLED/CLOSED orders.",
+            "method": "PATCH",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/items/{{purchaseOrderItemId}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantityOrdered\": 450,\n  \"unitCost\": 15.75\n}"
+            }
+          }
+        },
+        {
           "name": "Mark as Awaiting Delivery",
           "request": {
             "method": "POST",
-            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/mark-delivered",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/mark-awaiting-delivery",
             "header": [
               {
                 "key": "Authorization",
@@ -516,8 +650,9 @@
         {
           "name": "Cancel Purchase Order",
           "request": {
+            "description": "Cancels a REGISTERED/AWAITING_DELIVERY order and releases its requirement allocations. Fails if any item already has received quantity.",
             "method": "POST",
-            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/cancel",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{requirementPurchaseOrderId}}/cancel",
             "header": [
               {
                 "key": "Authorization",
@@ -529,8 +664,23 @@
         {
           "name": "Close Purchase Order",
           "request": {
+            "description": "Only works on RECEIVED orders with all items fully received - run the Goods Receipts flow first.",
             "method": "POST",
             "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/close",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{authToken}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Remove Purchase Order Item",
+          "request": {
+            "description": "Run last: removes the saved item and releases its allocation. Only works on REGISTERED orders and items with no received quantity.",
+            "method": "DELETE",
+            "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/items/{{purchaseOrderItemId}}",
             "header": [
               {
                 "key": "Authorization",
@@ -543,6 +693,7 @@
     },
     {
       "name": "Goods Receipts",
+      "description": "Create a receipt for the purchase order, resolve any discrepancy, then confirm. Confirming records stock, increments quantityReceived / quantityDelivered, and moves the PO to RECEIVED (AWAITING_DELIVERY on partial receipt).",
       "item": [
         {
           "name": "List Goods Receipts",
@@ -560,6 +711,7 @@
         {
           "name": "Create Goods Receipt (for PO)",
           "request": {
+            "description": "Uses the PO item saved from Create Purchase Order plus an inventory location ID. expectedQty is computed by the backend as ordered - received.",
             "method": "POST",
             "url": "{{baseUrl}}{{apiPrefix}}/purchasing/purchase-orders/{{purchaseOrderId}}/goods-receipts",
             "header": [
@@ -574,7 +726,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"receivedDate\": \"2026-10-22\",\n  \"discrepancyNote\": \"\",\n  \"items\": [\n    {\n      \"purchaseOrderItemId\": \"PO-ITEM-UUID-HERE\",\n      \"locationId\": \"LOCATION-UUID-HERE\",\n      \"deliveredQty\": 500,\n      \"actualQty\": 500,\n      \"batchNumber\": \"BATCH-2026-001\",\n      \"manufacturingDate\": \"2026-09-01\",\n      \"expiryDate\": \"2028-09-01\"\n    }\n  ]\n}"
+              "raw": "{\n  \"receivedDate\": \"2026-10-22\",\n  \"discrepancyNote\": \"\",\n  \"items\": [\n    {\n      \"purchaseOrderItemId\": \"{{purchaseOrderItemId}}\",\n      \"locationId\": \"LOCATION-UUID-HERE\",\n      \"deliveredQty\": 500,\n      \"actualQty\": 500,\n      \"batchNumber\": \"BATCH-2026-001\",\n      \"manufacturingDate\": \"2026-09-01\",\n      \"expiryDate\": \"2028-09-01\"\n    }\n  ]\n}"
             }
           },
           "event": [
@@ -586,7 +738,10 @@
                   "if (pm.response.code === 201) {",
                   "  const res = pm.response.json();",
                   "  pm.collectionVariables.set('goodsReceiptId', res.data.id);",
-                  "  console.log('Goods Receipt ID saved:', res.data.id);",
+                  "  if (res.data.items.length > 0) {",
+                  "    pm.collectionVariables.set('grItemId', res.data.items[0].id);",
+                  "  }",
+                  "  console.log('Goods Receipt ID saved:', res.data.id, '| status:', res.data.status);",
                   "}"
                 ]
               }
@@ -609,6 +764,7 @@
         {
           "name": "Resolve Discrepancy",
           "request": {
+            "description": "Only needed when the receipt status is DISCREPANCY.",
             "method": "PATCH",
             "url": "{{baseUrl}}{{apiPrefix}}/purchasing/goods-receipts/{{goodsReceiptId}}/resolve",
             "header": [
@@ -623,7 +779,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"discrepancyNote\": \"Supplier confirmed 10 units damaged in transit\",\n  \"items\": [\n    {\n      \"id\": \"GR-ITEM-UUID-HERE\",\n      \"actualQty\": 490\n    }\n  ]\n}"
+              "raw": "{\n  \"discrepancyNote\": \"Supplier confirmed 10 units damaged in transit\",\n  \"items\": [\n    {\n      \"id\": \"{{grItemId}}\",\n      \"actualQty\": 490\n    }\n  ]\n}"
             }
           }
         },

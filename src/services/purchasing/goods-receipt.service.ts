@@ -410,7 +410,9 @@ export const goodsReceiptService = {
         data: { batchId: batch.id },
       });
 
-      // Update requirement line quantityDelivered
+      // Track received quantity for the requirement line. Receiving is downstream of
+      // ordering: it must never release an allocation or rewrite the requirement's
+      // fulfillment status, which is derived from active allocations alone.
       if (item.purchaseOrderItem.requirementLineId) {
         await prisma.purchaseRequirementLine.update({
           where: { id: item.purchaseOrderItem.requirementLineId },
@@ -418,32 +420,6 @@ export const goodsReceiptService = {
             quantityDelivered: { increment: item.actualQty },
           },
         });
-
-        // Check if requirement line is fulfilled
-        const reqLine = await prisma.purchaseRequirementLine.findUnique({
-          where: { id: item.purchaseOrderItem.requirementLineId },
-          select: { id: true, requirementId: true, quantityNeeded: true, quantityDelivered: true },
-        });
-        if (reqLine && reqLine.quantityDelivered >= reqLine.quantityNeeded) {
-          await prisma.purchaseRequirementLine.update({
-            where: { id: reqLine.id },
-            data: { status: "CLOSED" },
-          });
-
-          // Recompute requirement header status
-          const lines = await prisma.purchaseRequirementLine.findMany({
-            where: { requirementId: reqLine.requirementId },
-            select: { status: true },
-          });
-          const newStatus = lines.length > 0 && lines.every((l) => l.status === "CLOSED")
-            ? "CLOSED"
-            : "OPEN";
-
-          await prisma.purchaseRequirement.update({
-            where: { id: reqLine.requirementId },
-            data: { status: newStatus },
-          });
-        }
       }
     }
 

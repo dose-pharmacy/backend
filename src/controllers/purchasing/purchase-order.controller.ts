@@ -1,5 +1,12 @@
 import type { Request, Response } from "express";
-import { purchaseOrderService, type CreatePOInput, type POListQuery, type UpdatePOInput } from "../../services/purchasing/purchase-order.service.js";
+import {
+  purchaseOrderService,
+  type CreatePOInput,
+  type CreatePOFromRequirementInput,
+  type POListQuery,
+  type UpdatePOInput,
+  type UpdatePOItemInput,
+} from "../../services/purchasing/purchase-order.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
@@ -23,14 +30,39 @@ export const purchaseOrderController = {
     sendSuccess(res, data, { status: 201 });
   }),
 
+  createFromRequirement: asyncHandler(async (req: Request, res: Response) => {
+    const actor = req.auth!.user;
+    const data = await purchaseOrderService.createFromRequirement(
+      req.body as CreatePOFromRequirementInput,
+      actor,
+    );
+    sendSuccess(res, data, { status: 201 });
+  }),
+
   getById: asyncHandler(async (req: Request, res: Response) => {
     const data = await purchaseOrderService.getById(req.params.id as string);
     sendSuccess(res, data);
   }),
 
   update: asyncHandler(async (req: Request, res: Response) => {
-    const data = await purchaseOrderService.update(req.params.id as string, req.body as UpdatePOInput);
+    const data = await purchaseOrderService.update(
+      req.params.id as string,
+      req.body as UpdatePOInput,
+    );
     sendSuccess(res, data);
+  }),
+
+  updateItem: asyncHandler(async (req: Request, res: Response) => {
+    const data = await purchaseOrderService.updateItem(
+      req.params.itemId as string,
+      req.body as UpdatePOItemInput,
+    );
+    sendSuccess(res, data);
+  }),
+
+  removeItem: asyncHandler(async (req: Request, res: Response) => {
+    await purchaseOrderService.removeItem(req.params.itemId as string);
+    sendSuccess(res, null);
   }),
 
   cancel: asyncHandler(async (req: Request, res: Response) => {

@@ -6,10 +6,7 @@ import { purchaseOrderController } from "../controllers/purchasing/purchase-orde
 import { goodsReceiptController } from "../controllers/purchasing/goods-receipt.controller.js";
 import { supplierInvoiceController } from "../controllers/purchasing/supplier-invoice.controller.js";
 import { purchaseReturnController } from "../controllers/purchasing/purchase-return.controller.js";
-import {
-  requireAuthenticatedUser,
-  requireRole,
-} from "../middleware/authorize.js";
+import { requireAuthenticatedUser, requireRole } from "../middleware/authorize.js";
 import { validate } from "../middleware/validate.js";
 import {
   createSupplierSchema,
@@ -28,9 +25,12 @@ import {
 } from "../validators/purchasing/requirement.js";
 import {
   createPurchaseOrderSchema,
+  createPurchaseOrderFromRequirementSchema,
   updatePurchaseOrderSchema,
+  updatePurchaseOrderItemSchema,
   purchaseOrderListQuerySchema,
   purchaseOrderParamsSchema,
+  purchaseOrderItemParamsSchema,
 } from "../validators/purchasing/purchase-order.js";
 import {
   createGoodsReceiptSchema,
@@ -149,6 +149,14 @@ purchasingRouter.patch(
   requirementController.updateLine,
 );
 
+// Prefill data for ordering a requirement line (read-only).
+purchasingRouter.get(
+  "/requirements/lines/:lineId/order-preview",
+  ...admin,
+  validate({ params: requirementLineParamsSchema }),
+  requirementController.getOrderPreview,
+);
+
 purchasingRouter.delete(
   "/requirements/lines/:lineId",
   ...admin,
@@ -170,6 +178,24 @@ purchasingRouter.post(
   ...admin,
   validate({ body: createPurchaseOrderSchema }),
   purchaseOrderController.create,
+);
+purchasingRouter.post(
+  "/purchase-orders/from-requirement",
+  ...admin,
+  validate({ body: createPurchaseOrderFromRequirementSchema }),
+  purchaseOrderController.createFromRequirement,
+);
+purchasingRouter.patch(
+  "/purchase-orders/items/:itemId",
+  ...admin,
+  validate({ params: purchaseOrderItemParamsSchema, body: updatePurchaseOrderItemSchema }),
+  purchaseOrderController.updateItem,
+);
+purchasingRouter.delete(
+  "/purchase-orders/items/:itemId",
+  ...admin,
+  validate({ params: purchaseOrderItemParamsSchema }),
+  purchaseOrderController.removeItem,
 );
 purchasingRouter.get(
   "/purchase-orders/:id",

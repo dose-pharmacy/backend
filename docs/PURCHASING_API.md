@@ -232,7 +232,7 @@ GET /requirements
 |-----------|------|----------|-------------|
 | `page` | integer | No | Default: 1 |
 | `limit` | integer | No | Default: 20, max: 100 |
-| `status` | enum | No | `OPEN`, `ASSIGNED`, `CLOSED` |
+| `status` | enum | No | `OPEN`, `PARTIALLY_FULFILLED`, `FULFILLED`, `CLOSED` |
 | `search` | string | No | Search in reference, notes |
 
 **Response 200:**
@@ -241,59 +241,68 @@ GET /requirements
   "success": true,
   "data": [
     {
-      "id": "string (UUID)",
-      "reference": "string",
-      "status": "OPEN|ASSIGNED|CLOSED",
-      "requiredBy": "ISO8601 datetime|null",
+      "id": "string (UUID)",      "reference": "string",
+      "status": "OPEN|PARTIALLY_FULFILLED|FULFILLED|CLOSED",
+      "requiredBy": "ISO8601 datetime|null",
       "notes": "string|null",
       "createdById": "string (UUID)",
       "createdAt": "ISO8601 datetime",
-      "updatedAt": "ISO8601 datetime",
-      "lines": [
-        {
-          "id": "string (UUID)",
-          "requirementId": "string (UUID)",
-          "productId": "string (UUID)",
-          "quantityNeeded": "number (3 decimals)",
-          "quantityDelivered": "number (3 decimals)",
-          "reasonCode": "LOW_STOCK|REORDER_ALERT|MANUAL|null",
-          "supplierId": "string (UUID)|null",
-          "status": "OPEN|ASSIGNED|CLOSED",
-          "notes": "string|null",
-          "createdAt": "ISO8601 datetime",
-          "updatedAt": "ISO8601 datetime",
-          "product": {
-            "id": "string (UUID)",
-            "name": "string",
-            "sku": "string"
-          },
-          "supplier": {
-            "id": "string (UUID)",
-            "name": "string"
-          }|null,
-          "purchaseOrderItems": [
-            {
-              "id": "string (UUID)",
-              "purchaseOrderId": "string (UUID)",
-              "quantityOrdered": "number (3 decimals)"
-            }
-          ]
-        }
-      ],
+      "updatedAt": "ISO8601 datetime",      "lines": [
+        {
+          "id": "string (UUID)",
+          "requirementId": "string (UUID)",
+          "productId": "string (UUID)",
+          "product": { "id": "string (UUID)", "name": "string", "sku": "string" },
+          "requiredQuantity": "number (3 decimals)",
+          "quantityNeeded": "number (3 decimals) (alias of requiredQuantity)",
+          "quantityOrdered": "number (3 decimals) (sum of active allocations; alias orderedQuantity)",
+          "quantityRemaining": "number (3 decimals) (required - ordered; aliases remainingQuantity, remainingToOrder)",
+          "quantityDelivered": "number (3 decimals)",
+          "remainingToReceive": "number (3 decimals) (ordered - delivered)",
+          "activeOrderCount": "integer (non-cancelled POs ordering this line)",
+          "reasonCode": "LOW_STOCK|REORDER_ALERT|MANUAL|null",
+          "status": "OPEN|PARTIALLY_FULFILLED|FULFILLED|CLOSED (derived from active allocations)",
+          "notes": "string|null",
+          "createdAt": "ISO8601 datetime",
+          "updatedAt": "ISO8601 datetime",
+          "allocations": [
+            {
+              "id": "string (UUID)",
+              "quantityAllocated": "number (3 decimals)",
+              "active": "boolean (false when the PO is CANCELLED)",
+              "purchaseOrderItemId": "string (UUID)",
+              "purchaseOrderId": "string (UUID)",
+              "purchaseOrderNumber": "string",
+              "purchaseOrderStatus": "REGISTERED|AWAITING_DELIVERY|RECEIVED|CLOSED|CANCELLED",
+              "supplier": { "id": "string (UUID)", "name": "string" }|null,
+              "quantityOrdered": "number (3 decimals)",
+              "quantityReceived": "number (3 decimals)",
+              "unitCost": "number (2 decimals)",
+              "createdAt": "ISO8601 datetime",
+              "updatedAt": "ISO8601 datetime"
+            }
+          ]
+        }
+      ],
       "createdBy": {
         "id": "string (UUID)",
         "name": "string"
       }
     }
-  ],
-  "meta": {
-    "page": "integer",
-    "limit": "integer",
-    "total": "integer",
-    "totalPages": "integer"
-  }
+  ],  "meta": {
+    "page": "integer",
+    "limit": "integer",
+    "total": "integer",
+    "totalPages": "integer"
+  }
 }
 ```
+
+> **Derived quantities:** `quantityOrdered` is summed from *active* allocations
+> (allocations whose purchase order is not `CANCELLED`) and can never be set by the client.
+> Cancelling a purchase order automatically releases its allocation. Unless a line was
+> manually closed, its status is derived: `OPEN` (nothing ordered), `PARTIALLY_FULFILLED`
+> (ordered < required), `FULFILLED` (ordered ≥ required); `CLOSED` is sticky.
 
 ---
 
@@ -319,6 +328,8 @@ POST /requirements
 ```
 - Minimum 1 line required
 - No duplicate products within
+- Lines start as `OPEN`; ordered/remaining quantities are derived from allocations created
+  when purchase orders are placed (never client-supplied)
 
 ### Get Requirement by ID
 ```
@@ -327,7 +338,8 @@ GET /requirements/:id
 
 **Path Parameters:** `id` (UUID)
 
-**Response 200:** Same structure as list item with full lines array
+**Response 200:** Same structure as list item with full lines array. Unlike the list view,
+the detail view also includes cancelled allocations (with `active: false`) for auditability.
 
 **Error Responses:**
 - `404 REQUIREMENT_NOT_FOUND`
@@ -366,9 +378,12 @@ POST /requirements/:id/close
 
 **Response 200:** Closed requirement with all lines set to CLOSED
 
+Closing is blocked while purchase orders are still pending — cancel or receive them first.
+
 **Error Responses:**
 - `404 REQUIREMENT_NOT_FOUND`
 - `409 REQUIREMENT_CLOSED` - Already closed
+- `409 REQUIREMENT_HAS_ACTIVE_ORDERS` - POs in REGISTERED/AWAITING_DELIVERY exist
 
 ---
 
@@ -386,7 +401,7 @@ DELETE /requirements/:id
 
 **Error Responses:**
 - `404 REQUIREMENT_NOT_FOUND`
-- `409 REQUIREMENT_LINE_HAS_PO` - Has associated purchase orders
+- `409 REQUIREMENT_HAS_ACTIVE_ORDERS` - Has active (non-cancelled) purchase orders
 
 ---
 
@@ -461,15 +476,13 @@ POST /requirements/:id/lines
 PATCH /requirements/lines/:lineId
 ```
 
-**Path Parameters:** `lineId` (UUID)
-
-**Request Body:** (all optional)
+**Path Parameters:** `lineId` (UUID)**Request Body:** (all optional — fulfillment `status` is derived by the backend and any
+`status` sent is stripped)
 ```json
 {
-  "quantityNeeded": "number (>0, 3 decimals)",
-  "reasonCode": "LOW_STOCK|REORDER_ALERT|MANUAL|null",
-  "notes": "string|null (max 500)",
-  "status": "OPEN|ASSIGNED|CLOSED"
+  "quantityNeeded": "number (>0, 3 decimals)",
+  "reasonCode": "LOW_STOCK|REORDER_ALERT|MANUAL|null",
+  "notes": "string|null (max 500)"
 }
 ```
 
@@ -478,30 +491,42 @@ PATCH /requirements/lines/:lineId
 **Error Responses:**
 - `404 REQUIREMENT_LINE_NOT_FOUND`
 - `409 REQUIREMENT_CLOSED`
+- `409 REQUIREMENT_QUANTITY_BELOW_ORDERED` - Cannot reduce required quantity below what is
+  already ordered (details: `requiredQuantity`, `currentlyOrderedQuantity`, `remainingQuantity`)
 
----
-
-### Assign Supplier to Line
+---### Get Line Order Preview
 ```
-POST /requirements/lines/:lineId/assign-supplier
+GET /requirements/lines/:lineId/order-preview
 ```
 
 **Path Parameters:** `lineId` (UUID)
 
-**Request Body:**
+Read-only prefill payload for starting a purchase order from a requirement line. The
+backend tells the client exactly how much is still available — never compute it yourself.
+
+**Response 200:**
 ```json
 {
-  "supplierId": "string (UUID) (required)"
+  "success": true,
+  "data": {
+    "requirementLineId": "string (UUID)",
+    "requirementId": "string (UUID)",
+    "requirementReference": "string",
+    "requirementStatus": "OPEN|PARTIALLY_FULFILLED|FULFILLED|CLOSED",
+    "requiredBy": "ISO8601 datetime|null",
+    "product": { "id": "string (UUID)", "name": "string", "sku": "string" },
+    "requiredQuantity": "number (3 decimals)",
+    "orderedQuantity": "number (3 decimals)",
+    "remainingQuantity": "number (3 decimals)",
+    "suggestedOrderQuantity": "number (3 decimals) (equals remainingQuantity)",
+    "activeOrderCount": "integer",
+    "lineStatus": "OPEN|PARTIALLY_FULFILLED|FULFILLED|CLOSED"
+  }
 }
 ```
 
-**Response 200:** Updated line with supplier info, status becomes ASSIGNED
-
 **Error Responses:**
 - `404 REQUIREMENT_LINE_NOT_FOUND`
-- `404 SUPPLIER_NOT_FOUND`
-- `409 INACTIVE_SUPPLIER`
-- `409 REQUIREMENT_CLOSED`
 
 ---
 
@@ -520,7 +545,7 @@ DELETE /requirements/lines/:lineId
 **Error Responses:**
 - `404 REQUIREMENT_LINE_NOT_FOUND`
 - `409 REQUIREMENT_CLOSED`
-- `409 REQUIREMENT_LINE_HAS_PO` - Has associated purchase orders
+- `409 REQUIREMENT_HAS_ACTIVE_ORDERS` - Has active (non-cancelled) purchase orders
 
 ---
 
@@ -589,7 +614,13 @@ POST /purchase-orders
 }
 ```
 - Minimum 1 item required
-- If `requirementLineId` provided, it must belong to the same supplier
+- If `requirementLineId` is provided, an allocation is created linking the PO item to the
+  requirement line. `productId` must match the line's product, the line must not be
+  `CLOSED`, and `quantityOrdered` must not exceed the line's remaining quantity
+  (required − active allocations) or the request fails with `409 REQUIREMENT_QUANTITY_EXCEEDED`
+  (details: `requiredQuantity`, `currentlyOrderedQuantity`, `remainingQuantity`, `requestedQuantity`)
+- A requirement line can be fulfilled by several POs, even from different suppliers;
+  cancelling a PO releases its allocation automatically
 
 **Response 201:**
 ```json
@@ -618,19 +649,109 @@ POST /purchase-orders
         "quantityReceived": "number (3 decimals)",
         "unitCost": "number (2 decimals)",
         "createdAt": "ISO8601 datetime",
-        "updatedAt": "ISO8601 datetime",
-        "product": { "id": "string", "name": "string", "sku": "string" },
-        "requirementLine": { "id": "string", "quantityNeeded": "number", "quantityDelivered": "number" }|null
-      }
-    ]
-  }
+        "updatedAt": "ISO8601 datetime",        "product": { "id": "string", "name": "string", "sku": "string" },
+        "requirementLine": {
+          "id": "string",
+          "quantityNeeded": "number",
+          "quantityDelivered": "number",
+          "status": "OPEN|PARTIALLY_FULFILLED|FULFILLED|CLOSED",
+          "requirement": { "id": "string", "reference": "string", "status": "string" }
+        }|null,
+        "allocations": [
+          { "id": "string (UUID)", "requirementLineId": "string (UUID)", "quantityAllocated": "number (3 decimals)" }
+        ]
+      }
+    ]
+  }
 }
 ```
 
 **Error Responses:**
 - `404 SUPPLIER_NOT_FOUND`, `PRODUCT_NOT_FOUND`, `REQUIREMENT_LINE_NOT_FOUND`
 - `409 INACTIVE_SUPPLIER`
-- `422 PO_REQUIREMENT_LINE_SUPPLIER_MISMATCH`
+- `409 REQUIREMENT_CLOSED` - Requirement line is closed
+- `409 REQUIREMENT_QUANTITY_EXCEEDED` - More than the line's remaining quantity
+- `422 BAD_REQUEST` - `productId` does not match the requirement line's product
+
+---
+
+### Create Purchase Order from Requirement
+```
+POST /purchase-orders/from-requirement
+```
+
+Variant of `POST /purchase-orders` for ordering straight from requirement lines. The product
+for each item is derived from the requirement line, so the client only picks a supplier,
+quantity and unit cost. Items may come from different requirement lines (and different
+requirements); all allocation, over-order and status recomputation rules apply.
+
+**Request Body:**
+```json
+{
+  "supplierId": "string (UUID) (required)",
+  "expectedDeliveryDate": "ISO8601 datetime|null",
+  "notes": "string|null (max 1000)",
+  "items": [
+    {
+      "requirementLineId": "string (UUID) (required)",
+      "quantityOrdered": "number (required, >0, 3 decimals)",
+      "unitCost": "number (required, >0, 2 decimals)"
+    }
+  ]
+}
+```
+
+**Response 201:** Same as Create Purchase Order (items carry `requirementLine` and `allocations`)
+
+**Error Responses:** Same as Create Purchase Order
+
+---
+
+### Update Purchase Order Item
+```
+PATCH /purchase-orders/items/:itemId
+```
+
+**Path Parameters:** `itemId` (UUID)
+
+Edits quantity/cost on a single item. On requirement-linked items the allocation is resized
+and validated against the *other* active allocations on that line.
+
+**Request Body:** (at least one field)
+```json
+{
+  "quantityOrdered": "number (>0, 3 decimals)",
+  "unitCost": "number (>0, 2 decimals)"
+}
+```
+
+**Response 200:** Updated item with `product` and `allocations`
+
+**Error Responses:**
+- `404 PURCHASE_ORDER_ITEM_NOT_FOUND`, `REQUIREMENT_LINE_NOT_FOUND`
+- `409 PO_STATUS_TRANSITION_INVALID` - Item is on a RECEIVED/CANCELLED/CLOSED order, or
+  quantity reduced below the quantity already received
+- `409 REQUIREMENT_QUANTITY_EXCEEDED` - Would exceed the line's remaining quantity
+
+---
+
+### Remove Purchase Order Item
+```
+DELETE /purchase-orders/items/:itemId
+```
+
+**Path Parameters:** `itemId` (UUID)
+
+Removes an item from a draft (`REGISTERED`) order and releases its requirement allocation.
+
+**Response 200:**
+```json
+{ "success": true, "data": null }
+```
+
+**Error Responses:**
+- `404 PURCHASE_ORDER_ITEM_NOT_FOUND`
+- `409 PO_STATUS_TRANSITION_INVALID` - Order not REGISTERED, or item has received quantity
 
 ---
 
@@ -674,12 +795,20 @@ GET /purchase-orders/:id
         "quantityReceived": "number",
         "unitCost": "number",
         "createdAt": "ISO8601 datetime",
-        "updatedAt": "ISO8601 datetime",
-        "product": { "id": "string", "name": "string", "sku": "string" },
-        "requirementLine": { "id": "string", "quantityNeeded": "number", "quantityDelivered": "number" }|null
-      }
-    ],
-    "goodsReceipts": [
+        "updatedAt": "ISO8601 datetime",        "product": { "id": "string", "name": "string", "sku": "string" },
+        "requirementLine": {
+          "id": "string",
+          "quantityNeeded": "number",
+          "quantityDelivered": "number",
+          "status": "OPEN|PARTIALLY_FULFILLED|FULFILLED|CLOSED",
+          "requirement": { "id": "string", "reference": "string", "status": "string" }
+        }|null,
+        "allocations": [
+          { "id": "string (UUID)", "requirementLineId": "string (UUID)", "quantityAllocated": "number (3 decimals)" }
+        ]
+      }
+    ],
+    "goodsReceipts": [
       {
         "id": "string (UUID)",
         "receiptNumber": "string",
@@ -718,7 +847,7 @@ PATCH /purchase-orders/:id
 
 ### Mark as Awaiting Delivery
 ```
-POST /purchase-orders/:id/mark-delivered
+POST /purchase-orders/:id/mark-awaiting-delivery
 ```
 
 **Path Parameters:** `id` (UUID)
@@ -742,11 +871,14 @@ POST /purchase-orders/:id/cancel
 
 **Status Transition:** `REGISTERED|AWAITING_DELIVERY` → `CANCELLED`
 
+Cancelling automatically releases the order's requirement allocations — ordered quantities
+on the affected requirement lines drop and their statuses are recomputed.
+
 **Response 200:** Updated PO with `status: "CANCELLED"`
 
 **Error Responses:**
 - `404 PURCHASE_ORDER_NOT_FOUND`
-- `409 PO_CANNOT_CANCEL` - Cannot cancel RECEIVED/CLOSED/CANCELLED
+- `409 PO_CANNOT_CANCEL` - Cannot cancel RECEIVED/CLOSED/CANCELLED, or any item has received quantity
 
 ---
 
@@ -1012,7 +1144,8 @@ POST /goods-receipts/:id/confirm
 1. Creates/updates batches for each item
 2. Records stock movements (`PURCHASE`, `IN`) at location
 3. Updates PO item `quantityReceived`
-4. Updates requirement line `quantityDelivered` and closes if fulfilled
+4. Increments requirement line `quantityDelivered` (fulfillment status stays derived from
+   active allocations — receiving never closes a requirement)
 5. Updates PO status to `RECEIVED` (if all items) or `AWAITING_DELIVERY` (partial)
 6. Marks receipt confirmed with `confirmedById`
 
@@ -1407,14 +1540,15 @@ DELETE /purchase-returns/:id
 | `REQUIREMENT_NOT_FOUND` | 404 | Requirement doesn't exist |
 | `REQUIREMENT_CLOSED` | 409 | Cannot modify closed |
 | `REQUIREMENT_LINE_NOT_FOUND` | 404 | Line doesn't exist |
-| `REQUIREMENT_LINE_HAS_PO` | 409 | Line has PO items |
+| `REQUIREMENT_HAS_ACTIVE_ORDERS` | 409 | Requirement (or line) has non-cancelled POs |
+| `REQUIREMENT_QUANTITY_BELOW_ORDERED` | 409 | Reducing required qty below what is ordered |
+| `REQUIREMENT_QUANTITY_EXCEEDED` | 409 | Order exceeds the line's remaining quantity |
 | `DUPLICATE_PRODUCT_IN_REQUIREMENT` | 409 | Duplicate product |
 | `PURCHASE_ORDER_NOT_FOUND` | 404 | PO doesn't exist |
 | `PURCHASE_ORDER_ITEM_NOT_FOUND` | 404 | PO item doesn't exist |
 | `DUPLICATE_PO_NUMBER` | 409 | PO number exists |
 | `PO_STATUS_TRANSITION_INVALID` | 409 | Invalid status change |
 | `PO_CANNOT_CANCEL` | 409 | Cannot cancel received/closed |
-| `PO_REQUIREMENT_LINE_SUPPLIER_MISMATCH` | 422 | Line supplier ≠ PO supplier |
 | `GOODS_RECEIPT_NOT_FOUND` | 404 | Receipt doesn't exist |
 | `GOODS_RECEIPT_ITEM_NOT_FOUND` | 404 | Receipt item doesn't exist |
 | `GOODS_RECEIPT_ALREADY_CONFIRMED` | 409 | Already confirmed |
@@ -1465,14 +1599,15 @@ CONFIRMED                      RESOLVED (with note) → MATCHED → C
 OPEN → PARTIALLY_PAID → PAID
 ```
 
-### Purchase Requirement
+### Purchase Requirement / Requirement Line
 ```
-OPEN → ASSIGNED (supplier assigned) → CLOSED (fully delivered)
-```
+OPEN (nothing ordered)
+  → PARTIALLY_FULFILLED (ordered < required)
+  → FULFILLED (ordered >= required)
+  → CLOSED (manual close; sticky)
 
-### Purchase Requirement Line
-```
-OPEN → ASSIGNED → CLOSED
+Cancelling a PO releases its allocation, so affected lines drop back
+(e.g. FULFILLED → PARTIALLY_FULFILLED or OPEN).
 ```
 
 ---

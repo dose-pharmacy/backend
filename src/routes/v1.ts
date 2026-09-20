@@ -5,10 +5,12 @@ import {
   requireAuthenticatedUser,
   requireRole,
 } from "../middleware/authorize.js";
+import { dashboardRouter } from "./dashboard.js";
 import { inventoryRouter } from "./inventory.js";
 import { purchasingRouter } from "./purchasing.js";
 import { posRouter } from "./pos.js";
 import { financialsRouter } from "./financials.js";
+import { auditTrailRouter } from "./audit.js";
 
 export const v1Router = Router();
 
@@ -19,7 +21,9 @@ v1Router.get(
   adminController.test,
 );
 
+v1Router.use("/dashboard", dashboardRouter);
 v1Router.use("/inventory", inventoryRouter);
 v1Router.use("/purchasing", purchasingRouter);
 v1Router.use("/pos", posRouter);
 v1Router.use("/financials", financialsRouter);
+v1Router.use("/audit", auditTrailRouter);
