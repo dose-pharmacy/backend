@@ -19,6 +19,13 @@ export type StockMovementInput = {
   direction: StockDirection;
   /** Positive quantity expressed in the product's BASE unit. */
   quantity: Prisma.Decimal | number | string;
+  /**
+   * Optional conversion snapshot: the unit the originating transaction was
+   * entered in and the factor used to normalize to base units. Purely
+   * historical — `quantity` is always base units regardless.
+   */
+  unitId?: string | null;
+  conversionFactor?: Prisma.Decimal | number | null;
   referenceType?: string | null;
   referenceId?: string | null;
   notes?: string | null;
@@ -207,6 +214,11 @@ export async function recordMovementInTransaction(
       direction: input.direction,
       quantity,
       balanceAfter: newBalance,
+      unitId: input.unitId ?? null,
+      conversionFactor:
+        input.conversionFactor !== undefined && input.conversionFactor !== null
+          ? toDecimal(input.conversionFactor)
+          : null,
       referenceType: input.referenceType ?? null,
       referenceId: input.referenceId ?? null,
       notes: input.notes ?? null,

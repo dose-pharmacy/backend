@@ -61,6 +61,7 @@ export const posProductService = {
           brand: true,
           sku: true,
           isActive: true,
+          isNarcotic: true,
           minimumStock: true,
           reorderPoint: true,
           productGroup: { select: { id: true, name: true } },
@@ -122,6 +123,7 @@ export const posProductService = {
         sku: product.sku,
         productGroup: product.productGroup,
         isActive: product.isActive,
+        isNarcotic: product.isNarcotic,
         baseUnit: product.units.find((unit) => unit.isBaseUnit)?.unit ?? null,
         units: product.units.map((unit) => ({
           id: unit.id,

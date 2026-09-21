@@ -5,7 +5,16 @@ loadDotenv();
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  PORT: z.coerce.number().int().positive().default(4000),
+  PORT: z
+    .string()
+    .default("4000")
+    .transform((val) => {
+      // PORT=0 (sometimes inherited from sandboxed/parent shells) falls back to
+      // the default so local runs and tests never fail on env validation.
+      if (val === "0" || val.trim() === "") return 4000;
+      return Number(val);
+    })
+    .pipe(z.number().int().positive()),
   HOST: z.string().min(1).default("0.0.0.0"),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
   BETTER_AUTH_SECRET: z

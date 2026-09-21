@@ -33,8 +33,8 @@ export const stockController = {
       locationId: query.locationId,
       search: query.search,
     };
-    const { items, meta } = await stockService.listStock(input);
-    sendSuccess(res, items, { meta });
+    const { items, meta, summary } = await stockService.listStock(input);
+    sendSuccess(res, items, { meta, summary });
   }),
 
   openingStock: asyncHandler(async (req: Request, res: Response) => {

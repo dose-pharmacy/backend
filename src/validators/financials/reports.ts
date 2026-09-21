@@ -19,7 +19,7 @@ export const dateToQuerySchema = z.coerce.date().optional();
  * repeats the check (defence in depth) but rejecting here gives the client a
  * clean 422 before any query runs.
  */
-function dateRangeRefinement<T extends { dateFrom?: Date; dateTo?: Date }>(
+export function dateRangeRefinement<T extends { dateFrom?: Date; dateTo?: Date }>(
   value: T,
   ctx: z.RefinementCtx,
 ): void {

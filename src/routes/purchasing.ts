@@ -31,6 +31,7 @@ import {
   purchaseOrderListQuerySchema,
   purchaseOrderParamsSchema,
   purchaseOrderItemParamsSchema,
+  acceptShortageSchema,
 } from "../validators/purchasing/purchase-order.js";
 import {
   createGoodsReceiptSchema,
@@ -214,6 +215,12 @@ purchasingRouter.post(
   ...admin,
   validate({ params: purchaseOrderParamsSchema }),
   purchaseOrderController.cancel,
+);
+purchasingRouter.post(
+  "/purchase-orders/items/:itemId/accept-shortage",
+  ...admin,
+  validate({ params: purchaseOrderItemParamsSchema, body: acceptShortageSchema }),
+  purchaseOrderController.acceptShortage,
 );
 purchasingRouter.post(
   "/purchase-orders/:id/mark-awaiting-delivery",

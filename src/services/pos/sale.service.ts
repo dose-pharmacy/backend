@@ -52,7 +52,7 @@ const saleDetailInclude = {
   cancelledBy: { select: { id: true, name: true, email: true } },
   items: {
     include: {
-      product: { select: { id: true, name: true, sku: true } },
+      product: { select: { id: true, name: true, sku: true, isNarcotic: true } },
       unit: { select: { id: true, name: true, symbol: true } },
       batchAllocations: {
         include: {
@@ -76,6 +76,7 @@ function generateSaleNumber(): string {
 type PreparedItem = {
   productId: string;
   productName: string;
+  isNarcotic: boolean;
   unitId: string;
   quantity: Prisma.Decimal;
   baseQuantity: Prisma.Decimal;
@@ -97,7 +98,7 @@ async function prepareItem(
 ): Promise<PreparedItem> {
   const product = await tx.product.findUnique({
     where: { id: item.productId },
-    select: { id: true, name: true, isActive: true },
+    select: { id: true, name: true, isActive: true, isNarcotic: true },
   });
   if (!product) {
     throw new AppError(404, ErrorCode.PRODUCT_NOT_FOUND, "Product not found");
@@ -156,9 +157,16 @@ async function prepareItem(
   // applied at the bill level via billDiscount on the sale).
   const lineTotal = roundTo(actualUnitPrice.mul(toDecimal(item.quantity)), 2);
 
+  // TODO(RBAC): `product.isNarcotic` is loaded on every sale line. Once
+  // role-based access control lands, restrict narcotic sales to authorized
+  // roles here (e.g. PHARMACIST/ADMIN) by checking the actor's role against
+  // `product.isNarcotic` and rejecting unauthorized sales with a 403.
+  // Deliberately NOT enforced in this MVP — the frontend shows the
+  // prescription/reference reminder using the POS product's `isNarcotic`.
   return {
     productId: product.id,
     productName: product.name,
+    isNarcotic: product.isNarcotic,
     unitId: item.unitId,
     quantity: toDecimal(item.quantity),
     baseQuantity,

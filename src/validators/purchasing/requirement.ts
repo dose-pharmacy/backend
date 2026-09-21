@@ -11,6 +11,9 @@ const requirementStatusEnum = z.enum([
 
 export const createRequirementLineSchema = z.object({
   productId: uuidSchema,
+  // Quantity is expressed in this unit and converted to base units by the
+  // service. Omit to default to the product's base unit.
+  unitId: uuidSchema.optional(),
   quantityNeeded: quantitySchema,
   reasonCode: reasonCodeEnum.optional(),
   notes: z.string().trim().max(500).optional(),
@@ -30,9 +33,11 @@ export const updateRequirementSchema = z.object({
 export const addRequirementLineSchema = createRequirementLineSchema;
 
 // Fulfillment status is derived by the backend; clients may only edit the inputs
-// (required quantity, reason, notes). Any `status` sent is stripped by zod.
+// (required quantity, unit, reason, notes). Any `status` sent is stripped by zod.
 export const updateRequirementLineSchema = z.object({
   quantityNeeded: quantitySchema.optional(),
+  // Changing the unit recomputes quantityNeededBase.
+  unitId: uuidSchema.optional(),
   reasonCode: reasonCodeEnum.optional(),
   notes: z.string().trim().max(500).nullable().optional(),
 });

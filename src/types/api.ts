@@ -9,6 +9,8 @@ export type ApiSuccess<T> = {
   success: true;
   data: T;
   meta?: PaginationMeta;
+  /** Server-computed aggregate counts over the filtered dataset. */
+  summary?: Record<string, unknown>;
 };
 
 export type ApiErrorBody = {

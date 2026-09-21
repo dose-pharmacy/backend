@@ -1,5 +1,6 @@
 import { StockDirection, StockTransactionType } from "@prisma/client";
 import { Prisma } from "@prisma/client";
+import { prisma } from "../../database/prisma.js";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { batchRepository } from "../../repositories/inventory/batch.repository.js";
@@ -177,7 +178,33 @@ export const stockService = {
       skip,
       take,
     });
-    return { items: items.map(enrichStockItem), meta: buildPaginationMeta(total, page, limit) };
+
+    // Distinct in-stock products per location over the FILTERED dataset.
+    const byLocationGroups = await prisma.inventoryStock.groupBy({
+      by: ["locationId"],
+      where: {
+        ...(query.productId ? { productId: query.productId } : {}),
+        ...(query.batchId ? { batchId: query.batchId } : {}),
+        ...(query.locationId ? { locationId: query.locationId } : {}),
+        ...(query.search ? { product: { name: { contains: query.search, mode: "insensitive" as const } } } : {}),
+        quantity: { gt: 0 },
+      },
+      orderBy: [],
+      _count: { _all: true },
+    });
+
+    const locationIds = byLocationGroups.map((g) => g.locationId);
+    const locations = locationIds.length
+      ? await prisma.inventoryLocation.findMany({ where: { id: { in: locationIds } }, select: { id: true, name: true } })
+      : [];
+    const locationNameById = new Map(locations.map((l) => [l.id, l.name]));
+    const byLocation = byLocationGroups.map((g) => ({
+      locationId: g.locationId,
+      locationName: locationNameById.get(g.locationId) ?? "Unknown",
+      itemCount: g._count._all,
+    }));
+
+    return { items: items.map(enrichStockItem), meta: buildPaginationMeta(total, page, limit), summary: { byLocation } };
   },
 
   /** Stock rows for one product (dashboard/list support). */

@@ -24,8 +24,8 @@ export const productController = {
       brand: query.brand,
       isActive: query.isActive !== undefined ? query.isActive === "true" : undefined,
     };
-    const { items, meta } = await productService.list(input);
-    sendSuccess(res, items, { meta });
+    const { items, meta, summary } = await productService.list(input);
+    sendSuccess(res, items, { meta, summary });
   }),
 
   create: asyncHandler(async (req: Request, res: Response) => {

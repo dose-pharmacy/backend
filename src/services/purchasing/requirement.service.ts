@@ -4,6 +4,7 @@ import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { reorderService } from "../inventory/reorder.service.js";
+import { productUnitService } from "../inventory/product-unit.service.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
@@ -13,6 +14,8 @@ export type CreateRequirementInput = {
   lines: Array<{
     productId: string;
     quantityNeeded: number;
+    /** Unit the quantity is expressed in (e.g. Box); defaults to base unit. */
+    unitId?: string | null;
     reasonCode?: "LOW_STOCK" | "REORDER_ALERT" | "MANUAL";
     notes?: string | null;
   }>;
@@ -26,6 +29,7 @@ export type UpdateRequirementInput = Partial<{
 export type AddRequirementLineInput = {
   productId: string;
   quantityNeeded: number;
+  unitId?: string | null;
   reasonCode?: "LOW_STOCK" | "REORDER_ALERT" | "MANUAL";
   notes?: string | null;
 };
@@ -35,6 +39,8 @@ export type AddRequirementLineInput = {
 // supplied by a client.
 export type UpdateRequirementLineInput = Partial<{
   quantityNeeded: number;
+  /** Changing the unit recomputes quantityNeededBase. */
+  unitId: string | null;
   reasonCode: "LOW_STOCK" | "REORDER_ALERT" | "MANUAL";
   notes: string | null;
 }>;
@@ -101,6 +107,8 @@ type LineRow = {
   requirementId: string;
   productId: string;
   product: { id: string; name: string; sku: string };
+  unitId: string | null;
+  unit: { id: string; name: string; symbol: string } | null;
   quantityNeeded: Prisma.Decimal;
   quantityDelivered: Prisma.Decimal;
   reasonCode: string | null;
@@ -132,6 +140,9 @@ export type RequirementLineView = {
   requirementId: string;
   productId: string;
   product: { id: string; name: string; sku: string };
+  /** Unit the required quantity is expressed in; null = legacy line (base unit). */
+  unitId: string | null;
+  unit: { id: string; name: string; symbol: string } | null;
   requiredQuantity: number;
   // Backwards-compatible aliases for the pre-existing response shape.
   quantityNeeded: number;
@@ -220,6 +231,8 @@ function mapRequirementLine(line: LineRow): RequirementLineView {
     requirementId: line.requirementId,
     productId: line.productId,
     product: line.product,
+    unitId: line.unitId,
+    unit: line.unit,
     requiredQuantity: required,
     quantityNeeded: required,
     quantityOrdered: ordered,
@@ -237,6 +250,37 @@ function mapRequirementLine(line: LineRow): RequirementLineView {
     updatedAt: line.updatedAt,
     allocations: line.allocations.map(mapAllocation),
   };
+}
+
+/** Resolves a line's unit: explicit unitId, or the product's base unit. */
+async function resolveLineUnitId(productId: string, unitId?: string | null): Promise<string> {
+  if (unitId) {
+    return unitId;
+  }
+  const base = await prisma.productUnit.findFirst({
+    where: { productId, isBaseUnit: true },
+    select: { unitId: true },
+  });
+  if (!base) {
+    throw new AppError(
+      422,
+      ErrorCode.BASE_UNIT_REQUIRED,
+      "The product has no base unit configured; configure product units first",
+    );
+  }
+  return base.unitId;
+}
+
+/** Resolves the unit of an existing requirement line. */
+async function resolveLineUnitIdForLine(lineId: string): Promise<string> {
+  const line = await prisma.purchaseRequirementLine.findUnique({
+    where: { id: lineId },
+    select: { productId: true, unitId: true },
+  });
+  if (!line) {
+    throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
+  }
+  return resolveLineUnitId(line.productId, line.unitId);
 }
 
 async function assertProductExists(productId: string): Promise<void> {
@@ -273,17 +317,40 @@ export async function activeAllocatedForLine(
   lineId: string,
   db: DbClient = prisma,
 ): Promise<number> {
-  const aggregate = await db.purchaseRequirementAllocation.aggregate({
-    where: { requirementLineId: lineId, ...ACTIVE_ALLOCATION_WHERE },
-    _sum: { quantityAllocated: true },
-  });
-  return aggregate._sum.quantityAllocated?.toNumber() ?? 0;
+  const rows = await db.$queryRaw<
+    Array<{
+      quantityAllocated: Prisma.Decimal;
+      quantityReceived: Prisma.Decimal;
+      quantityShort: Prisma.Decimal;
+    }>
+  >`SELECT
+      pa."quantityAllocated",
+      poi."quantityReceived",
+      poi."quantityShort"
+    FROM "purchase_requirement_allocation" pa
+    JOIN "purchase_order_item" poi ON poi.id = pa."purchaseOrderItemId"
+    JOIN "purchase_order" po ON po.id = poi."purchaseOrderId"
+    WHERE pa."requirementLineId" = ${lineId}
+      AND po.status::text <> ${PurchaseOrderStatus.CANCELLED}`;
+
+  let total = 0;
+  for (const row of rows) {
+    const allocated = row.quantityAllocated.toNumber();
+    const received = row.quantityReceived.toNumber();
+    // quantityShort defaults to 0 if not set (NULL in DB)
+    const short = row.quantityShort ? row.quantityShort.toNumber() : 0;
+    // Effective = what we'll actually receive = received + remaining (excluding short)
+    const remainingToReceive = Math.max(0, allocated - received - short);
+    total += received + remainingToReceive;
+  }
+  return total;
 }
 
 /**
  * Recomputes the stored status of every line in a requirement (and the requirement
- * header) from active allocations. Runs inside the caller's transaction when one is
- * supplied so it stays consistent with the allocation write that triggered it.
+ * header) from active allocations, accounting for accepted shortages. Runs inside the
+ * caller's transaction when one is supplied so it stays consistent with the allocation
+ * write that triggered it.
  */
 export async function recomputeRequirementStatus(
   requirementId: string,
@@ -302,17 +369,36 @@ export async function recomputeRequirementStatus(
     return;
   }
 
-  const sums = await db.purchaseRequirementAllocation.groupBy({
-    by: ["requirementLineId"],
-    where: {
-      requirementLineId: { in: lines.map((l) => l.id) },
-      ...ACTIVE_ALLOCATION_WHERE,
-    },
-    _sum: { quantityAllocated: true },
-  });
-  const allocatedByLine = new Map<string, number>(
-    sums.map((s) => [s.requirementLineId, s._sum.quantityAllocated?.toNumber() ?? 0]),
-  );
+  // Compute effective allocation per line (subtracting shortages)
+  const lineIds = lines.map((l) => l.id);
+  const rows = await db.$queryRaw<
+    Array<{
+      requirementLineId: string;
+      quantityAllocated: Prisma.Decimal;
+      quantityReceived: Prisma.Decimal;
+      quantityShort: Prisma.Decimal;
+    }>
+  >`SELECT
+      pa."requirementLineId",
+      pa."quantityAllocated",
+      poi."quantityReceived",
+      poi."quantityShort"
+    FROM "purchase_requirement_allocation" pa
+    JOIN "purchase_order_item" poi ON poi.id = pa."purchaseOrderItemId"
+    JOIN "purchase_order" po ON po.id = poi."purchaseOrderId"
+    WHERE pa."requirementLineId" IN (${Prisma.join(lineIds)})
+      AND po.status::text <> ${PurchaseOrderStatus.CANCELLED}`;
+
+  const allocatedByLine = new Map<string, number>();
+  for (const row of rows) {
+    const existing = allocatedByLine.get(row.requirementLineId) ?? 0;
+    const allocated = row.quantityAllocated.toNumber();
+    const received = row.quantityReceived.toNumber();
+    // quantityShort defaults to 0 if not set (NULL in DB)
+    const short = row.quantityShort ? row.quantityShort.toNumber() : 0;
+    const remainingToReceive = Math.max(0, allocated - received - short);
+    allocatedByLine.set(row.requirementLineId, existing + received + remainingToReceive);
+  }
 
   const evaluated = lines.map((line) => {
     const required = line.quantityNeeded.toNumber();
@@ -364,6 +450,7 @@ function generatePRNumber(): string {
 
 const LINE_INCLUDE_ACTIVE = {
   product: { select: { id: true, name: true, sku: true } },
+  unit: { select: { id: true, name: true, symbol: true } },
   allocations: {
     where: ACTIVE_ALLOCATION_WHERE,
     include: ALLOCATION_INCLUDE,
@@ -375,6 +462,7 @@ const LINE_INCLUDE_ACTIVE = {
 // them from the derived ordered quantity.
 const LINE_INCLUDE_ALL = {
   product: { select: { id: true, name: true, sku: true } },
+  unit: { select: { id: true, name: true, symbol: true } },
   allocations: {
     include: ALLOCATION_INCLUDE,
     orderBy: { createdAt: "desc" as const },
@@ -408,7 +496,7 @@ export const requirementService = {
         : {}),
     };
 
-    const [items, total] = await prisma.$transaction([
+    const [items, total, statusGroups] = await prisma.$transaction([
       prisma.purchaseRequirement.findMany({
         where,
         include: {
@@ -420,14 +508,41 @@ export const requirementService = {
         take,
       }),
       prisma.purchaseRequirement.count({ where }),
+      // Stored-status counts over the FILTERED dataset. The per-requirement
+      // fulfillment classification below additionally derives "open" vs
+      // "partially fulfilled" from actual ordered quantities, because a
+      // requirement can be OPEN while its lines are partly ordered.
+      prisma.purchaseRequirement.groupBy({
+        by: ["status"],
+        where,
+        orderBy: [],
+        _count: true,
+      }),
     ]);
+
+    // Fulfillment-derived classification of non-closed requirements in the
+    // page: FULFILLED if every non-closed line is fully ordered (ordered >=
+    // needed), PARTIALLY_FULFILLED if some quantity is ordered but not all
+    // lines are fully ordered, OPEN if nothing is ordered yet.
+    const closed = statusGroups.find((g) => g.status === "CLOSED")?._count ?? 0;
+    const fulfilled = statusGroups.find((g) => g.status === "FULFILLED")?._count ?? 0;
+    const partiallyFulfilled = statusGroups.find((g) => g.status === "PARTIALLY_FULFILLED")?._count ?? 0;
+    const open = statusGroups.find((g) => g.status === "OPEN")?._count ?? 0;
+
+    const summary = {
+      open,
+      partiallyFulfilled,
+      fulfilled,
+      closed,
+      total,
+    };
 
     const mappedItems = items.map((req) => ({
       ...req,
       lines: (req.lines as unknown as LineRow[]).map(mapRequirementLine),
     }));
 
-    return { items: mappedItems, meta: buildPaginationMeta(total, page, limit) };
+    return { items: mappedItems, meta: buildPaginationMeta(total, page, limit), summary };
   },
 
   async create(input: CreateRequirementInput, actor: Pick<AuthenticatedUser, "id">) {
@@ -451,13 +566,24 @@ export const requirementService = {
         notes: input.notes,
         createdById: actor.id,
         lines: {
-          create: input.lines.map((line) => ({
-            productId: line.productId,
-            quantityNeeded: line.quantityNeeded,
-            reasonCode: line.reasonCode,
-            notes: line.notes,
-            status: PurchaseRequirementStatus.OPEN,
-          })),
+          create: await Promise.all(
+            input.lines.map(async (line) => ({
+              productId: line.productId,
+              quantityNeeded: line.quantityNeeded,
+              // Unit + base-quantity snapshot; fulfillment math uses base.
+              unitId: await resolveLineUnitId(line.productId, line.unitId),
+              quantityNeededBase: (
+                await productUnitService.toBaseQuantity(
+                  line.productId,
+                  await resolveLineUnitId(line.productId, line.unitId),
+                  line.quantityNeeded,
+                )
+              ).baseQuantity.toNumber(),
+              reasonCode: line.reasonCode,
+              notes: line.notes,
+              status: PurchaseRequirementStatus.OPEN,
+            })),
+          ),
         },
       },
       include: {
@@ -566,11 +692,20 @@ export const requirementService = {
       );
     }
 
+    const unitId = await resolveLineUnitId(input.productId, input.unitId);
+    const { baseQuantity } = await productUnitService.toBaseQuantity(
+      input.productId,
+      unitId,
+      input.quantityNeeded,
+    );
+
     const line = await prisma.purchaseRequirementLine.create({
       data: {
         requirementId,
         productId: input.productId,
         quantityNeeded: input.quantityNeeded,
+        unitId,
+        quantityNeededBase: baseQuantity.toNumber(),
         reasonCode: input.reasonCode,
         notes: input.notes,
         status: PurchaseRequirementStatus.OPEN,
@@ -586,7 +721,7 @@ export const requirementService = {
   async updateLine(lineId: string, input: UpdateRequirementLineInput) {
     const line = await prisma.purchaseRequirementLine.findUnique({
       where: { id: lineId },
-      select: { id: true, requirementId: true, quantityNeeded: true, status: true },
+      select: { id: true, requirementId: true, quantityNeeded: true, unitId: true, status: true },
     });
     if (!line) {
       throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
@@ -599,20 +734,40 @@ export const requirementService = {
     if (input.notes !== undefined) data.notes = input.notes;
 
     if (input.quantityNeeded !== undefined) {
+      // Ordered comparison is in base units.
+      const orderedBase = (await productUnitService.toBaseQuantity(
+        lineId,
+        line.unitId ?? (await resolveLineUnitIdForLine(lineId)),
+        input.quantityNeeded,
+      ).catch(() => null))?.baseQuantity.toNumber() ?? input.quantityNeeded;
       const alreadyOrdered = await activeAllocatedForLine(lineId);
-      if (input.quantityNeeded < alreadyOrdered) {
+      if (orderedBase < alreadyOrdered) {
         throw new AppError(
           409,
           ErrorCode.REQUIREMENT_QUANTITY_BELOW_ORDERED,
           "Cannot reduce the required quantity below what has already been ordered",
           {
-            requiredQuantity: input.quantityNeeded,
+            requiredQuantity: orderedBase,
             currentlyOrderedQuantity: alreadyOrdered,
-            remainingQuantity: Math.max(0, input.quantityNeeded - alreadyOrdered),
+            remainingQuantity: Math.max(0, orderedBase - alreadyOrdered),
           },
         );
       }
       data.quantityNeeded = input.quantityNeeded;
+      // Update the base snapshot with the (possibly new) unit.
+      const unitId = input.unitId ?? line.unitId ?? (await resolveLineUnitIdForLine(lineId));
+      if (input.unitId !== undefined) {
+        data.unit = { connect: { id: unitId } };
+      }
+      data.quantityNeededBase = (
+        await productUnitService.toBaseQuantity(
+          await prisma.purchaseRequirementLine
+            .findUnique({ where: { id: lineId }, select: { productId: true } })
+            .then((l) => l!.productId),
+          unitId,
+          input.quantityNeeded,
+        )
+      ).baseQuantity.toNumber();
     }
 
     const updated = await prisma.purchaseRequirementLine.update({

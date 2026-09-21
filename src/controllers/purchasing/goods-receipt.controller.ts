@@ -12,8 +12,8 @@ export const goodsReceiptController = {
       purchaseOrderId: query.purchaseOrderId,
       status: query.status as GRListQuery["status"],
     };
-    const { items, meta } = await goodsReceiptService.list(input);
-    sendSuccess(res, items, { meta });
+    const { items, meta, summary } = await goodsReceiptService.list(input);
+    sendSuccess(res, items, { meta, summary });
   }),
 
   create: asyncHandler(async (req: Request, res: Response) => {

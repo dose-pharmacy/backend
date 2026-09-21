@@ -17,6 +17,7 @@ const productSummarySelect = {
   brand: true,
   sku: true,
   isActive: true,
+  isNarcotic: true,
 } satisfies Prisma.ProductSelect;
 
 export const productRepository = {
@@ -88,7 +89,7 @@ export const productRepository = {
       }),
       prisma.product.count({ where }),
     ]);
-    return { items, total };
+    return { items, total, where };
   },
 
   create(data: {

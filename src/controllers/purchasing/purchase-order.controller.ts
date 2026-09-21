@@ -18,10 +18,11 @@ export const purchaseOrderController = {
       limit: query.limit ? Number(query.limit) : undefined,
       supplierId: query.supplierId,
       status: query.status as POListQuery["status"],
+      paymentStatus: query.paymentStatus as POListQuery["paymentStatus"],
       search: query.search,
     };
-    const { items, meta } = await purchaseOrderService.list(input);
-    sendSuccess(res, items, { meta });
+    const { items, meta, summary } = await purchaseOrderService.list(input);
+    sendSuccess(res, items, { meta, summary });
   }),
 
   create: asyncHandler(async (req: Request, res: Response) => {
@@ -69,6 +70,14 @@ export const purchaseOrderController = {
     const actor = req.auth!.user;
     const data = await purchaseOrderService.cancel(req.params.id as string, actor);
     sendSuccess(res, data);
+  }),
+
+  acceptShortage: asyncHandler(async (req: Request, res: Response) => {
+    const data = await purchaseOrderService.acceptShortage(
+      req.params.itemId as string,
+      req.body as { quantityShort?: number; shortReason?: string | null },
+    );
+    sendSuccess(res, data, { status: 201 });
   }),
 
   markAwaitingDelivery: asyncHandler(async (req: Request, res: Response) => {

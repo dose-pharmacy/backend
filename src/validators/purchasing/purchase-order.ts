@@ -2,6 +2,7 @@ import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema, decimalNumber } from "../inventory/common.js";
 
 const poStatusEnum = z.enum(["REGISTERED", "AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"]);
+const poPaymentStatusEnum = z.enum(["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID", "ALL"]);
 
 const positiveMoneySchema = decimalNumber({
   minInclusive: 0.01,
@@ -12,6 +13,9 @@ const positiveMoneySchema = decimalNumber({
 
 export const createPOItemSchema = z.object({
   productId: uuidSchema,
+  // Quantity is expressed in this unit and converted to base units by the
+  // service. Omit to default to the product's base unit.
+  unitId: uuidSchema.optional(),
   quantityOrdered: quantitySchema,
   unitCost: positiveMoneySchema,
   requirementLineId: uuidSchema.optional(),
@@ -57,6 +61,7 @@ export const purchaseOrderListQuerySchema = z
   .object({
     supplierId: uuidSchema.optional(),
     status: poStatusEnum.optional(),
+    paymentStatus: poPaymentStatusEnum.optional(),
     search: z.string().trim().max(200).optional(),
   })
   .merge(paginationQuerySchema);
@@ -72,3 +77,13 @@ export const purchaseOrderItemParamsSchema = z.object({
 export const poStatusActionSchema = z.object({
   // No body needed for cancel/mark-delivered/close actions
 });
+
+export const acceptShortageSchema = z
+  .object({
+    // Optional: defaults to the full remaining quantity (ordered - received - short).
+    quantityShort: quantitySchema.optional(),
+    shortReason: z.string().trim().max(500).nullable().optional(),
+  })
+  .refine((value) => value.quantityShort !== undefined || value.shortReason !== undefined, {
+    message: "At least one of quantityShort or shortReason is required",
+  });

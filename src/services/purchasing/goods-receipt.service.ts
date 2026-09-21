@@ -1,8 +1,8 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, PurchaseOrderStatus } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
-import { stockMovementService } from "../inventory/stock-movement.service.js";
+import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
@@ -90,7 +90,7 @@ async function assertLocationActive(locationId: string) {
 async function assertPOItemBelongsToPO(poItemId: string, poId: string) {
   const item = await prisma.purchaseOrderItem.findUnique({
     where: { id: poItemId },
-    select: { id: true, purchaseOrderId: true, productId: true, quantityOrdered: true, quantityReceived: true, unitCost: true },
+    select: { id: true, purchaseOrderId: true, productId: true, quantityOrdered: true, quantityOrderedBase: true, quantityReceived: true, quantityShort: true, unitId: true, unit: { select: { id: true, name: true, symbol: true } }, unitCost: true },
   });
   if (!item) {
     throw new AppError(404, ErrorCode.PURCHASE_ORDER_ITEM_NOT_FOUND, "Purchase order item not found");
@@ -121,7 +121,7 @@ export const goodsReceiptService = {
       ...(query.status ? { status: query.status } : {}),
     };
 
-    const [items, total] = await prisma.$transaction([
+    const [items, total, statusGroups] = await prisma.$transaction([
       prisma.goodsReceipt.findMany({
         where,
         include: {
@@ -135,9 +135,23 @@ export const goodsReceiptService = {
         take,
       }),
       prisma.goodsReceipt.count({ where }),
+      // Summary counts over the FILTERED dataset (not just the page).
+      prisma.goodsReceipt.groupBy({
+        by: ["status"],
+        where,
+        orderBy: [],
+        _count: true,
+      }),
     ]);
 
-    return { items, meta: buildPaginationMeta(total, page, limit) };
+    const countByStatus = new Map(statusGroups.map((g) => [g.status, g._count]));
+    const summary = {
+      matched: countByStatus.get("MATCHED") ?? 0,
+      discrepancy: countByStatus.get("DISCREPANCY") ?? 0,
+      resolved: countByStatus.get("RESOLVED") ?? 0,
+    };
+
+    return { items, meta: buildPaginationMeta(total, page, limit), summary };
   },
 
   async create(input: CreateGRInput, actor: Pick<AuthenticatedUser, "id">) {
@@ -152,12 +166,38 @@ export const goodsReceiptService = {
       // Check location
       await assertLocationActive(item.locationId);
 
-      // Compute expected qty = remaining on PO item
-      const expectedQty = Number(poItem.quantityOrdered) - Number(poItem.quantityReceived);
+      // Compute expected qty = remaining on PO item. Accepted shortages reduce
+      // the outstanding expectation: they are already reconciled against the order.
+      const expectedQty =
+        Number(poItem.quantityOrdered) -
+        Number(poItem.quantityReceived) -
+        Number(poItem.quantityShort);
 
-      // Validate actualQty > 0
-      if (item.actualQty <= 0) {
-        throw new AppError(422, ErrorCode.GR_ITEM_QUANTITY_MISMATCH, "Actual quantity must be greater than zero");
+      // Validate quantities. A GR item may represent a fully short delivery
+      // (actualQty = 0, deliveredQty = 0) so both quantities are >= 0.
+      if (item.deliveredQty < 0 || item.actualQty < 0) {
+        throw new AppError(
+          422,
+          ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
+          "Quantities must be greater than or equal to zero",
+        );
+      }
+      if (item.actualQty <= 0 && item.deliveredQty > 0) {
+        throw new AppError(
+          422,
+          ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
+          "Actual quantity must be greater than zero when a delivery is recorded",
+        );
+      }
+
+      // Never receive more than the remaining quantity on the PO item.
+      if (item.actualQty > expectedQty) {
+        throw new AppError(
+          422,
+          ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
+          "Actual quantity exceeds the remaining quantity on the purchase order item",
+          { remainingQuantity: expectedQty, requestedQuantity: item.actualQty },
+        );
       }
 
       // If actualQty > 0, batchNumber and expiryDate are required
@@ -199,6 +239,9 @@ export const goodsReceiptService = {
             expectedQty: item.expectedQty,
             deliveredQty: item.deliveredQty,
             actualQty: item.actualQty,
+            // Quantities are in the PO item's ordered unit, snapshotted so a
+            // later unit reconfiguration never reinterprets history.
+            unitId: item.poItem.unitId,
             unitCost: item.poItem.unitCost.toNumber(),
             batchNumber: item.batchNumber,
             manufacturingDate: item.manufacturingDate ? toUtcDay(item.manufacturingDate) : null,
@@ -213,6 +256,7 @@ export const goodsReceiptService = {
           include: {
             purchaseOrderItem: { select: { id: true, productId: true, unitCost: true } },
             location: { select: { id: true, name: true } },
+            unit: { select: { id: true, name: true, symbol: true } },
           },
         },
       },
@@ -243,6 +287,7 @@ export const goodsReceiptService = {
               },
             },
             location: { select: { id: true, name: true } },
+            unit: { select: { id: true, name: true, symbol: true } },
             batch: { select: { id: true, batchNumber: true, expiryDate: true } },
           },
         },
@@ -324,134 +369,175 @@ export const goodsReceiptService = {
     });
   },
 
+  /**
+   * Confirms a goods receipt.
+   *
+   * - Fully transactional: batches, stock movements, PO item cumulative
+   *   quantities, requirement fulfillment and PO status all commit together or
+   *   not at all.
+   * - Idempotent: the confirmation flag is flipped with a guarded update
+   *   (WHERE confirmedById IS NULL) as the FIRST write; a second concurrent
+   *   confirm loses that race and aborts without any other effect.
+   * - Multiple receipts per PO item accumulate safely (increment, never
+   *   overwrite).
+   * - Accepted shortages never increase stock and never double-count against
+   *   requirements.
+   */
   async confirm(id: string, actor: Pick<AuthenticatedUser, "id">) {
-    const receipt = await prisma.goodsReceipt.findUnique({
-      where: { id },
-      include: {
-        purchaseOrder: {
-          select: { id: true, poNumber: true, status: true, supplierId: true, items: { select: { id: true, productId: true, quantityOrdered: true, quantityReceived: true } } },
-        },
-        items: {
+    return prisma.$transaction(
+      async (tx) => {
+        const receipt = await tx.goodsReceipt.findUnique({
+          where: { id },
           include: {
-            purchaseOrderItem: {
-              select: { id: true, productId: true, requirementLineId: true },
+            purchaseOrder: {
+              select: { id: true, poNumber: true, status: true, supplierId: true },
             },
-            location: { select: { id: true } },
+            items: {
+              include: {
+                purchaseOrderItem: {
+                  select: { id: true, productId: true, requirementLineId: true },
+                },
+                location: { select: { id: true } },
+              },
+            },
           },
-        },
-      },
-    });
+        });
 
-    if (!receipt) {
-      throw new AppError(404, ErrorCode.GOODS_RECEIPT_NOT_FOUND, "Goods receipt not found");
-    }
-    if (receipt.status !== "MATCHED" && receipt.status !== "RESOLVED") {
-      throw new AppError(409, ErrorCode.GOODS_RECEIPT_CANNOT_CONFIRM, "Receipt must be matched or resolved before confirmation");
-    }
-    if (receipt.confirmedById) {
-      throw new AppError(409, ErrorCode.GOODS_RECEIPT_ALREADY_CONFIRMED, "Receipt has already been confirmed");
-    }
+        if (!receipt) {
+          throw new AppError(404, ErrorCode.GOODS_RECEIPT_NOT_FOUND, "Goods receipt not found");
+        }
+        if (receipt.status !== "MATCHED" && receipt.status !== "RESOLVED") {
+          throw new AppError(409, ErrorCode.GOODS_RECEIPT_CANNOT_CONFIRM, "Receipt must be matched or resolved before confirmation");
+        }
+        if (receipt.confirmedById) {
+          throw new AppError(409, ErrorCode.GOODS_RECEIPT_ALREADY_CONFIRMED, "Receipt has already been confirmed");
+        }
+        const poStatus = receipt.purchaseOrder.status;
+        if (poStatus === PurchaseOrderStatus.CANCELLED || poStatus === PurchaseOrderStatus.CLOSED) {
+          throw new AppError(
+            409,
+            ErrorCode.PO_STATUS_TRANSITION_INVALID,
+            "Cannot confirm a receipt for a cancelled or closed order",
+          );
+        }
 
-    const supplierId = receipt.purchaseOrder.supplierId;
+        // Concurrency guard: atomically claim the confirmation. If another
+        // request confirmed first, this update matches zero rows and we abort
+        // before touching stock or quantities.
+        const claimed = await tx.goodsReceipt.updateMany({
+          where: { id, confirmedById: null },
+          data: { confirmedById: actor.id },
+        });
+        if (claimed.count === 0) {
+          throw new AppError(409, ErrorCode.GOODS_RECEIPT_ALREADY_CONFIRMED, "Receipt has already been confirmed");
+        }
 
-    // Process each item with actualQty > 0
-    for (const item of receipt.items) {
-      if (item.actualQty.lte(0)) continue;
+        const supplierId = receipt.purchaseOrder.supplierId;
 
-      const batchNumber = item.batchNumber!;
-      const expiryDate = item.expiryDate!;
-      const manufacturingDate = item.manufacturingDate;
+        for (const item of receipt.items) {
+          if (item.actualQty.lte(0)) continue;
 
-      // Upsert batch
-      let batch = await prisma.batch.findUnique({
-        where: { productId_batchNumber: { productId: item.purchaseOrderItem.productId, batchNumber } },
-        select: { id: true },
-      });
+          const batchNumber = item.batchNumber!;
+          const expiryDate = item.expiryDate!;
+          const manufacturingDate = item.manufacturingDate;
 
-      if (!batch) {
-        batch = await prisma.batch.create({
-          data: {
+          let batch = await tx.batch.findUnique({
+            where: { productId_batchNumber: { productId: item.purchaseOrderItem.productId, batchNumber } },
+            select: { id: true },
+          });
+
+          if (!batch) {
+            batch = await tx.batch.create({
+              data: {
+                productId: item.purchaseOrderItem.productId,
+                batchNumber,
+                manufacturingDate: manufacturingDate ? toUtcDay(manufacturingDate) : null,
+                receivedDate: toUtcDay(receipt.receivedDate),
+                expiryDate: toUtcDay(expiryDate),
+                purchaseCost: item.unitCost,
+                supplierId,
+              },
+            });
+          }
+
+          // Stock movement inside the SAME transaction ( PURCHASE IN).
+          await recordMovementInTransaction(tx, {
             productId: item.purchaseOrderItem.productId,
-            batchNumber,
-            manufacturingDate: manufacturingDate ? toUtcDay(manufacturingDate) : null,
-            receivedDate: toUtcDay(receipt.receivedDate),
-            expiryDate: toUtcDay(expiryDate),
-            purchaseCost: item.unitCost,
-            supplierId,
-          },
+            batchId: batch.id,
+            locationId: item.locationId,
+            transactionType: "PURCHASE",
+            direction: "IN",
+            quantity: item.actualQty,
+            // Conversion snapshot for historical traceability.
+            unitId: item.unitId,
+            conversionFactor: 1,
+            referenceType: "GoodsReceipt",
+            referenceId: receipt.id,
+            notes: `Receipt ${receipt.receiptNumber} - PO ${receipt.purchaseOrder.poNumber}`,
+            actor,
+          });
+
+          // Cumulative increment — never overwrites earlier receipts.
+          await tx.purchaseOrderItem.update({
+            where: { id: item.purchaseOrderItemId },
+            data: {
+              quantityReceived: { increment: item.actualQty },
+            },
+          });
+
+          await tx.goodsReceiptItem.update({
+            where: { id: item.id },
+            data: { batchId: batch.id },
+          });
+
+          // Track received quantity for the requirement line. Receiving is downstream
+          // of ordering: it must never release an allocation or rewrite the
+          // requirement's fulfillment status. Accepted shortages intentionally do
+          // NOT touch quantityDelivered — shortage units were never fulfilled.
+          if (item.purchaseOrderItem.requirementLineId) {
+            await tx.purchaseRequirementLine.update({
+              where: { id: item.purchaseOrderItem.requirementLineId },
+              data: {
+                quantityDelivered: { increment: item.actualQty },
+              },
+            });
+          }
+        }
+
+        // PO status: RECEIVED once every item is fully accounted for
+        // (received + accepted short >= ordered); otherwise AWAITING_DELIVERY.
+        const poItems = await tx.purchaseOrderItem.findMany({
+          where: { purchaseOrderId: receipt.purchaseOrderId },
+          select: { id: true, quantityOrdered: true, quantityReceived: true, quantityShort: true },
         });
-      }
-
-      // Record stock movement (PURCHASE IN)
-      await stockMovementService.recordMovement({
-        productId: item.purchaseOrderItem.productId,
-        batchId: batch.id,
-        locationId: item.locationId,
-        transactionType: "PURCHASE",
-        direction: "IN",
-        quantity: item.actualQty,
-        referenceType: "GoodsReceipt",
-        referenceId: receipt.id,
-        notes: `Receipt ${receipt.receiptNumber} - PO ${receipt.purchaseOrder.poNumber}`,
-        actor,
-      });
-
-      // Update PO item quantityReceived
-      await prisma.purchaseOrderItem.update({
-        where: { id: item.purchaseOrderItemId },
-        data: {
-          quantityReceived: { increment: item.actualQty },
-        },
-      });
-
-      // Update GR item with batchId
-      await prisma.goodsReceiptItem.update({
-        where: { id: item.id },
-        data: { batchId: batch.id },
-      });
-
-      // Track received quantity for the requirement line. Receiving is downstream of
-      // ordering: it must never release an allocation or rewrite the requirement's
-      // fulfillment status, which is derived from active allocations alone.
-      if (item.purchaseOrderItem.requirementLineId) {
-        await prisma.purchaseRequirementLine.update({
-          where: { id: item.purchaseOrderItem.requirementLineId },
+        const allAccountedFor = poItems.every(
+          (i) => i.quantityReceived.plus(i.quantityShort).gte(i.quantityOrdered),
+        );
+        await tx.purchaseOrder.update({
+          where: { id: receipt.purchaseOrderId },
           data: {
-            quantityDelivered: { increment: item.actualQty },
+            status: allAccountedFor ? PurchaseOrderStatus.RECEIVED : PurchaseOrderStatus.AWAITING_DELIVERY,
           },
         });
-      }
-    }
 
-    // Check if all PO items fully received
-    const poItems = await prisma.purchaseOrderItem.findMany({
-      where: { purchaseOrderId: receipt.purchaseOrderId },
-      select: { id: true, quantityOrdered: true, quantityReceived: true },
-    });
-    const allReceived = poItems.every((i) => i.quantityReceived >= i.quantityOrdered);
-
-    // Update PO status
-    if (allReceived) {
-      await prisma.purchaseOrder.update({
-        where: { id: receipt.purchaseOrderId },
-        data: { status: "RECEIVED" },
-      });
-    } else {
-      // If some received but not all, ensure status is AWAITING_DELIVERY
-      await prisma.purchaseOrder.update({
-        where: { id: receipt.purchaseOrderId },
-        data: { status: "AWAITING_DELIVERY" },
-      });
-    }
-
-    // Mark receipt as confirmed
-    return prisma.goodsReceipt.update({
-      where: { id },
-      data: {
-        confirmedById: actor.id,
-        status: "MATCHED",
+        return tx.goodsReceipt.findUnique({
+          where: { id },
+          include: {
+            purchaseOrder: { select: { id: true, poNumber: true, status: true } },
+            items: {
+              include: {
+                purchaseOrderItem: {
+                  select: { id: true, productId: true, quantityOrdered: true, quantityReceived: true, quantityShort: true },
+                },
+                location: { select: { id: true, name: true } },
+                batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+              },
+            },
+          },
+        });
       },
-    });
+      { timeout: 30_000, maxWait: 15_000 },
+    );
   },
 
   async remove(id: string) {

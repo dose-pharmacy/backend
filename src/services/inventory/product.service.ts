@@ -33,6 +33,8 @@ export type CreateProductInput = {
   minimumStock?: number;
   reorderPoint?: number;
   isActive?: boolean;
+  /** Narcotic/controlled product flag (MVP boolean). Defaults to false. */
+  isNarcotic?: boolean;
   /**
    * Optional embedded unit configuration created atomically with the product.
    * Exactly one entry must be the base unit (conversionFactor = 1).
@@ -148,7 +150,7 @@ async function validateUnitConfigs(
 export const productService = {
   async list(query: ListProductsQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
-    const { items, total } = await productRepository.list({
+    const { items, total, where } = await productRepository.list({
       search: query.search,
       productGroupId: query.productGroupId,
       brand: query.brand,
@@ -156,7 +158,40 @@ export const productService = {
       skip,
       take,
     });
-    return { items, meta: buildPaginationMeta(total, page, limit) };
+
+    // Summary counts over the FILTERED dataset (not just the page).
+    // NOTE: productGroupId is a NON-nullable column, so no "not null" filter
+    // is needed here — `equals: null` inside `not` is rejected by Prisma and
+    // made every product-list request fail validation.
+    const [statusGroups, groupGroups] = await Promise.all([
+      prisma.product.groupBy({ by: ["isActive"], where, orderBy: [], _count: true }),
+      prisma.product.groupBy({
+        by: ["productGroupId"],
+        where,
+        orderBy: [],
+        _count: true,
+      }),
+    ] as const);
+
+    const byStatus: { active: number; inactive: number } = { active: 0, inactive: 0 };
+    for (const g of statusGroups) {
+      byStatus[g.isActive ? "active" : "inactive"] = g._count;
+    }
+
+    const groupIds = groupGroups.map((g) => g.productGroupId).filter((id): id is string => id !== null);
+    const groups = groupIds.length
+      ? await prisma.productGroup.findMany({ where: { id: { in: groupIds } }, select: { id: true, name: true } })
+      : [];
+    const groupNameById = new Map(groups.map((g) => [g.id, g.name]));
+    const byProductGroup = groupGroups
+      .map((g) => ({
+        productGroupId: g.productGroupId as string,
+        productGroupName: groupNameById.get(g.productGroupId as string) ?? "Unknown",
+        count: g._count as number,
+      }))
+      .sort((a, b) => (b.count as number) - (a.count as number));
+
+    return { items, meta: buildPaginationMeta(total, page, limit), summary: { byStatus, byProductGroup } };
   },
 
   async getById(id: string) {
@@ -238,6 +273,7 @@ export const productService = {
             minimumStock: toOptionalDecimal(input.minimumStock) ?? toDecimal(0),
             reorderPoint: toOptionalDecimal(input.reorderPoint),
             isActive: input.isActive,
+            isNarcotic: input.isNarcotic,
           },
         });
 
@@ -320,6 +356,7 @@ export const productService = {
               input.minimumStock !== undefined ? toDecimal(input.minimumStock) : undefined,
             reorderPoint: toOptionalDecimal(input.reorderPoint),
             isActive: input.isActive,
+            isNarcotic: input.isNarcotic,
           },
         });
 

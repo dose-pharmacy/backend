@@ -5,6 +5,7 @@ import { manufacturerController } from "../controllers/financials/manufacturer.c
 import { discountAuthRuleController } from "../controllers/financials/discount-auth-rule.controller.js";
 import { slowMovingConfigController } from "../controllers/financials/slow-moving.controller.js";
 import { financialReportController } from "../controllers/financials/financial-report.controller.js";
+import { narcoticReportController } from "../controllers/financials/narcotic-report.controller.js";
 import { saleController } from "../controllers/financials/sale.controller.js";
 import {
   requireAuthenticatedUser,
@@ -47,6 +48,10 @@ import {
   salesDetailQuerySchema,
   salesTrendQuerySchema,
 } from "../validators/financials/reports.js";
+import {
+  narcoticReportQuerySchema,
+  narcoticActivityQuerySchema,
+} from "../validators/financials/narcotic-reports.js";
 import {
   createSaleSchema,
   updateSaleSchema,
@@ -274,6 +279,22 @@ financialsRouter.get(
   ...admin,
   validate({ query: slowMovingReportQuerySchema }),
   financialReportController.getSlowMovingReport,
+);
+
+// ---------------------------------------------------------------------------
+// Narcotic / Controlled Product Reports
+// ---------------------------------------------------------------------------
+financialsRouter.get(
+  "/reports/narcotics",
+  ...admin,
+  validate({ query: narcoticReportQuerySchema }),
+  narcoticReportController.getNarcoticReport,
+);
+financialsRouter.get(
+  "/reports/narcotics/activity",
+  ...admin,
+  validate({ query: narcoticActivityQuerySchema }),
+  narcoticReportController.getNarcoticActivity,
 );
 
 // ---------------------------------------------------------------------------
