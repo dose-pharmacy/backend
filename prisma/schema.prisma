@@ -124,6 +124,15 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+// Derived (never persisted) payment status of a purchase order, aggregated
+// across ALL of the order's supplier invoices and their payments.
+enum PurchaseOrderPaymentStatus {
+  NOT_INVOICED
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
 enum GoodsReceiptStatus {
   MATCHED
   DISCREPANCY
@@ -293,6 +302,11 @@ model Unit {
   productUnits  ProductUnit[]
   transferItems StockTransferItem[]
   saleItems     SaleItem[]
+  requirementLines PurchaseRequirementLine[] @relation("RequirementLineUnit")
+  purchaseOrderItems PurchaseOrderItem[]    @relation("PurchaseOrderItemUnit")
+  goodsReceiptItems GoodsReceiptItem[]       @relation("GoodsReceiptItemUnit")
+  stockTransactions StockTransaction[] @relation("StockTransactionUnit")
+  supplierInvoiceItems SupplierInvoiceItem[]
 
   @@unique([name])
   @@index([isActive])
@@ -310,6 +324,11 @@ model Product {
   minimumStock     Decimal         @default(0) @db.Decimal(14, 3)
   reorderPoint     Decimal?        @db.Decimal(14, 3)
   isActive         Boolean         @default(true)
+  // Narcotic / controlled product flag (MVP). A simple boolean is sufficient
+  // today: the frontend uses it to show the prescription/reference reminder
+  // and the narcotic report filters on it. Extend to an enum only when a
+  // real classification need appears.
+  isNarcotic       Boolean         @default(false)
   productGroupId   String
   productGroup     ProductGroup    @relation(fields: [productGroupId], references: [id])
   genericProductId String?
@@ -338,6 +357,7 @@ model Product {
   @@index([manufacturerId])
   @@index([name])
   @@index([isActive])
+  @@index([isNarcotic])
   @@map("product")
 }
 
@@ -440,6 +460,12 @@ model StockTransaction {
   direction       StockDirection
   quantity        Decimal              @db.Decimal(14, 3)
   balanceAfter    Decimal              @db.Decimal(14, 3)
+  // Conversion snapshot: the unit the originating transaction was entered in
+  // and the factor used to normalize it to base units. Null on legacy rows and
+  // movements without an original unit. `quantity` is ALWAYS base units.
+  unitId          String?
+  unit            Unit?                @relation("StockTransactionUnit", fields: [unitId], references: [id])
+  conversionFactor Decimal?            @db.Decimal(12, 4)
   referenceType   String?
   referenceId     String?
   notes           String?
@@ -595,7 +621,14 @@ model PurchaseRequirementLine {
   requirement       PurchaseRequirement        @relation(fields: [requirementId], references: [id], onDelete: Cascade)
   productId         String
   product           Product                    @relation(fields: [productId], references: [id])
+  // Unit the requirement is expressed in (e.g. "Box"). Null = legacy line
+  // created before units; such lines are interpreted in the product's base unit.
+  unitId            String?
+  unit              Unit?                      @relation("RequirementLineUnit", fields: [unitId], references: [id])
   quantityNeeded    Decimal                    @db.Decimal(14, 3)
+  // Snapshot of quantityNeeded x conversionFactor at line creation/update.
+  // Fulfillment math normalizes through base quantities.
+  quantityNeededBase Decimal                   @default(0) @db.Decimal(14, 3)
   quantityDelivered Decimal                    @default(0) @db.Decimal(14, 3)
   reasonCode        PurchaseRequirementReason?
   status            PurchaseRequirementStatus  @default(OPEN)
@@ -646,13 +679,26 @@ model PurchaseOrderItem {
   requirementLine   PurchaseRequirementLine?        @relation(fields: [requirementLineId], references: [id], onDelete: SetNull)
   productId         String
   product           Product                         @relation(fields: [productId], references: [id])
+  // Unit the item is ordered in (e.g. "Box"). Null = legacy item (base unit).
+  unitId            String?
+  unit              Unit?                           @relation("PurchaseOrderItemUnit", fields: [unitId], references: [id])
   quantityOrdered   Decimal                         @db.Decimal(14, 3)
+  // Snapshot of quantityOrdered x conversionFactor at order time. Historical
+  // transactions never depend on the current ProductUnit configuration.
+  quantityOrderedBase Decimal                       @default(0) @db.Decimal(14, 3)
   quantityReceived  Decimal                         @default(0) @db.Decimal(14, 3)
+  // Explicitly accepted shortfall: ordered units that will NOT be delivered.
+  // Purely accounting/reconciliation — never increases stock.
+  quantityShort     Decimal                         @default(0) @db.Decimal(14, 3)
+  // Why the shortfall was accepted (free text, kept simple; e.g. "supplier
+  // discontinued", "damaged in transit").
+  shortReason       String?
   unitCost          Decimal                         @db.Decimal(12, 2)
   createdAt         DateTime                        @default(now())
   updatedAt         DateTime                        @updatedAt
   goodsReceiptItems GoodsReceiptItem[]
   allocations       PurchaseRequirementAllocation[]
+  invoiceItems      SupplierInvoiceItem[]
 
   @@index([purchaseOrderId])
   @@index([productId])
@@ -717,6 +763,10 @@ model GoodsReceiptItem {
   expectedQty         Decimal           @db.Decimal(14, 3)
   deliveredQty        Decimal           @db.Decimal(14, 3)
   actualQty           Decimal           @db.Decimal(14, 3)
+  // Unit the quantities are expressed in (the PO item's ordered unit, snapshotted
+  // at receipt time so later unit changes never reinterpret history).
+  unitId              String?
+  unit                Unit?             @relation("GoodsReceiptItemUnit", fields: [unitId], references: [id])
   unitCost            Decimal           @db.Decimal(12, 2)
   batchNumber         String?
   manufacturingDate   DateTime?
@@ -739,8 +789,21 @@ model SupplierInvoice {
   purchaseOrder      PurchaseOrder?        @relation(fields: [purchaseOrderId], references: [id])
   invoiceDate        DateTime              @default(now())
   dueDate            DateTime?
+  // Financial breakdown. goodsAmount is the value of received goods being
+  // billed; totalAmount is what the pharmacy actually owes.
+  //   totalAmount = goodsAmount + taxAmount + additionalChargesAmount - discountAmount
+  goodsAmount              Decimal               @db.Decimal(12, 2)
+  taxAmount                Decimal               @default(0) @db.Decimal(12, 2)
+  additionalChargesAmount  Decimal               @default(0) @db.Decimal(12, 2)
+  discountAmount           Decimal               @default(0) @db.Decimal(12, 2)
+  totalAmount              Decimal               @db.Decimal(12, 2)
+  // Legacy single-amount field. Equals totalAmount for all invoices created
+  // since the financial split was introduced; kept so old API consumers and
+  // historical rows keep working.
   invoiceAmount      Decimal               @db.Decimal(12, 2)
   paymentTerms       String?
+  // totalAmount minus the sum of recorded payments. Payments always settle
+  // the invoice TOTAL, never the goods amount alone.
   outstandingBalance Decimal               @db.Decimal(12, 2)
   status             SupplierInvoiceStatus @default(OPEN)
   createdById        String
@@ -748,11 +811,39 @@ model SupplierInvoice {
   createdAt          DateTime              @default(now())
   updatedAt          DateTime              @updatedAt
   payments           SupplierPayment[]
+  items              SupplierInvoiceItem[]
 
   @@unique([supplierId, invoiceNumber])
   @@index([supplierId])
   @@index([status])
+  @@index([purchaseOrderId])
   @@map("supplier_invoice")
+}
+
+// Allocation of an invoice's goods against specific PO items and their
+// received quantities. Prevents the same received goods from being invoiced
+// twice: for each PO item, SUM(invoice items.quantity) across all of the PO's
+// invoices must never exceed purchaseOrderItem.quantityReceived.
+model SupplierInvoiceItem {
+  id                  String            @id @default(uuid())
+  invoiceId           String
+  invoice             SupplierInvoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  purchaseOrderItemId String
+  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id])
+  // Quantity invoiced, in the PO item's ordered unit.
+  quantity            Decimal           @db.Decimal(14, 3)
+  unitId              String?
+  unit                Unit?             @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  unitCost            Decimal           @db.Decimal(12, 2)
+  // quantity x unitCost, stored so the invoice's goods breakdown survives
+  // later PO item edits.
+  goodsAmount         Decimal           @db.Decimal(12, 2)
+  createdAt           DateTime          @default(now())
+
+  @@unique([invoiceId, purchaseOrderItemId])
+  @@index([purchaseOrderItemId])
+  @@index([invoiceId])
+  @@map("supplier_invoice_item")
 }
 
 model SupplierPayment {

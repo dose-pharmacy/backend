@@ -47,6 +47,9 @@ export const createProductSchema = z.object({
   minimumStock: thresholdSchema.optional(),
   reorderPoint: thresholdSchema.optional(),
   isActive: z.boolean().optional(),
+  // Narcotic/controlled product flag. Strictly boolean; defaults to false so
+  // existing clients are unaffected.
+  isNarcotic: z.boolean().optional(),
   // Optional embedded unit configuration created atomically with the product.
   units: z.array(productUnitConfigSchema).optional(),
 });
@@ -63,6 +66,7 @@ export const updateProductSchema = z
     minimumStock: thresholdSchema.optional(),
     reorderPoint: thresholdSchema.nullable().optional(),
     isActive: z.boolean().optional(),
+    isNarcotic: z.boolean().optional(),
     units: z.array(productUnitConfigSchema).optional(),
   })
   .partial();
