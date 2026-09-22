@@ -22,6 +22,11 @@ export const expiryDashboardQuerySchema = z.object({
   productId: uuidSchema.optional(),
 }).merge(paginationQuerySchema);
 
+export const expiredProductsQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  locationId: uuidSchema.optional(),
+}).merge(paginationQuerySchema);
+
 export const binCardQuerySchema = z.object({
   productId: uuidSchema,
   locationId: uuidSchema,

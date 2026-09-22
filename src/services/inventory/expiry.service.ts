@@ -40,6 +40,30 @@ export type ExpiryBatchItem = {
   };
 };
 
+export type ExpiredProductsQuery = PageQuery & {
+  search?: string;
+  locationId?: string;
+};
+
+export type ExpiredProductItem = {
+  productId: string;
+  productName: string;
+  sku: string;
+  brand: string | null;
+  isNarcotic: boolean;
+  batchCount: number;
+  totalExpiredQuantity: number;
+  expiredBatches: Array<{
+    id: string;
+    batchNumber: string;
+    expiryDate: Date;
+    purchaseCost: number | null;
+    quantity: number;
+    locationId: string;
+    locationName: string;
+  }>;
+};
+
 export type ExpiryDashboardResult = {
   windows: ExpiryWindow[];
   summary: {
@@ -286,6 +310,119 @@ export const expiryService = {
         };
       });
     });
+
+    return { items, meta: buildPaginationMeta(total, page, limit) };
+  },
+
+  /**
+   * Product-level view of expired stock. Pages over products instead of
+   * batches (unlike getBatchesByWindow) so a single expired product that has
+   * many expired batches/locations appears once, with an aggregated quantity
+   * and the matching batch rows underneath.
+   */
+  async getExpiredProducts(query: ExpiredProductsQuery) {
+    const { page, limit, skip, take } = resolvePagination(query);
+    const today = startOfTodayUtc();
+
+    const expiredStockFilter: Prisma.InventoryStockWhereInput = {
+      quantity: { gt: 0 },
+      ...(query.locationId ? { locationId: query.locationId } : {}),
+    };
+
+    const productWhere: Prisma.ProductWhereInput = {
+      batches: {
+        some: {
+          expiryDate: { lt: today },
+          stock: { some: expiredStockFilter },
+        },
+      },
+      ...(query.search
+        ? {
+            OR: [
+              { name: { contains: query.search, mode: "insensitive" as const } },
+              { genericName: { contains: query.search, mode: "insensitive" as const } },
+              { brand: { contains: query.search, mode: "insensitive" as const } },
+              { sku: { contains: query.search, mode: "insensitive" as const } },
+            ],
+          }
+        : {}),
+    };
+
+    const [products, total] = await prisma.$transaction([
+      prisma.product.findMany({
+        where: productWhere,
+        select: { id: true },
+        orderBy: { name: "asc" },
+        skip,
+        take,
+      }),
+      prisma.product.count({ where: productWhere }),
+    ]);
+
+    if (products.length === 0) {
+      return { items: [], meta: buildPaginationMeta(0, page, limit) };
+    }
+
+    const batches = await prisma.batch.findMany({
+      where: {
+        productId: { in: products.map((p) => p.id) },
+        expiryDate: { lt: today },
+        stock: { some: expiredStockFilter },
+      },
+      select: {
+        id: true,
+        batchNumber: true,
+        expiryDate: true,
+        purchaseCost: true,
+        product: {
+          select: { id: true, name: true, sku: true, brand: true, isNarcotic: true },
+        },
+        stock: {
+          where: expiredStockFilter,
+          select: {
+            quantity: true,
+            location: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { expiryDate: "asc" },
+    });
+
+    const byProduct = new Map<string, ExpiredProductItem>();
+    for (const batch of batches) {
+      const rows = batch.stock.map((stock) => ({
+        id: batch.id,
+        batchNumber: batch.batchNumber,
+        expiryDate: batch.expiryDate,
+        purchaseCost: batch.purchaseCost?.toNumber() ?? null,
+        quantity: stock.quantity.toNumber(),
+        locationId: stock.location?.id ?? "",
+        locationName: stock.location?.name ?? "Unknown",
+      }));
+      let item = byProduct.get(batch.product.id);
+      if (!item) {
+        item = {
+          productId: batch.product.id,
+          productName: batch.product.name,
+          sku: batch.product.sku,
+          brand: batch.product.brand,
+          isNarcotic: batch.product.isNarcotic,
+          batchCount: 0,
+          totalExpiredQuantity: 0,
+          expiredBatches: [],
+        };
+        byProduct.set(batch.product.id, item);
+      }
+      if (rows.length > 0) {
+        item.batchCount += 1;
+        item.expiredBatches.push(...rows);
+        item.totalExpiredQuantity += rows.reduce((sum, r) => sum + r.quantity, 0);
+      }
+    }
+
+    const items = products
+      .map((product) => byProduct.get(product.id))
+      .filter((item): item is ExpiredProductItem => item !== undefined);
 
     return { items, meta: buildPaginationMeta(total, page, limit) };
   },

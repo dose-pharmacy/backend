@@ -50,6 +50,7 @@ import {
 import {
   binCardQuerySchema,
   dashboardQuerySchema,
+  expiredProductsQuerySchema,
   expiryDashboardQuerySchema,
   inventoryProductListQuerySchema,
   reorderConfigSchema,
@@ -391,6 +392,12 @@ inventoryRouter.get(
   ...admin,
   validate({ query: expiryDashboardQuerySchema }),
   expiryController.getBatchesByWindow,
+);
+inventoryRouter.get(
+  "/expired-products",
+  ...admin,
+  validate({ query: expiredProductsQuerySchema }),
+  expiryController.getExpiredProducts,
 );
 
 // ---------------------------------------------------------------------------

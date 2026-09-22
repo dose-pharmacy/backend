@@ -1,5 +1,9 @@
 import type { Request, Response } from "express";
-import { expiryService, type ExpiryDashboardQuery } from "../../services/inventory/expiry.service.js";
+import {
+  expiryService,
+  type ExpiredProductsQuery,
+  type ExpiryDashboardQuery,
+} from "../../services/inventory/expiry.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
@@ -29,6 +33,18 @@ export const expiryController = {
       windowEnd: query.windowEnd ? Number(query.windowEnd) : 30,
     };
     const { items, meta } = await expiryService.getBatchesByWindow(input);
+    sendSuccess(res, items, { meta });
+  }),
+
+  getExpiredProducts: asyncHandler(async (req: Request, res: Response) => {
+    const query = req.query as Record<string, string | undefined>;
+    const input: ExpiredProductsQuery = {
+      page: query.page ? Number(query.page) : undefined,
+      limit: query.limit ? Number(query.limit) : undefined,
+      search: query.search,
+      locationId: query.locationId,
+    };
+    const { items, meta } = await expiryService.getExpiredProducts(input);
     sendSuccess(res, items, { meta });
   }),
 };

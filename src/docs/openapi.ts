@@ -438,6 +438,15 @@ export const openApiDocument = {
         responses: { "200": { description: "Expiring batches", content: { "application/json": { schema: { $ref: "#/components/schemas/ExpiryBatchListResponse" } } } }, ...authErrorResponses },
       },
     },
+    "/inventory/expired-products": {
+      get: {
+        tags: ["Expiry"],
+        summary: "List expired products with stock on hand",
+        description: "Product-level view of expired stock. Each product appears once with its aggregated expired quantity and the matching batch rows.",
+        parameters: [{ name: "page", in: "query", schema: { type: "integer", minimum: 1 } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } }, { name: "search", in: "query", schema: { type: "string" }, description: "Match name, generic name, brand or SKU" }, { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } }],
+        responses: { "200": { description: "Paginated list of expired products", content: { "application/json": { schema: { $ref: "#/components/schemas/ExpiredProductsResponse" } } } }, ...authErrorResponses },
+      },
+    },
     "/inventory/batches/{batchId}/expiry-actions": {
       get: {
         tags: ["Expiry"],
@@ -2332,6 +2341,43 @@ export const openApiDocument = {
                 status: { type: "string", enum: ["EXPIRED", "CRITICAL", "EXPIRING_SOON", "WARNING", "NORMAL"] },
                 product: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, sku: { type: "string" }, brand: { type: "string", nullable: true } } },
                 stock: { type: "object", properties: { quantity: { type: "number" }, location: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } }, nullable: true } } },
+              },
+            },
+          },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      ExpiredProductsResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                productId: { type: "string" },
+                productName: { type: "string" },
+                sku: { type: "string" },
+                brand: { type: "string", nullable: true },
+                isNarcotic: { type: "boolean", example: false },
+                batchCount: { type: "integer" },
+                totalExpiredQuantity: { type: "number" },
+                expiredBatches: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string" },
+                      batchNumber: { type: "string" },
+                      expiryDate: { type: "string", format: "date" },
+                      purchaseCost: { type: "number", nullable: true },
+                      quantity: { type: "number" },
+                      locationId: { type: "string" },
+                      locationName: { type: "string" },
+                    },
+                  },
+                },
               },
             },
           },
