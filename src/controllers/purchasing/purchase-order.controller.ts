@@ -49,6 +49,7 @@ export const purchaseOrderController = {
     const data = await purchaseOrderService.update(
       req.params.id as string,
       req.body as UpdatePOInput,
+      req.auth?.user,
     );
     sendSuccess(res, data);
   }),
@@ -81,12 +82,15 @@ export const purchaseOrderController = {
   }),
 
   markAwaitingDelivery: asyncHandler(async (req: Request, res: Response) => {
-    const data = await purchaseOrderService.markAwaitingDelivery(req.params.id as string);
+    const data = await purchaseOrderService.markAwaitingDelivery(
+      req.params.id as string,
+      req.auth?.user,
+    );
     sendSuccess(res, data);
   }),
 
   close: asyncHandler(async (req: Request, res: Response) => {
-    const data = await purchaseOrderService.close(req.params.id as string);
+    const data = await purchaseOrderService.close(req.params.id as string, req.auth?.user);
     sendSuccess(res, data);
   }),
 };

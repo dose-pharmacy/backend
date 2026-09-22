@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 import { validate } from "../src/middleware/validate.js";
+import {
+  supplierIdParamsSchema,
+  supplierProductBatchQuerySchema,
+  supplierProductListQuerySchema,
+  supplierProductParamsSchema,
+} from "../src/validators/purchasing/supplier-catalog.js";
 import type { NextFunction, Request, Response } from "express";
 
 function mockReq(overrides: Partial<Request> = {}): Request {
@@ -43,5 +49,39 @@ describe("validate middleware", () => {
       captured = err;
     }) as NextFunction);
     expect(captured).toBeInstanceOf(z.ZodError);
+  });
+});
+
+describe("supplier catalog lookup schemas", () => {
+  it("accepts the documented supplier-product and batch query params", () => {
+    const list = supplierProductListQuerySchema.parse({
+      page: "1",
+      limit: "20",
+      search: "amox",
+      isActive: "false",
+    });
+    expect(list).toMatchObject({ page: 1, limit: 20, search: "amox", isActive: "false" });
+
+    const batches = supplierProductBatchQuerySchema.parse({
+      locationId: "11111111-1111-4111-8111-111111111111",
+      inStock: "false",
+      excludeExpired: "false",
+    });
+    expect(batches).toMatchObject({ inStock: "false", excludeExpired: "false" });
+  });
+
+  it("rejects malformed ids, non-boolean flags and out-of-range pagination", () => {
+    expect(supplierIdParamsSchema.safeParse({ supplierId: "not-a-uuid" }).success).toBe(false);
+    expect(supplierProductParamsSchema.safeParse({
+      supplierId: "11111111-1111-4111-8111-111111111111",
+      productId: "nope",
+    }).success).toBe(false);
+    // `true`/`false` are the only accepted spellings for the flags.
+    expect(supplierProductListQuerySchema.safeParse({ isActive: "yes" }).success).toBe(false);
+    expect(supplierProductBatchQuerySchema.safeParse({ inStock: "1" }).success).toBe(false);
+    expect(
+      supplierProductBatchQuerySchema.safeParse({ locationId: "not-a-uuid" }).success,
+    ).toBe(false);
+    expect(supplierProductListQuerySchema.safeParse({ limit: "1000" }).success).toBe(false);
   });
 });

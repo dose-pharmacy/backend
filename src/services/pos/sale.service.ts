@@ -14,6 +14,7 @@ import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.j
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 
 export type SaleItemInput = {
   productId: string;
@@ -397,6 +398,26 @@ export const saleService = {
               actor,
             });
           }
+
+          // Audit in the SAME transaction as the sale, its items, payments and
+          // stock movements: a rolled-back sale never claims to have completed.
+          // Narcotic products are identified through the related
+          // Sale/SaleItem/Product data (and summarised here for quick queries).
+          await recordAuditEvent(
+            {
+              event: AuditEvent.SALE_COMPLETED,
+              entityId: sale.id,
+              actorId: actor.id,
+              metadata: {
+                saleNumber: sale.saleNumber,
+                locationId: input.locationId,
+                itemCount: preparedItems.length,
+                totalAmount: totalAmount.toNumber(),
+                containsNarcotic: preparedItems.some((item) => item.isNarcotic),
+              },
+            },
+            tx,
+          );
 
           return sale;
         },

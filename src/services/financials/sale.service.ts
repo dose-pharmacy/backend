@@ -3,6 +3,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { stockMovementService } from "../inventory/stock-movement.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { discountAuthRuleService } from "./discount-auth-rule.service.js";
 import type { PageQuery } from "../../utils/pagination.js";
@@ -267,6 +268,22 @@ export const saleService = {
           });
         }
       }
+
+      // Audit in the same transaction as the sale and its stock movements.
+      await recordAuditEvent(
+        {
+          event: AuditEvent.SALE_COMPLETED,
+          entityId: sale.id,
+          actorId: actor.id,
+          metadata: {
+            saleNumber: sale.saleNumber,
+            locationId: input.locationId,
+            itemCount: input.lines.length,
+            totalAmount,
+          },
+        },
+        tx,
+      );
 
       return sale;
     });

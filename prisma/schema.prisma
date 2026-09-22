@@ -74,6 +74,9 @@ enum AuditAction {
   REJECT
   CANCEL
   COMPLETE
+  // Business transitions that are neither plain updates nor cancellations.
+  CONFIRM
+  CLOSE
 }
 
 enum AuditEntity {
@@ -97,6 +100,7 @@ enum AuditEntity {
   SLOW_MOVING_CONFIG
   GENERIC_PRODUCT
   MANUFACTURER
+  PURCHASE_REQUIREMENT
 }
 
 // ============================================================
@@ -1091,8 +1095,10 @@ model SlowMovingConfiguration {
 
 model AuditTrail {
   id           String      @id @default(uuid())
-  userId       String
-  user         User        @relation(fields: [userId], references: [id])
+  // Nullable so system/background operations (no authenticated actor) can
+  // still be audited. Business flows always populate it from the session.
+  userId       String?
+  user         User?       @relation(fields: [userId], references: [id])
   action       AuditAction
   entity       AuditEntity
   entityId     String

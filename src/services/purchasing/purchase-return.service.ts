@@ -2,10 +2,11 @@ import { Prisma } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
-import { stockMovementService } from "../inventory/stock-movement.service.js";
+import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 
 export type CreatePurchaseReturnInput = {
   supplierId: string;
@@ -57,16 +58,33 @@ async function assertProductActive(productId: string) {
   }
 }
 
-async function assertBatchAndStock(batchId: string, locationId: string, quantity: number, productId: string) {
+async function assertBatchAndStock(
+  batchId: string,
+  locationId: string,
+  quantity: number,
+  productId: string,
+  supplierId: string,
+) {
   const batch = await prisma.batch.findUnique({
     where: { id: batchId },
-    select: { id: true, productId: true },
+    select: { id: true, productId: true, supplierId: true },
   });
   if (!batch) {
     throw new AppError(404, ErrorCode.BATCH_NOT_FOUND, "Batch not found");
   }
   if (batch.productId !== productId) {
     throw new AppError(422, ErrorCode.BATCH_PRODUCT_MISMATCH, "Batch does not belong to the given product");
+  }
+  // Supplier ownership: the batch must have been received from the supplier
+  // being returned to. Unknown-supplier batches (NULL, e.g. created manually
+  // before supplier stamping) cannot be attributed to anyone and are rejected.
+  if (batch.supplierId !== supplierId) {
+    throw new AppError(
+      422,
+      ErrorCode.SUPPLIER_BATCH_MISMATCH,
+      "The batch was not received from the given supplier",
+      { batchSupplierId: batch.supplierId, requestedSupplierId: supplierId },
+    );
   }
 
   const stock = await prisma.inventoryStock.findUnique({
@@ -93,6 +111,27 @@ async function assertLocationActive(locationId: string) {
   }
   if (!location.isActive) {
     throw new AppError(409, ErrorCode.INACTIVE_LOCATION, "Location is not active");
+  }
+}
+
+/**
+ * The product must actually have been ordered from this supplier (PO items are
+ * the supplier-product relationship in this schema). Returns to a supplier who
+ * never supplied the product are rejected.
+ */
+async function assertSupplierProductRelationship(supplierId: string, productId: string): Promise<void> {
+  const count = await prisma.purchaseOrderItem.count({
+    where: {
+      productId,
+      purchaseOrder: { supplierId },
+    },
+  });
+  if (count === 0) {
+    throw new AppError(
+      422,
+      ErrorCode.SUPPLIER_PRODUCT_MISMATCH,
+      "This product has never been ordered from the given supplier",
+    );
   }
 }
 
@@ -131,18 +170,27 @@ export const purchaseReturnService = {
     await assertProductActive(input.productId);
     await assertLocationActive(input.locationId);
 
+    // The product must actually have been ordered from this supplier.
+    await assertSupplierProductRelationship(input.supplierId, input.productId);
+
     // Validate batch and stock if provided
     if (input.batchId) {
-      await assertBatchAndStock(input.batchId, input.locationId, input.quantity, input.productId);
+      await assertBatchAndStock(input.batchId, input.locationId, input.quantity, input.productId, input.supplierId);
     } else {
-      // If no batchId, we need at least one batch with stock at the location
+      // If no batchId, auto-select a batch owned by this supplier with stock
+      // at the location.
       const batchesWithStock = await prisma.inventoryStock.findMany({
-        where: { productId: input.productId, locationId: input.locationId, quantity: { gt: 0 } },
+        where: {
+          productId: input.productId,
+          locationId: input.locationId,
+          quantity: { gt: 0 },
+          batch: { supplierId: input.supplierId },
+        },
         select: { batchId: true, quantity: true },
         take: 1,
       });
       if (batchesWithStock.length === 0) {
-        throw new AppError(409, ErrorCode.PURCHASE_RETURN_INSUFFICIENT_STOCK, "No stock available for this product at the location");
+        throw new AppError(409, ErrorCode.PURCHASE_RETURN_INSUFFICIENT_STOCK, "No stock from this supplier available for this product at the location");
       }
       input.batchId = batchesWithStock[0].batchId;
     }
@@ -150,58 +198,73 @@ export const purchaseReturnService = {
     // Calculate debit note amount if not provided
     const debitNoteAmount = input.debitNoteAmount ?? input.unitCost * input.quantity;
 
-    const returnRecord = await prisma.$transaction(async (tx) => {
-      // Record stock movement (RETURN_TO_SUPPLIER OUT)
-      await stockMovementService.recordMovement({
-        productId: input.productId,
-        batchId: input.batchId!,
-        locationId: input.locationId,
-        transactionType: "RETURN_TO_SUPPLIER",
-        direction: "OUT",
-        quantity: input.quantity,
-        referenceType: "PurchaseReturn",
-        referenceId: null, // Will be set after create
-        notes: `Return to supplier: ${input.reason}`,
-        actor,
-      });
+    const returnRecord = await prisma.$transaction(
+      async (tx) => {
+        // Create the return record first so the stock movement can reference it.
+        const created = await tx.purchaseReturn.create({
+          data: {
+            returnNumber: generateReturnNumber(),
+            supplierId: input.supplierId,
+            productId: input.productId,
+            batchId: input.batchId,
+            locationId: input.locationId,
+            reason: input.reason,
+            quantity: input.quantity,
+            unitCost: input.unitCost,
+            debitNoteAmount,
+            notes: input.notes,
+            recordedById: actor.id,
+          },
+          include: {
+            supplier: { select: { id: true, name: true } },
+            product: { select: { id: true, name: true, sku: true } },
+            batch: { select: { id: true, batchNumber: true, expiryDate: true } },
+            location: { select: { id: true, name: true } },
+          },
+        });
 
-      // Create purchase return record
-      const created = await tx.purchaseReturn.create({
-        data: {
-          returnNumber: generateReturnNumber(),
-          supplierId: input.supplierId,
+        // Record the movement (RETURN_TO_SUPPLIER OUT) INSIDE this transaction.
+        // recordMovementInTransaction re-validates availability under the
+        // per-(batch, location) advisory lock, so the availability check above
+        // cannot go stale, and the movement + return record commit together.
+        await recordMovementInTransaction(tx, {
           productId: input.productId,
-          batchId: input.batchId,
-          locationId: input.locationId,
-          reason: input.reason,
-          quantity: input.quantity,
-          unitCost: input.unitCost,
-          debitNoteAmount,
-          notes: input.notes,
-          recordedById: actor.id,
-        },
-        include: {
-          supplier: { select: { id: true, name: true } },
-          product: { select: { id: true, name: true, sku: true } },
-          batch: { select: { id: true, batchNumber: true, expiryDate: true } },
-          location: { select: { id: true, name: true } },
-        },
-      });
-
-      // Update the stock transaction with referenceId
-      await tx.stockTransaction.updateMany({
-        where: {
-          referenceType: "PurchaseReturn",
-          referenceId: null,
           batchId: input.batchId!,
           locationId: input.locationId,
-          createdById: actor.id,
-        },
-        data: { referenceId: created.id },
-      });
+          transactionType: "RETURN_TO_SUPPLIER",
+          direction: "OUT",
+          quantity: input.quantity,
+          referenceType: "PurchaseReturn",
+          referenceId: created.id,
+          notes: `Return to supplier: ${input.reason}`,
+          actor,
+        });
 
-      return created;
-    });
+        // Audit event in the SAME transaction: a rollback of the movement or
+        // the return record must also roll this back.
+        await recordAuditEvent(
+          {
+            event: AuditEvent.PURCHASE_RETURN_CREATED,
+            entityId: created.id,
+            actorId: actor.id,
+            metadata: {
+              returnNumber: created.returnNumber,
+              supplierId: created.supplierId,
+              productId: created.productId,
+              batchId: created.batchId,
+              locationId: created.locationId,
+              quantity: created.quantity.toNumber(),
+              reason: created.reason,
+              debitNoteAmount: created.debitNoteAmount.toNumber(),
+            },
+          },
+          tx,
+        );
+
+        return created;
+      },
+      { timeout: 30_000, maxWait: 15_000 },
+    );
 
     return returnRecord;
   },

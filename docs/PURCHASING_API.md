@@ -1847,6 +1847,10 @@ DELETE /purchase-returns/:id
 | `DUPLICATE_BATCH` | 409 | Batch number exists for product |
 | `BATCH_PRODUCT_MISMATCH` | 422 | Batch ≠ product |
 | `EXPIRED_BATCH` | 409 | Cannot add to expired batch |
+| `SUPPLIER_PRODUCT_MISMATCH` | 422 | Product was never ordered from the given supplier (purchase return) |
+| `SUPPLIER_BATCH_MISMATCH` | 422 | Batch was not received from the given supplier (returns `batchSupplierId`, `requestedSupplierId`) |
+| `PURCHASE_RETURN_INSUFFICIENT_STOCK` | 409 | Return quantity exceeds available stock (includes: available, requested) |
+| `PURCHASE_RETURN_IMMUTABLE` | 409 | Purchase returns cannot be deleted; the stock movement is already recorded |
 | `BATCH_IN_USE` | 409 | Has stock/transactions |
 | `LOCATION_NOT_FOUND` | 404 | Location doesn't exist |
 | `DUPLICATE_LOCATION` | 409 | Location name exists |
@@ -2814,6 +2818,10 @@ For a complete list, see the Error Codes Reference section above. Key purchasing
 | `INSUFFICIENT_STOCK` | 409 | Not enough stock for OUT movement (includes: available) |
 | `BATCH_PRODUCT_MISMATCH` | 422 | Batch does not belong to product |
 | `EXPIRED_BATCH` | 409 | Cannot add to expired batch |
+| `SUPPLIER_PRODUCT_MISMATCH` | 422 | Product was never ordered from the given supplier (purchase return) |
+| `SUPPLIER_BATCH_MISMATCH` | 422 | Batch was not received from the given supplier (returns `batchSupplierId`, `requestedSupplierId`) |
+| `PURCHASE_RETURN_INSUFFICIENT_STOCK` | 409 | Return quantity exceeds available stock (includes: available, requested) |
+| `PURCHASE_RETURN_IMMUTABLE` | 409 | Purchase returns cannot be deleted; the stock movement is already recorded |
 
 ---
 
@@ -2842,4 +2850,26 @@ When integrating with the frontend, ensure:
 7. **Concurrency:** Payment recording is concurrent-safe (do not double-pay)
 
 8. **Double-invoicing:** PO-linked invoices must include `items` array; same goods cannot be invoiced twice
+
+---
+
+### Supplier Catalog Lookup (Purchase Return flow)
+
+Two endpoints support the Purchase Return UI (supplier → product → batch → location), plus the
+generic audit trail. See the dedicated document for full details:
+**[`docs/SUPPLIER_LOOKUP_AND_AUDIT.md`](./SUPPLIER_LOOKUP_AND_AUDIT.md)**.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /suppliers/:supplierId/products` | Products actually ordered from the supplier (filters: `search`, `isActive`, `page`, `limit`) |
+| `GET /suppliers/:supplierId/products/:productId/batches` | Batches of the product received from that supplier, with per-location `availableQuantity` (filters: `locationId`, `inStock`, `excludeExpired`) |
+
+Key rules: the supplier→product relationship comes from `PurchaseOrderItem`; the supplier→batch
+relationship comes from `Batch.supplierId` (stamped at goods-receipt confirmation). Batches with an
+unknown supplier are excluded rather than misattributed. `POST /purchase-returns` re-validates
+supplier/product/batch ownership and live stock at transaction time.
+
+Important business mutations now write a `AuditTrail` row (product created/updated/deactivated,
+requirement/PO/GR/invoice/payment/return/sale/adjustment events) in the same database transaction
+where one exists; `GET /audit-trail` reads them.
 

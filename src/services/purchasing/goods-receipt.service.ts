@@ -3,6 +3,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
@@ -262,6 +263,19 @@ export const goodsReceiptService = {
       },
     });
 
+    await recordAuditEvent({
+      event: AuditEvent.GOODS_RECEIPT_CREATED,
+      entityId: receipt.id,
+      actorId: actor.id,
+      metadata: {
+        receiptNumber: receipt.receiptNumber,
+        purchaseOrderId: input.purchaseOrderId,
+        supplierId: po.supplierId,
+        status,
+        itemCount: validatedItems.length,
+      },
+    });
+
     return receipt;
   },
 
@@ -301,7 +315,7 @@ export const goodsReceiptService = {
     return receipt;
   },
 
-  async resolve(id: string, input: ResolveGRInput) {
+  async resolve(id: string, input: ResolveGRInput, actor?: Pick<AuthenticatedUser, "id">) {
     const receipt = await prisma.goodsReceipt.findUnique({
       where: { id },
       select: { id: true, status: true },
@@ -360,13 +374,22 @@ export const goodsReceiptService = {
       newStatus = "DISCREPANCY";
     }
 
-    return prisma.goodsReceipt.update({
+    const updated = await prisma.goodsReceipt.update({
       where: { id },
       data: {
         status: newStatus,
         discrepancyNote: input.discrepancyNote ?? undefined,
       },
     });
+
+    await recordAuditEvent({
+      event: AuditEvent.GOODS_RECEIPT_RESOLVED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: { receiptNumber: updated.receiptNumber, newStatus },
+    });
+
+    return updated;
   },
 
   /**
@@ -520,6 +543,24 @@ export const goodsReceiptService = {
           },
         });
 
+        // Audit in the SAME transaction: the confirmed receipt, its stock
+        // movements, PO quantity updates and this event commit or roll back
+        // as one unit.
+        await recordAuditEvent(
+          {
+            event: AuditEvent.GOODS_RECEIPT_CONFIRMED,
+            entityId: id,
+            actorId: actor.id,
+            metadata: {
+              receiptNumber: receipt.receiptNumber,
+              purchaseOrderId: receipt.purchaseOrderId,
+              supplierId,
+              itemCount: receipt.items.length,
+            },
+          },
+          tx,
+        );
+
         return tx.goodsReceipt.findUnique({
           where: { id },
           include: {
@@ -540,10 +581,10 @@ export const goodsReceiptService = {
     );
   },
 
-  async remove(id: string) {
+  async remove(id: string, actor?: Pick<AuthenticatedUser, "id">) {
     const receipt = await prisma.goodsReceipt.findUnique({
       where: { id },
-      select: { id: true, status: true, confirmedById: true },
+      select: { id: true, receiptNumber: true, status: true, confirmedById: true },
     });
     if (!receipt) {
       throw new AppError(404, ErrorCode.GOODS_RECEIPT_NOT_FOUND, "Goods receipt not found");
@@ -553,5 +594,12 @@ export const goodsReceiptService = {
     }
 
     await prisma.goodsReceipt.delete({ where: { id } });
+
+    await recordAuditEvent({
+      event: AuditEvent.GOODS_RECEIPT_DELETED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: { receiptNumber: receipt.receiptNumber },
+    });
   },
 };

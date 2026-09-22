@@ -29,7 +29,11 @@ export const supplierInvoiceController = {
   }),
 
   update: asyncHandler(async (req: Request, res: Response) => {
-    const data = await supplierInvoiceService.update(req.params.id as string, req.body as UpdateSupplierInvoiceInput);
+    const data = await supplierInvoiceService.update(
+      req.params.id as string,
+      req.body as UpdateSupplierInvoiceInput,
+      req.auth?.user,
+    );
     sendSuccess(res, data);
   }),
 
@@ -40,7 +44,7 @@ export const supplierInvoiceController = {
   }),
 
   remove: asyncHandler(async (req: Request, res: Response) => {
-    await supplierInvoiceService.remove(req.params.id as string);
+    await supplierInvoiceService.remove(req.params.id as string, req.auth?.user);
     sendSuccess(res, null);
   }),
 };

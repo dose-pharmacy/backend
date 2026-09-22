@@ -15,6 +15,7 @@ import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { recomputeRequirementStatus } from "./requirement.service.js";
 import { productUnitService } from "../inventory/product-unit.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { DbClient } from "./requirement.service.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
@@ -556,6 +557,22 @@ async function createPurchaseOrderTx(
     where: { id: po.id },
     include: PO_DETAIL_INCLUDE,
   });
+
+  // Audit inside the same transaction as the PO + allocations.
+  await recordAuditEvent(
+    {
+      event: AuditEvent.PURCHASE_ORDER_CREATED,
+      entityId: po.id,
+      actorId: actor.id,
+      metadata: {
+        poNumber: po.poNumber,
+        supplierId: po.supplierId,
+        itemCount: resolvedItems.length,
+      },
+    },
+    tx,
+  );
+
   return purchaseOrderService.attachDetailSummaries(created!);
 }
 
@@ -892,7 +909,7 @@ export const purchaseOrderService = {
     }, TX_OPTIONS);
   },
 
-  async update(id: string, input: UpdatePOInput) {
+  async update(id: string, input: UpdatePOInput, actor?: Pick<AuthenticatedUser, "id">) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id },
       select: { id: true, status: true },
@@ -916,6 +933,20 @@ export const purchaseOrderService = {
       },
       include: PO_DETAIL_INCLUDE,
     });
+
+    // Non-transactional single write: audit after the commit; the helper
+    // swallows failures for already-committed operations.
+    await recordAuditEvent({
+      event: AuditEvent.PURCHASE_ORDER_UPDATED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: {
+        poNumber: updated.poNumber,
+        expectedDeliveryDate: input.expectedDeliveryDate ?? null,
+        notesChanged: input.notes !== undefined,
+      },
+    });
+
     return this.attachDetailSummaries(updated);
   },
 
@@ -1144,12 +1175,22 @@ export const purchaseOrderService = {
         await recomputeRequirementStatus(requirementId, tx);
       }
 
+      await recordAuditEvent(
+        {
+          event: AuditEvent.PURCHASE_ORDER_CANCELLED,
+          entityId: id,
+          actorId: _actor.id,
+          metadata: { poNumber: po.poNumber },
+        },
+        tx,
+      );
+
       const cancelled = await tx.purchaseOrder.findUnique({ where: { id }, include: PO_DETAIL_INCLUDE });
       return purchaseOrderService.attachDetailSummaries(cancelled!);
     }, TX_OPTIONS);
   },
 
-  async markAwaitingDelivery(id: string) {
+  async markAwaitingDelivery(id: string, actor?: Pick<AuthenticatedUser, "id">) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id },
       select: { id: true, status: true },
@@ -1170,10 +1211,16 @@ export const purchaseOrderService = {
       data: { status: PurchaseOrderStatus.AWAITING_DELIVERY },
       include: PO_DETAIL_INCLUDE,
     });
+    await recordAuditEvent({
+      event: AuditEvent.PURCHASE_ORDER_MARKED_AWAITING_DELIVERY,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: { poNumber: updated.poNumber },
+    });
     return this.attachDetailSummaries(updated);
   },
 
-  async close(id: string) {
+  async close(id: string, actor?: Pick<AuthenticatedUser, "id">) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id },
       include: {
@@ -1206,6 +1253,12 @@ export const purchaseOrderService = {
       where: { id },
       data: { status: PurchaseOrderStatus.CLOSED },
       include: PO_DETAIL_INCLUDE,
+    });
+    await recordAuditEvent({
+      event: AuditEvent.PURCHASE_ORDER_CLOSED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: { poNumber: closed.poNumber },
     });
     return this.attachDetailSummaries(closed);
   },

@@ -13,8 +13,8 @@ export type AuditTrailQuery = PageQuery & {
 
 export type AuditTrailResult = {
   id: string;
-  userId: string;
-  user: { id: string; name: string; email: string };
+  userId: string | null;
+  user: { id: string; name: string; email: string } | null;
   action: string;
   entity: string;
   entityId: string;

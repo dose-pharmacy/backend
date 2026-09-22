@@ -4,6 +4,7 @@ import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { toDecimal } from "../../utils/decimal.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
@@ -368,11 +369,9 @@ export const supplierInvoiceService = {
       });
       if (totalAmount.lt(0)) {
         throw new AppError(422, ErrorCode.BAD_REQUEST, "Invoice total cannot be negative");
-      }
-
-      return tx.supplierInvoice.create({
-        data: {
-          invoiceNumber: input.invoiceNumber,
+      }      const invoice = await tx.supplierInvoice.create({
+          data: {
+            invoiceNumber: input.invoiceNumber,
           supplierId: input.supplierId,
           purchaseOrderId: po?.id ?? null,
           invoiceDate: input.invoiceDate ? new Date(input.invoiceDate) : new Date(),
@@ -400,6 +399,23 @@ export const supplierInvoiceService = {
         },
         include: INVOICE_DETAIL_INCLUDE,
       });
+
+      await recordAuditEvent(
+        {
+          event: AuditEvent.SUPPLIER_INVOICE_CREATED,
+          entityId: invoice.id,
+          actorId: actor.id,
+          metadata: {
+            invoiceNumber: invoice.invoiceNumber,
+            supplierId: invoice.supplierId,
+            purchaseOrderId: invoice.purchaseOrderId,
+            totalAmount: totalAmount.toNumber(),
+          },
+        },
+        tx,
+      );
+
+      return invoice;
     }, { timeout: 30_000, maxWait: 15_000 });
   },
 
@@ -416,7 +432,7 @@ export const supplierInvoiceService = {
     return invoice;
   },
 
-  async update(id: string, input: UpdateSupplierInvoiceInput) {
+  async update(id: string, input: UpdateSupplierInvoiceInput, actor?: Pick<AuthenticatedUser, "id">) {
     const invoice = await prisma.supplierInvoice.findUnique({
       where: { id },
       select: { id: true, status: true },
@@ -428,10 +444,19 @@ export const supplierInvoiceService = {
       throw new AppError(409, ErrorCode.BAD_REQUEST, "Cannot modify a fully paid invoice");
     }
 
-    return prisma.supplierInvoice.update({
+    const updated = await prisma.supplierInvoice.update({
       where: { id },
       data: input,
     });
+
+    await recordAuditEvent({
+      event: AuditEvent.SUPPLIER_INVOICE_UPDATED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: { invoiceNumber: updated.invoiceNumber },
+    });
+
+    return updated;
   },
 
   /**
@@ -492,14 +517,32 @@ export const supplierInvoiceService = {
         );
       }
 
+      // Audit inside the same transaction: the payment and the balance
+      // decrement must commit or roll back together with this event.
+      await recordAuditEvent(
+        {
+          event: AuditEvent.SUPPLIER_PAYMENT_RECORDED,
+          entityId: payment.id,
+          actorId: actor.id,
+          metadata: {
+            invoiceId,
+            invoiceNumber: undefined,
+            supplierId: invoice.supplierId,
+            amount: input.amount,
+            newOutstandingBalance: newOutstanding.toNumber(),
+          },
+        },
+        tx,
+      );
+
       return payment;
     });
   },
 
-  async remove(id: string) {
+  async remove(id: string, actor?: Pick<AuthenticatedUser, "id">) {
     const invoice = await prisma.supplierInvoice.findUnique({
       where: { id },
-      select: { id: true, status: true, _count: { select: { payments: true } } },
+      select: { id: true, invoiceNumber: true, status: true, _count: { select: { payments: true } } },
     });
     if (!invoice) {
       throw new AppError(404, ErrorCode.SUPPLIER_INVOICE_NOT_FOUND, "Invoice not found");
@@ -509,5 +552,12 @@ export const supplierInvoiceService = {
     }
 
     await prisma.supplierInvoice.delete({ where: { id } });
+
+    await recordAuditEvent({
+      event: AuditEvent.SUPPLIER_INVOICE_DELETED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: { invoiceNumber: invoice.invoiceNumber },
+    });
   },
 };

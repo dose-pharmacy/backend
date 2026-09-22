@@ -5,6 +5,7 @@ import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { reorderService } from "../inventory/reorder.service.js";
 import { productUnitService } from "../inventory/product-unit.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
@@ -592,6 +593,16 @@ export const requirementService = {
       },
     });
 
+    await recordAuditEvent({
+      event: AuditEvent.PURCHASE_REQUIREMENT_CREATED,
+      entityId: requirement.id,
+      actorId: actor.id,
+      metadata: {
+        reference: requirement.reference,
+        lineCount: requirement.lines.length,
+      },
+    });
+
     return {
       ...requirement,
       lines: (requirement.lines as unknown as LineRow[]).map(mapRequirementLine),
@@ -659,7 +670,7 @@ export const requirementService = {
     };
   },
 
-  async update(id: string, input: UpdateRequirementInput) {
+  async update(id: string, input: UpdateRequirementInput, actor?: Pick<AuthenticatedUser, "id">) {
     await assertRequirementOpen(id);
 
     const updatedReq = await prisma.purchaseRequirement.update({
@@ -669,6 +680,17 @@ export const requirementService = {
         notes: input.notes,
       },
       include: { lines: { include: LINE_INCLUDE_ACTIVE } },
+    });
+
+    await recordAuditEvent({
+      event: AuditEvent.PURCHASE_REQUIREMENT_UPDATED,
+      entityId: id,
+      actorId: actor?.id ?? null,
+      metadata: {
+        reference: updatedReq.reference,
+        requiredBy: updatedReq.requiredBy?.toISOString() ?? null,
+        notesChanged: input.notes !== undefined,
+      },
     });
 
     return {
@@ -816,10 +838,10 @@ export const requirementService = {
     });
   },
 
-  async close(id: string) {
+  async close(id: string, actor?: Pick<AuthenticatedUser, "id">) {
     const requirement = await prisma.purchaseRequirement.findUnique({
       where: { id },
-      select: { id: true, status: true },
+      select: { id: true, reference: true, status: true },
     });
     if (!requirement) {
       throw new AppError(404, ErrorCode.REQUIREMENT_NOT_FOUND, "Requirement not found");
@@ -859,6 +881,16 @@ export const requirementService = {
         where: { requirementId: id },
         data: { status: PurchaseRequirementStatus.CLOSED },
       });
+
+      await recordAuditEvent(
+        {
+          event: AuditEvent.PURCHASE_REQUIREMENT_CLOSED,
+          entityId: id,
+          actorId: actor?.id ?? null,
+          metadata: { reference: requirement.reference },
+        },
+        tx,
+      );
     });
 
     return this.getById(id);
@@ -924,6 +956,17 @@ export const requirementService = {
       include: {
         lines: { include: LINE_INCLUDE_ACTIVE },
         createdBy: { select: { id: true, name: true } },
+      },
+    });
+
+    await recordAuditEvent({
+      event: AuditEvent.PURCHASE_REQUIREMENT_CREATED,
+      entityId: requirement.id,
+      actorId: actor.id,
+      metadata: {
+        reference: requirement.reference,
+        lineCount: requirement.lines.length,
+        source: "REORDER_SUGGESTIONS",
       },
     });
 

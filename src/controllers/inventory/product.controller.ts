@@ -29,7 +29,10 @@ export const productController = {
   }),
 
   create: asyncHandler(async (req: Request, res: Response) => {
-    const data = await productService.create(req.body as CreateProductInput);
+    const data = await productService.create(
+      req.body as CreateProductInput,
+      req.auth?.user,
+    );
     sendSuccess(res, data, { status: 201 });
   }),
 
@@ -43,6 +46,7 @@ export const productController = {
     const data = await productService.update(
       req.params.id as string,
       req.body as UpdateProductInput,
+      req.auth?.user,
     );
     sendSuccess(res, data);
   }),

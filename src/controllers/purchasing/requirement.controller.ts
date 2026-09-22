@@ -38,12 +38,13 @@ export const requirementController = {
     const data = await requirementService.update(
       req.params.id as string,
       req.body as UpdateRequirementInput,
+      req.auth?.user,
     );
     sendSuccess(res, data);
   }),
 
   close: asyncHandler(async (req: Request, res: Response) => {
-    const data = await requirementService.close(req.params.id as string);
+    const data = await requirementService.close(req.params.id as string, req.auth?.user);
     sendSuccess(res, data);
   }),
 

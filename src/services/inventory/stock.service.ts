@@ -11,7 +11,8 @@ import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.j
 import type { AuthenticatedUser } from "../../types/auth.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import { productUnitService } from "./product-unit.service.js";
-import { stockMovementService } from "./stock-movement.service.js";
+import { stockMovementService, recordMovementInTransaction } from "./stock-movement.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { StockStatus } from "./inventory-product.service.js";
 
 function computeStockStatus(
@@ -131,6 +132,9 @@ export const stockService = {
   /**
    * Manual stock adjustment (count corrections etc). The reason is mandatory
    * and is stored on the immutable StockTransaction.
+   *
+   * The movement AND its audit event commit in the same transaction: a failed
+   * adjustment leaves neither a stock change nor a success audit record.
    */
   async adjustment(input: StockAdjustmentInput, actor: Pick<AuthenticatedUser, "id">) {
     await validateBatchProduct(input.batchId, input.productId);
@@ -145,16 +149,41 @@ export const stockService = {
         ? StockTransactionType.ADJUSTMENT_IN
         : StockTransactionType.ADJUSTMENT_OUT;
 
-    const result = await stockMovementService.recordMovement({
-      productId: input.productId,
-      batchId: input.batchId,
-      locationId: input.locationId,
-      transactionType,
-      direction: input.direction,
-      quantity: baseQuantity,
-      notes: input.reason,
-      actor,
-    });
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const movement = await recordMovementInTransaction(tx, {
+          productId: input.productId,
+          batchId: input.batchId,
+          locationId: input.locationId,
+          transactionType,
+          direction: input.direction,
+          quantity: baseQuantity,
+          notes: input.reason,
+          actor,
+        });
+
+        await recordAuditEvent(
+          {
+            event: AuditEvent.STOCK_ADJUSTMENT_CREATED,
+            entityId: movement.transaction.id,
+            actorId: actor.id,
+            metadata: {
+              productId: input.productId,
+              batchId: input.batchId,
+              locationId: input.locationId,
+              transactionType,
+              direction: input.direction,
+              quantity: baseQuantity.toNumber(),
+              reason: input.reason,
+            },
+          },
+          tx,
+        );
+
+        return movement;
+      },
+      { maxWait: 10_000, timeout: 30_000 },
+    );
 
     return {
       ...result,

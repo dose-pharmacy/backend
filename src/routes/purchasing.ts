@@ -6,6 +6,7 @@ import { purchaseOrderController } from "../controllers/purchasing/purchase-orde
 import { goodsReceiptController } from "../controllers/purchasing/goods-receipt.controller.js";
 import { supplierInvoiceController } from "../controllers/purchasing/supplier-invoice.controller.js";
 import { purchaseReturnController } from "../controllers/purchasing/purchase-return.controller.js";
+import { supplierCatalogController } from "../controllers/purchasing/supplier-catalog.controller.js";
 import { requireAuthenticatedUser, requireRole } from "../middleware/authorize.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -51,6 +52,12 @@ import {
   purchaseReturnListQuerySchema,
   purchaseReturnParamsSchema,
 } from "../validators/purchasing/purchase-return.js";
+import {
+  supplierIdParamsSchema,
+  supplierProductListQuerySchema,
+  supplierProductParamsSchema,
+  supplierProductBatchQuerySchema,
+} from "../validators/purchasing/supplier-catalog.js";
 
 export const purchasingRouter = Router();
 
@@ -89,6 +96,22 @@ purchasingRouter.delete(
   ...admin,
   validate({ params: supplierParamsSchema }),
   supplierController.remove,
+);
+
+// ---------------------------------------------------------------------------
+// Supplier catalog (Purchase Return flow lookups)
+// ---------------------------------------------------------------------------
+purchasingRouter.get(
+  "/suppliers/:supplierId/products",
+  ...admin,
+  validate({ params: supplierIdParamsSchema, query: supplierProductListQuerySchema }),
+  supplierCatalogController.listProductsForSupplier,
+);
+purchasingRouter.get(
+  "/suppliers/:supplierId/products/:productId/batches",
+  ...admin,
+  validate({ params: supplierProductParamsSchema, query: supplierProductBatchQuerySchema }),
+  supplierCatalogController.listBatchesForSupplierProduct,
 );
 
 // ---------------------------------------------------------------------------

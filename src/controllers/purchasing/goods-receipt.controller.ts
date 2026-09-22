@@ -32,7 +32,11 @@ export const goodsReceiptController = {
   }),
 
   resolve: asyncHandler(async (req: Request, res: Response) => {
-    const data = await goodsReceiptService.resolve(req.params.id as string, req.body as ResolveGRInput);
+    const data = await goodsReceiptService.resolve(
+      req.params.id as string,
+      req.body as ResolveGRInput,
+      req.auth?.user,
+    );
     sendSuccess(res, data);
   }),
 
@@ -43,7 +47,7 @@ export const goodsReceiptController = {
   }),
 
   remove: asyncHandler(async (req: Request, res: Response) => {
-    await goodsReceiptService.remove(req.params.id as string);
+    await goodsReceiptService.remove(req.params.id as string, req.auth?.user);
     sendSuccess(res, null);
   }),
 };

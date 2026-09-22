@@ -11,6 +11,8 @@ import { toDecimal } from "../../utils/decimal.js";
 import { prisma } from "../../database/prisma.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import { calculateStockStatus } from "./inventory-product.service.js";
+import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
+import type { AuthenticatedUser } from "../../types/auth.js";
 
 export type ProductUnitConfigInput = {
   /** Id of a reusable master Unit (e.g. \"Box\"). */
@@ -245,7 +247,7 @@ export const productService = {
    * Creates a product and, when `units` is supplied, its ProductUnit
    * configurations in a single Prisma transaction.
    */
-  async create(input: CreateProductInput) {
+  async create(input: CreateProductInput, actor?: Pick<AuthenticatedUser, "id">) {
     const group = await productGroupRepository.findById(input.productGroupId);
     if (!group) {
       throw new AppError(404, ErrorCode.PRODUCT_GROUP_NOT_FOUND, "Product group not found");
@@ -290,6 +292,24 @@ export const productService = {
           });
         }
 
+        // Audit INSIDE the same transaction: the product and its audit record
+        // commit (or roll back) together.
+        if (actor) {
+          await recordAuditEvent(
+            {
+              event: AuditEvent.PRODUCT_CREATED,
+              entityId: created.id,
+              actorId: actor.id,
+              metadata: {
+                sku: created.sku,
+                isNarcotic: created.isNarcotic,
+                isActive: created.isActive,
+              },
+            },
+            tx,
+          );
+        }
+
         return created;
       },
       {
@@ -317,7 +337,7 @@ export const productService = {
    * prices), missing ones are created. The base unit cannot be removed or
    * re-designated here — use the dedicated unit endpoints for that.
    */
-  async update(id: string, input: UpdateProductInput) {
+  async update(id: string, input: UpdateProductInput, actor?: Pick<AuthenticatedUser, "id">) {
     const product = await productRepository.findById(id);
     if (!product) {
       throw new AppError(404, ErrorCode.PRODUCT_NOT_FOUND, "Product not found");
@@ -418,7 +438,64 @@ export const productService = {
           }
         }
 
-        return productRepository.findByIdWithUnits(id);
+        const updated = await productRepository.findByIdWithUnits(id);
+
+        if (actor) {
+          // isNarcotic transitions are always audited explicitly: flipping a
+          // product into/out of controlled status is a compliance-relevant act.
+          if (input.isNarcotic !== undefined && input.isNarcotic !== product.isNarcotic) {
+            await recordAuditEvent(
+              {
+                event: AuditEvent.PRODUCT_UPDATED,
+                entityId: id,
+                actorId: actor.id,
+                metadata: {
+                  field: "isNarcotic",
+                  oldValue: product.isNarcotic,
+                  newValue: input.isNarcotic,
+                },
+              },
+              tx,
+            );
+          } else if (input.isActive === false && product.isActive) {
+            await recordAuditEvent(
+              {
+                event: AuditEvent.PRODUCT_DEACTIVATED,
+                entityId: id,
+                actorId: actor.id,
+                metadata: { sku: product.sku },
+              },
+              tx,
+            );
+          } else {
+            // Generic update: record only the fields that actually changed.
+            const changedFields: Record<string, { oldValue: unknown; newValue: unknown }> = {};
+            const track = <T>(field: string, oldValue: T, newValue: T | undefined) => {
+              if (newValue !== undefined && newValue !== oldValue) {
+                changedFields[field] = { oldValue, newValue };
+              }
+            };
+            track("name", product.name, input.name);
+            track("sku", product.sku, input.sku);
+            track("brand", product.brand, input.brand);
+            track("genericName", product.genericName, input.genericName);
+            track("productGroupId", product.productGroupId, input.productGroupId);
+            track("isActive", product.isActive, input.isActive);
+            if (Object.keys(changedFields).length > 0) {
+              await recordAuditEvent(
+                {
+                  event: AuditEvent.PRODUCT_UPDATED,
+                  entityId: id,
+                  actorId: actor.id,
+                  metadata: changedFields as unknown as Prisma.InputJsonValue,
+                },
+                tx,
+              );
+            }
+          }
+        }
+
+        return updated;
       },
       {
         maxWait: 10_000,
