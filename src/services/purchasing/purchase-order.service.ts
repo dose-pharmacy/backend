@@ -1000,12 +1000,24 @@ export const purchaseOrderService = {
           await lockRequirementLines(tx, [allocation.requirementLineId]);
           const line = await tx.purchaseRequirementLine.findUnique({
             where: { id: allocation.requirementLineId },
-            select: { id: true, requirementId: true, quantityNeeded: true },
+            select: { id: true, requirementId: true, quantityNeeded: true, quantityNeededBase: true },
           });
           if (!line) {
             throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
           }
           requirementId = line.requirementId;
+
+          // The item is ordered in its own unit; convert the new ordered
+          // quantity to BASE so it reconciles against the requirement's
+          // base snapshot and the base-valued allocations on the same line.
+          const itemUnitId = existing.unitId ?? (await baseUnitIdFor(tx, existing.productId));
+          const { baseQuantity: newOrderedBaseQuantity } = await productUnitService.toBaseQuantity(
+            existing.productId,
+            itemUnitId,
+            input.quantityOrdered,
+            tx,
+          );
+          const newOrderedBase = newOrderedBaseQuantity.toNumber();
 
           const othersAggregate = await tx.purchaseRequirementAllocation.aggregate({
             where: {
@@ -1018,25 +1030,52 @@ export const purchaseOrderService = {
             _sum: { quantityAllocated: true },
           });
           const otherAllocated = othersAggregate._sum.quantityAllocated?.toNumber() ?? 0;
-          const required = line.quantityNeeded.toNumber();
-          const maxAllowed = required - otherAllocated;
-          if (input.quantityOrdered > maxAllowed) {
+          const requiredBase = line.quantityNeededBase.gt(0)
+            ? line.quantityNeededBase.toNumber()
+            : line.quantityNeeded.toNumber();
+          const maxAllowed = requiredBase - otherAllocated;
+          if (newOrderedBase > maxAllowed) {
             throw new AppError(
               409,
               ErrorCode.REQUIREMENT_QUANTITY_EXCEEDED,
               "Requested quantity exceeds the remaining quantity on the requirement line",
               {
-                requiredQuantity: required,
+                requiredQuantity: requiredBase,
                 currentlyOrderedQuantity: otherAllocated,
                 remainingQuantity: Math.max(0, maxAllowed),
-                requestedQuantity: input.quantityOrdered,
+                requestedQuantity: newOrderedBase,
               },
             );
           }
 
           await tx.purchaseRequirementAllocation.update({
             where: { id: allocation.id },
-            data: { quantityAllocated: input.quantityOrdered },
+            data: { quantityAllocated: newOrderedBase },
+          });
+
+          await tx.purchaseOrderItem.update({
+            where: { id: itemId },
+            data: {
+              quantityOrdered: input.quantityOrdered,
+              // Base snapshot stays in sync; never re-read the current
+              // ProductUnit configuration for historical rows.
+              quantityOrderedBase: newOrderedBase,
+            },
+          });
+        } else {
+          const itemUnitId = existing.unitId ?? (await baseUnitIdFor(tx, existing.productId));
+          const { baseQuantity: newOrderedBaseQuantity } = await productUnitService.toBaseQuantity(
+            existing.productId,
+            itemUnitId,
+            input.quantityOrdered,
+            tx,
+          );
+          await tx.purchaseOrderItem.update({
+            where: { id: itemId },
+            data: {
+              quantityOrdered: input.quantityOrdered,
+              quantityOrderedBase: newOrderedBaseQuantity.toNumber(),
+            },
           });
         }
 

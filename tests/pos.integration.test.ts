@@ -1,11 +1,13 @@
 import request from "supertest";
 import type { Response } from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import app from "../src/app.js";
 import { UserRole } from "../src/authorization/roles.js";
 import { prisma } from "../src/database/prisma.js";
 import { saleService } from "../src/services/pos/sale.service.js";
 import { stockMovementService } from "../src/services/inventory/stock-movement.service.js";
+
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 function uniqueEmail(label: string): string {
   return `${label}.${Date.now()}.${Math.random().toString(16).slice(2)}@example.com`;

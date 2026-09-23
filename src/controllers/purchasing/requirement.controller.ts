@@ -19,8 +19,8 @@ export const requirementController = {
       status: query.status as RequirementListQuery["status"],
       search: query.search,
     };
-    const { items, meta } = await requirementService.list(input);
-    sendSuccess(res, items, { meta });
+    const { items, meta, summary } = await requirementService.list(input);
+    sendSuccess(res, items, { meta, summary });
   }),
 
   create: asyncHandler(async (req: Request, res: Response) => {

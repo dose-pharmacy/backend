@@ -3,6 +3,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
+import { toDecimal } from "../../utils/decimal.js";
 import { reorderService } from "../inventory/reorder.service.js";
 import { productUnitService } from "../inventory/product-unit.service.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
@@ -111,6 +112,8 @@ type LineRow = {
   unitId: string | null;
   unit: { id: string; name: string; symbol: string } | null;
   quantityNeeded: Prisma.Decimal;
+  /** Snapshot of quantityNeeded in base units; drives base reconciliation. */
+  quantityNeededBase: Prisma.Decimal;
   quantityDelivered: Prisma.Decimal;
   reasonCode: string | null;
   status: PurchaseRequirementStatus;
@@ -218,10 +221,19 @@ function mapAllocation(allocation: AllocationRow): RequirementAllocationView {
  */
 function mapRequirementLine(line: LineRow): RequirementLineView {
   const required = line.quantityNeeded.toNumber();
-  const ordered = line.allocations
+  const orderedBase = line.allocations
     .filter((a) => a.purchaseOrderItem.purchaseOrder.status !== PurchaseOrderStatus.CANCELLED)
     .reduce((sum, a) => sum + a.quantityAllocated.toNumber(), 0);
   const delivered = line.quantityDelivered.toNumber();
+  // Allocation sums are stored in BASE units; require them in the line's own
+  // unit for display by scaling through the stored quantityNeededBase snapshot.
+  const lineToBaseFactor = line.quantityNeededBase.gt(0) && required > 0
+    ? line.quantityNeededBase.toNumber() / required
+    : null;
+  const ordered =
+    lineToBaseFactor && lineToBaseFactor > 0
+      ? toDecimal(orderedBase).div(toDecimal(lineToBaseFactor)).toDecimalPlaces(3).toNumber()
+      : orderedBase;
   const remainingQuantity = Math.max(0, required - ordered);
   const activeOrderCount = line.allocations.filter(
     (a) => a.purchaseOrderItem.purchaseOrder.status !== PurchaseOrderStatus.CANCELLED,
@@ -743,7 +755,7 @@ export const requirementService = {
   async updateLine(lineId: string, input: UpdateRequirementLineInput) {
     const line = await prisma.purchaseRequirementLine.findUnique({
       where: { id: lineId },
-      select: { id: true, requirementId: true, quantityNeeded: true, unitId: true, status: true },
+      select: { id: true, requirementId: true, productId: true, quantityNeeded: true, unitId: true, status: true },
     });
     if (!line) {
       throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
@@ -755,39 +767,46 @@ export const requirementService = {
     if (input.reasonCode !== undefined) data.reasonCode = input.reasonCode;
     if (input.notes !== undefined) data.notes = input.notes;
 
-    if (input.quantityNeeded !== undefined) {
-      // Ordered comparison is in base units.
-      const orderedBase = (await productUnitService.toBaseQuantity(
-        lineId,
-        line.unitId ?? (await resolveLineUnitIdForLine(lineId)),
-        input.quantityNeeded,
-      ).catch(() => null))?.baseQuantity.toNumber() ?? input.quantityNeeded;
-      const alreadyOrdered = await activeAllocatedForLine(lineId);
-      if (orderedBase < alreadyOrdered) {
-        throw new AppError(
-          409,
-          ErrorCode.REQUIREMENT_QUANTITY_BELOW_ORDERED,
-          "Cannot reduce the required quantity below what has already been ordered",
-          {
-            requiredQuantity: orderedBase,
-            currentlyOrderedQuantity: alreadyOrdered,
-            remainingQuantity: Math.max(0, orderedBase - alreadyOrdered),
-          },
-        );
-      }
-      data.quantityNeeded = input.quantityNeeded;
-      // Update the base snapshot with the (possibly new) unit.
+    // Recompute the base snapshot whenever the required quantity OR the unit
+    // changes. `toBaseQuantity` validates that the unit belongs to the product
+    // and is active, so an invalid unit surfaces as a 422 instead of being
+    // silently stored.
+    if (input.quantityNeeded !== undefined || input.unitId !== undefined) {
       const unitId = input.unitId ?? line.unitId ?? (await resolveLineUnitIdForLine(lineId));
+      const effectiveQuantity = input.quantityNeeded ?? line.quantityNeeded.toNumber();
+
+      if (input.quantityNeeded !== undefined) {
+        // Ordered comparison is in base units.
+        const { baseQuantity: orderedBase } = await productUnitService.toBaseQuantity(
+          line.productId,
+          unitId,
+          input.quantityNeeded,
+        );
+        const alreadyOrdered = await activeAllocatedForLine(lineId);
+        if (orderedBase.toNumber() < alreadyOrdered) {
+          throw new AppError(
+            409,
+            ErrorCode.REQUIREMENT_QUANTITY_BELOW_ORDERED,
+            "Cannot reduce the required quantity below what has already been ordered",
+            {
+              requiredQuantity: orderedBase.toNumber(),
+              currentlyOrderedQuantity: alreadyOrdered,
+              remainingQuantity: Math.max(0, orderedBase.toNumber() - alreadyOrdered),
+            },
+          );
+        }
+        data.quantityNeeded = input.quantityNeeded;
+      }
+
       if (input.unitId !== undefined) {
         data.unit = { connect: { id: unitId } };
       }
+
       data.quantityNeededBase = (
         await productUnitService.toBaseQuantity(
-          await prisma.purchaseRequirementLine
-            .findUnique({ where: { id: lineId }, select: { productId: true } })
-            .then((l) => l!.productId),
+          line.productId,
           unitId,
-          input.quantityNeeded,
+          effectiveQuantity,
         )
       ).baseQuantity.toNumber();
     }

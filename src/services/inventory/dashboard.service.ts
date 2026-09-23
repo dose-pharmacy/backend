@@ -57,14 +57,14 @@ export async function getDashboardMetrics(
     prisma.inventoryStock.aggregate({
       _sum: { quantity: true },
     }),
-    // Low stock products (total stock <= minimumStock but > 0)
+    // Low stock products (total stock <= effective reorder threshold but > 0)
     prisma.$queryRaw<[{ count: bigint }]>`
       SELECT COUNT(DISTINCT s."productId")::bigint as count
       FROM "inventory_stock" s
       JOIN "product" p ON p.id = s."productId"
       WHERE p."isActive" = true
-      GROUP BY p.id, p."minimumStock"
-      HAVING SUM(s.quantity) > 0 AND SUM(s.quantity) <= p."minimumStock"
+      GROUP BY p.id, p."minimumStock", p."reorderPoint"
+      HAVING SUM(s.quantity) > 0 AND SUM(s.quantity) <= COALESCE(p."reorderPoint", p."minimumStock")
     `.then((rows) => Number(rows[0]?.count ?? 0)),
     // Out of stock products (total stock = 0)
     prisma.$queryRaw<[{ count: bigint }]>`

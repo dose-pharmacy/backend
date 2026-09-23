@@ -38,6 +38,9 @@ describe("inventory: master units", () => {
   const groupIds: string[] = [];
   const productIds: string[] = [];
   const unitIds: string[] = [];
+  let tabletName: string;
+  let stripName: string;
+  let boxName: string;
 
   function uniqueName(base: string): string {
     return `${base} ${Date.now()}.${Math.random().toString(16).slice(2)}`;
@@ -81,7 +84,7 @@ describe("inventory: master units", () => {
   });
 
   it("creates a reusable master unit", async () => {
-    const tabletName = uniqueName("Tablet");
+    tabletName = uniqueName("Tablet");
     const res = await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
@@ -94,7 +97,7 @@ describe("inventory: master units", () => {
   });
 
   it("rejects duplicate master unit names (case-insensitive)", async () => {
-    const stripName = uniqueName("Strip");
+    stripName = uniqueName("Strip");
     await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)
@@ -111,7 +114,7 @@ describe("inventory: master units", () => {
   });
 
   it("lists, searches and filters units", async () => {
-    const boxName = uniqueName("Box");
+    boxName = uniqueName("Box");
     await request(app)
       .post("/api/v1/inventory/units")
       .set("Cookie", cookie)

@@ -239,6 +239,8 @@ describe("dashboard endpoints", () => {
       data: {
         invoiceNumber: `INV-DASH-${suffix}`,
         supplierId,
+        goodsAmount: 5000,
+        totalAmount: 5000,
         invoiceAmount: 5000,
         outstandingBalance: 5000,
         status: "OPEN",

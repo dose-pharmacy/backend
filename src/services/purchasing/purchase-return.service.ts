@@ -3,6 +3,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
+import { productUnitService } from "../inventory/product-unit.service.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
@@ -14,7 +15,9 @@ export type CreatePurchaseReturnInput = {
   batchId?: string | null;
   locationId: string;
   reason: "EXPIRED" | "DAMAGED" | "INCORRECT_DELIVERY";
+  /** Quantity in the unit identified by `unitId` (or base units when omitted). */
   quantity: number;
+  unitId?: string | null;
   unitCost: number;
   debitNoteAmount?: number | null;
   notes?: string | null;
@@ -153,6 +156,7 @@ export const purchaseReturnService = {
           product: { select: { id: true, name: true, sku: true } },
           batch: { select: { id: true, batchNumber: true, expiryDate: true } },
           location: { select: { id: true, name: true } },
+          unit: { select: { id: true, name: true, symbol: true } },
           recordedBy: { select: { id: true, name: true } },
         },
         orderBy: { createdAt: "desc" },
@@ -172,6 +176,21 @@ export const purchaseReturnService = {
 
     // The product must actually have been ordered from this supplier.
     await assertSupplierProductRelationship(input.supplierId, input.productId);
+
+    // Quantity is entered in the unit identified by `unitId` (defaults to the
+    // product's base unit). Convert to base units up front — stock balances,
+    // the movement ledger and the return record all live in base units.
+    const entryQuantity = input.quantity;
+    let unitFactor: Prisma.Decimal | null = null;
+    if (input.unitId) {
+      const converted = await productUnitService.toBaseQuantity(
+        input.productId,
+        input.unitId,
+        input.quantity,
+      );
+      input.quantity = converted.baseQuantity.toNumber();
+      unitFactor = converted.unit.conversionFactor;
+    }
 
     // Validate batch and stock if provided
     if (input.batchId) {
@@ -195,8 +214,9 @@ export const purchaseReturnService = {
       input.batchId = batchesWithStock[0].batchId;
     }
 
-    // Calculate debit note amount if not provided
-    const debitNoteAmount = input.debitNoteAmount ?? input.unitCost * input.quantity;
+    // Calculate debit note amount if not provided (from the quantity the user
+    // actually entered, in its original unit).
+    const debitNoteAmount = input.debitNoteAmount ?? input.unitCost * entryQuantity;
 
     const returnRecord = await prisma.$transaction(
       async (tx) => {
@@ -210,6 +230,8 @@ export const purchaseReturnService = {
             locationId: input.locationId,
             reason: input.reason,
             quantity: input.quantity,
+            unitId: input.unitId ?? null,
+            unitConversionFactor: unitFactor,
             unitCost: input.unitCost,
             debitNoteAmount,
             notes: input.notes,
@@ -220,6 +242,7 @@ export const purchaseReturnService = {
             product: { select: { id: true, name: true, sku: true } },
             batch: { select: { id: true, batchNumber: true, expiryDate: true } },
             location: { select: { id: true, name: true } },
+            unit: { select: { id: true, name: true, symbol: true } },
           },
         });
 
@@ -227,6 +250,8 @@ export const purchaseReturnService = {
         // recordMovementInTransaction re-validates availability under the
         // per-(batch, location) advisory lock, so the availability check above
         // cannot go stale, and the movement + return record commit together.
+        // The quantity is always in base units; unitId/conversionFactor are
+        // stored as snapshots for the ledger.
         await recordMovementInTransaction(tx, {
           productId: input.productId,
           batchId: input.batchId!,
@@ -234,6 +259,8 @@ export const purchaseReturnService = {
           transactionType: "RETURN_TO_SUPPLIER",
           direction: "OUT",
           quantity: input.quantity,
+          unitId: input.unitId ?? null,
+          conversionFactor: unitFactor,
           referenceType: "PurchaseReturn",
           referenceId: created.id,
           notes: `Return to supplier: ${input.reason}`,
@@ -254,6 +281,7 @@ export const purchaseReturnService = {
               batchId: created.batchId,
               locationId: created.locationId,
               quantity: created.quantity.toNumber(),
+              unitId: created.unitId,
               reason: created.reason,
               debitNoteAmount: created.debitNoteAmount.toNumber(),
             },
@@ -277,6 +305,7 @@ export const purchaseReturnService = {
         product: { select: { id: true, name: true, sku: true } },
         batch: { select: { id: true, batchNumber: true, expiryDate: true } },
         location: { select: { id: true, name: true } },
+        unit: { select: { id: true, name: true, symbol: true } },
         recordedBy: { select: { id: true, name: true } },
       },
     });

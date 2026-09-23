@@ -45,8 +45,8 @@ export function calculateStockStatus(
     return "OUT_OF_STOCK";
   }
   const minStock = minimumStock.toNumber();
-  const _reorderPt = reorderPoint?.toNumber() ?? minStock;
-  if (totalStock <= minStock) {
+  const effectiveThreshold = reorderPoint?.toNumber() ?? minStock;
+  if (totalStock <= effectiveThreshold) {
     return "LOW_STOCK";
   }
   return "IN_STOCK";

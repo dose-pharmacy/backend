@@ -17,6 +17,7 @@ export const createPurchaseReturnSchema = z.object({
   locationId: uuidSchema,
   reason: returnReasonEnum,
   quantity: quantitySchema,
+  unitId: uuidSchema.optional(),
   unitCost: positiveMoneySchema,
   debitNoteAmount: moneySchema.optional(),
   notes: z.string().trim().max(1000).optional(),

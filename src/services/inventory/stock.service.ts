@@ -114,6 +114,9 @@ export const stockService = {
       transactionType: StockTransactionType.OPENING,
       direction: StockDirection.IN,
       quantity: baseQuantity,
+      // Conversion snapshot for historical traceability.
+      unitId: unit.unitId,
+      conversionFactor: unit.conversionFactor,
       notes: input.notes,
       actor,
     });
@@ -158,6 +161,9 @@ export const stockService = {
           transactionType,
           direction: input.direction,
           quantity: baseQuantity,
+          // Conversion snapshot for historical traceability.
+          unitId: unit.unitId,
+          conversionFactor: unit.conversionFactor,
           notes: input.reason,
           actor,
         });

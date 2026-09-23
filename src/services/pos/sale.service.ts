@@ -382,6 +382,9 @@ export const saleService = {
                 productId: preparedItems[index].productId,
                 batchId: allocation.batchId,
                 baseQuantity: allocation.baseQuantity,
+                // Conversion snapshot for historical traceability.
+                unitId: preparedItems[index].unitId,
+                conversionFactor: preparedItems[index].conversionFactor,
               })),
           );
           allAllocations.sort((a, b) => a.batchId.localeCompare(b.batchId));
@@ -393,6 +396,9 @@ export const saleService = {
               transactionType: "SALE",
               direction: "OUT",
               quantity: allocation.baseQuantity,
+              // Conversion snapshot for historical traceability.
+              unitId: allocation.unitId,
+              conversionFactor: allocation.conversionFactor,
               referenceType: "Sale",
               referenceId: sale.id,
               actor,

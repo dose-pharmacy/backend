@@ -59,6 +59,7 @@ export type LowStockItem = {
   sku: string;
   availableStock: number;
   reorderPoint: number;
+  baseUnitName: string;
 };
 
 export type ExpiringSoonItem = {
@@ -68,6 +69,7 @@ export type ExpiringSoonItem = {
   batchNumber: string;
   expiryDate: string;
   remainingQuantity: number;
+  baseUnitName: string;
 };
 
 export type AwaitingDeliveryItem = {
@@ -107,7 +109,8 @@ export type ActivityItem = {
 // ── Internal helpers ──────────────────────────────────────────────────────
 
 /**
- * Low-stock count: active products whose total stock is > 0 but <= minimumStock.
+ * Low-stock count: active products whose total stock is > 0 but <= the
+ * effective reorder threshold (reorderPoint when set, else minimumStock).
  * Identical logic to inventory/dashboard.service.ts; extracted here to avoid
  * creating a second inconsistent definition.
  */
@@ -117,8 +120,8 @@ async function countLowStock(): Promise<number> {
     FROM "inventory_stock" s
     JOIN "product" p ON p.id = s."productId"
     WHERE p."isActive" = true
-    GROUP BY p.id, p."minimumStock"
-    HAVING SUM(s.quantity) > 0 AND SUM(s.quantity) <= p."minimumStock"
+    GROUP BY p.id, p."minimumStock", p."reorderPoint"
+    HAVING SUM(s.quantity) > 0 AND SUM(s.quantity) <= COALESCE(p."reorderPoint", p."minimumStock")
   `;
   return Number(rows[0]?.count ?? 0);
 }
@@ -298,6 +301,7 @@ export async function getDashboardAttention(): Promise<DashboardAttention> {
           sku: string;
           availableStock: number;
           reorderPoint: number;
+          baseUnitName: string;
         }>
       >`
         SELECT
@@ -305,12 +309,20 @@ export async function getDashboardAttention(): Promise<DashboardAttention> {
           p.name                  AS "productName",
           p.sku                   AS "sku",
           SUM(s.quantity)::float  AS "availableStock",
-          p."minimumStock"::float AS "reorderPoint"
+          COALESCE(p."reorderPoint", p."minimumStock")::float AS "reorderPoint",
+          bu."name"               AS "baseUnitName"
         FROM "inventory_stock" s
         JOIN "product" p ON p.id = s."productId"
+        LEFT JOIN LATERAL (
+          SELECT unit."name"
+          FROM "product_unit" pu
+          JOIN "unit" unit ON unit.id = pu."unitId"
+          WHERE pu."productId" = p.id AND pu."isBaseUnit" = true
+          LIMIT 1
+        ) bu ON true
         WHERE p."isActive" = true
-        GROUP BY p.id, p.name, p.sku, p."minimumStock"
-        HAVING SUM(s.quantity) > 0 AND SUM(s.quantity) <= p."minimumStock"
+        GROUP BY p.id, p.name, p.sku, p."minimumStock", p."reorderPoint", bu."name"
+        HAVING SUM(s.quantity) > 0 AND SUM(s.quantity) <= COALESCE(p."reorderPoint", p."minimumStock")
         ORDER BY SUM(s.quantity) ASC
         LIMIT 5
       `,
@@ -322,7 +334,17 @@ export async function getDashboardAttention(): Promise<DashboardAttention> {
           stock: { some: { quantity: { gt: 0 } } },
         },
         include: {
-          product: { select: { id: true, name: true } },
+          product: {
+            select: {
+              id: true,
+              name: true,
+              units: {
+                where: { isBaseUnit: true },
+                select: { unit: { select: { name: true } } },
+                take: 1,
+              },
+            },
+          },
           stock: { select: { quantity: true } },
         },
         orderBy: { expiryDate: "asc" },
@@ -358,6 +380,7 @@ export async function getDashboardAttention(): Promise<DashboardAttention> {
     sku: row.sku,
     availableStock: Number(row.availableStock),
     reorderPoint: Number(row.reorderPoint),
+    baseUnitName: row.baseUnitName ?? "unit",
   }));
 
   const expiringSoon: ExpiringSoonItem[] = expiringSoonRows.map((b) => {
@@ -372,6 +395,7 @@ export async function getDashboardAttention(): Promise<DashboardAttention> {
       batchNumber: b.batchNumber,
       expiryDate: b.expiryDate.toISOString(),
       remainingQuantity: Math.round(remaining * 1000) / 1000,
+      baseUnitName: b.product.units[0]?.unit.name ?? "unit",
     };
   });
 

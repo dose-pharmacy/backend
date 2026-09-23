@@ -511,6 +511,13 @@ export const stockTransferService = {
         // use the SAME transaction as the status update via
         // recordMovementInTransaction (no nested transactions).
         for (const item of transfer.items) {
+          const unitFactor = item.quantity.gt(0)
+            ? item.baseQuantity.div(item.quantity)
+            : null;
+          const conversionSnapshot = {
+            unitId: item.unitId,
+            conversionFactor: unitFactor ?? 1,
+          };
           await recordMovementInTransaction(tx, {
             productId: item.productId,
             batchId: item.batchId,
@@ -518,6 +525,8 @@ export const stockTransferService = {
             transactionType: "TRANSFER_OUT",
             direction: "OUT",
             quantity: item.baseQuantity,
+            // Conversion snapshot for historical traceability.
+            ...conversionSnapshot,
             referenceType: "StockTransfer",
             referenceId: transfer.id,
             notes: `Transfer to ${transfer.toLocationId}`,
@@ -531,6 +540,8 @@ export const stockTransferService = {
             transactionType: "TRANSFER_IN",
             direction: "IN",
             quantity: item.baseQuantity,
+            // Conversion snapshot for historical traceability.
+            ...conversionSnapshot,
             referenceType: "StockTransfer",
             referenceId: transfer.id,
             notes: `Transfer from ${transfer.fromLocationId}`,

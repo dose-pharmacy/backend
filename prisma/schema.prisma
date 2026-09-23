@@ -311,6 +311,7 @@ model Unit {
   goodsReceiptItems GoodsReceiptItem[]       @relation("GoodsReceiptItemUnit")
   stockTransactions StockTransaction[] @relation("StockTransactionUnit")
   supplierInvoiceItems SupplierInvoiceItem[]
+  purchaseReturns  PurchaseReturn[]
 
   @@unique([name])
   @@index([isActive])
@@ -878,6 +879,11 @@ model PurchaseReturn {
   batch           Batch?               @relation(fields: [batchId], references: [id])
   locationId      String
   location        InventoryLocation    @relation(fields: [locationId], references: [id])
+  // Unit the return quantity was entered in (null = base unit / legacy rows).
+  unitId          String?
+  unit            Unit?                @relation(fields: [unitId], references: [id])
+  // 1 unit = factor base units; snapshot for display (null when entered in base units).
+  unitConversionFactor Decimal?        @db.Decimal(12, 4)
   reason          PurchaseReturnReason
   quantity        Decimal              @db.Decimal(14, 3)
   returnedDate    DateTime             @default(now())
@@ -891,6 +897,7 @@ model PurchaseReturn {
   @@index([supplierId])
   @@index([productId])
   @@index([batchId])
+  @@index([unitId])
   @@map("purchase_return")
 }
 

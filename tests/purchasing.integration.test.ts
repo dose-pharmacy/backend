@@ -58,6 +58,18 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     });
     productId = product.id;
 
+    const tabletUnit = await prisma.unit.create({
+      data: { name: `Purchasing Tablet ${suffix}`, symbol: "P-TAB" },
+    });
+    await prisma.productUnit.create({
+      data: {
+        productId: product.id,
+        unitId: tabletUnit.id,
+        conversionFactor: 1,
+        isBaseUnit: true,
+      },
+    });
+
     const location = await prisma.inventoryLocation.create({
       data: { name: `Purchasing Store ${suffix}` },
     });
@@ -87,7 +99,11 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     await prisma.stockTransaction.deleteMany({ where: { productId } });
     await prisma.inventoryStock.deleteMany({ where: { productId } });
     await prisma.batch.deleteMany({ where: { productId } });
+    await prisma.productUnit.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
+    await prisma.unit.deleteMany({
+      where: { name: { startsWith: "Purchasing Tablet" } },
+    });
     await prisma.productGroup.deleteMany({ where: { id: groupId } });
     await prisma.inventoryLocation.deleteMany({ where: { id: locationId } });
     await prisma.supplier.deleteMany({ where: { id: { in: [supplierA, supplierB, supplierC] } } });

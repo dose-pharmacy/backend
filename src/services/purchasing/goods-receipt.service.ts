@@ -5,6 +5,7 @@ import { prisma } from "../../database/prisma.js";
 import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
+import { roundTo, toDecimal } from "../../utils/decimal.js";
 import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
@@ -418,7 +419,13 @@ export const goodsReceiptService = {
             items: {
               include: {
                 purchaseOrderItem: {
-                  select: { id: true, productId: true, requirementLineId: true },
+                  select: {
+                    id: true,
+                    productId: true,
+                    requirementLineId: true,
+                    quantityOrdered: true,
+                    quantityOrderedBase: true,
+                  },
                 },
                 location: { select: { id: true } },
               },
@@ -483,6 +490,19 @@ export const goodsReceiptService = {
             });
           }
 
+          // The receipt quantities are expressed in the PO item's ordered unit.
+          // Convert to BASE via the PO item's snapshotted ordered quantity and
+          // ordered-base pair so the movement lands in canonical base units
+          // without ever re-reading the live ProductUnit configuration.
+          const orderedQty = item.purchaseOrderItem.quantityOrdered;
+          const orderedBaseQty = item.purchaseOrderItem.quantityOrderedBase;
+          const unitFactor =
+            orderedQty.gt(0) && orderedBaseQty?.gt(0) ? orderedBaseQty.div(orderedQty) : null;
+          const movementQuantity = roundTo(
+            toDecimal(item.actualQty).mul(unitFactor ?? 1),
+            3,
+          );
+
           // Stock movement inside the SAME transaction ( PURCHASE IN).
           await recordMovementInTransaction(tx, {
             productId: item.purchaseOrderItem.productId,
@@ -490,10 +510,12 @@ export const goodsReceiptService = {
             locationId: item.locationId,
             transactionType: "PURCHASE",
             direction: "IN",
-            quantity: item.actualQty,
-            // Conversion snapshot for historical traceability.
+            quantity: movementQuantity,
+            // Conversion snapshot for historical traceability — same unit the
+            // receipt snapshotted at receipt time. Legacy PO items without a
+            // base snapshot fall back to factor 1 (interpreted as base).
             unitId: item.unitId,
-            conversionFactor: 1,
+            conversionFactor: unitFactor ?? 1,
             referenceType: "GoodsReceipt",
             referenceId: receipt.id,
             notes: `Receipt ${receipt.receiptNumber} - PO ${receipt.purchaseOrder.poNumber}`,

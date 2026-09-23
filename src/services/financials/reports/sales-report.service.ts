@@ -197,7 +197,7 @@ async function getSalesDetailFn(query: SalesDetailQuery) {
     defaultOrder: "desc",
   });
 
-  const [items, total] = await prisma.$transaction([
+  const [rows, total] = await prisma.$transaction([
     prisma.saleItem.findMany({
       where,
       include: {
@@ -205,6 +205,11 @@ async function getSalesDetailFn(query: SalesDetailQuery) {
           select: {
             id: true,
             saleNumber: true,
+            status: true,
+            subtotal: true,
+            totalAmount: true,
+            paidAmount: true,
+            completedAt: true,
             createdAt: true,
             location: { select: { id: true, name: true } },
             cashier: { select: { id: true, name: true } },
@@ -218,6 +223,13 @@ async function getSalesDetailFn(query: SalesDetailQuery) {
     }),
     prisma.saleItem.count({ where }),
   ]);
+
+  const items = rows.map((item) => ({
+    ...item,
+    quantity: item.quantity?.toNumber() ?? 0,
+    baseQuantity: item.baseQuantity?.toNumber() ?? 0,
+    lineTotal: item.lineTotal?.toNumber() ?? 0,
+  }));
 
   return { items, meta: buildPaginationMeta(total, page, limit) };
 }
