@@ -23,3 +23,13 @@ export const supplierProductBatchQuerySchema = z.object({
   excludeExpired: z.enum(["true", "false"]).optional(),
   locationId: optionalUuidQuery(),
 });
+
+/** Query for /suppliers/:supplierId/received-products. */
+export const supplierReceivedProductsQuerySchema = z
+  .object({
+    search: optionalQueryString(200),
+    inStock: z.enum(["true", "false"]).optional(),
+    excludeExpired: z.enum(["true", "false"]).optional(),
+    locationId: optionalUuidQuery(),
+  })
+  .merge(paginationQuerySchema);

@@ -121,7 +121,6 @@ enum PurchaseRequirementReason {
 }
 
 enum PurchaseOrderStatus {
-  REGISTERED
   AWAITING_DELIVERY
   RECEIVED
   CLOSED
@@ -657,7 +656,7 @@ model PurchaseOrder {
   poNumber             String
   supplierId           String
   supplier             Supplier                        @relation(fields: [supplierId], references: [id])
-  status               PurchaseOrderStatus             @default(REGISTERED)
+  status               PurchaseOrderStatus             @default(AWAITING_DELIVERY)
   orderDate            DateTime                        @default(now())
   expectedDeliveryDate DateTime?
   notes                String?

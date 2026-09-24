@@ -9,7 +9,25 @@ const fields = {
 
 export const createLocationSchema = z.object(fields);
 
-export const updateLocationSchema = z.object(fields).partial();
+/**
+ * Update schema is tolerant of the full create payload being echoed back:
+ * - `null` clears description (persisted as NULL)
+ * - `isActive` accepts the strings "true"/"false" and `null`
+ * This keeps name-only updates from being rejected.
+ */
+export const updateLocationSchema = z.object({
+  name: requiredString(100, "Name").optional(),
+  description: z.string().trim().max(500).nullable().optional(),
+  isActive: z.preprocess(
+    (value) => {
+      if (value === null) {
+        return undefined;
+      }
+      return value === "true" ? true : value === "false" ? false : value;
+    },
+    z.boolean().optional(),
+  ),
+});
 
 export const locationListQuerySchema = z
   .object({

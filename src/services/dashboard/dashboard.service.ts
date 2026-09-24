@@ -13,10 +13,10 @@
 //    formula as the slow-moving report and the rest of the codebase.
 //  · Slow-moving count reads the persisted isFlagged boolean only; it never
 //    triggers evaluateSlowMoving().
-//  · Partially-received POs: a PO that is still in an open-to-receive state
-  //   (REGISTERED or AWAITING_DELIVERY) and has at least one item with goods
-  //   received (quantityReceived > 0) that is not yet fully accounted for
-  //   (received + accepted short < ordered).
+//  · Partially-received POs: a PO that is still open to receive
+//    (AWAITING_DELIVERY) and has at least one item with goods
+//    received (quantityReceived > 0) that is not yet fully accounted for
+//    (received + accepted short < ordered).
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.js";
@@ -169,7 +169,7 @@ async function countPartiallyReceived(): Promise<number> {
   const rows = await prisma.$queryRaw<[{ count: bigint }]>`
     SELECT COUNT(DISTINCT po.id)::bigint AS count
     FROM "purchase_order" po
-    WHERE po.status IN ('REGISTERED', 'AWAITING_DELIVERY')
+    WHERE po.status IN ('AWAITING_DELIVERY')
     AND EXISTS (
       SELECT 1 FROM "purchase_order_item" poi
       WHERE poi."purchaseOrderId" = po.id

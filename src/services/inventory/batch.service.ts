@@ -3,6 +3,7 @@ import { ErrorCode } from "../../errors/error-codes.js";
 import { batchRepository } from "../../repositories/inventory/batch.repository.js";
 import { inventoryStockRepository } from "../../repositories/inventory/inventory-stock.repository.js";
 import { productRepository } from "../../repositories/inventory/product.repository.js";
+import { productUnitRepository } from "../../repositories/inventory/product-unit.repository.js";
 import { stockTransactionRepository } from "../../repositories/inventory/stock-transaction.repository.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js";
@@ -17,6 +18,8 @@ export type CreateBatchInput = {
   expiryDate: Date;
   purchaseCost?: number;
   supplierReference?: string;
+  /** Informational unit for the batch (validated against the product, not persisted). */
+  unitId?: string;
 };
 
 export type UpdateBatchInput = Partial<{
@@ -163,6 +166,25 @@ export const batchService = {
 
   async create(input: CreateBatchInput) {
     await assertProductExists(input.productId);
+
+    // The unit is informational only (not persisted): validate it exists
+    // and belongs to the product.
+    if (input.unitId) {
+      const productUnit = await productUnitRepository.findByProductAndUnit(
+        input.productId,
+        input.unitId,
+      );
+      if (!productUnit) {
+        throw new AppError(
+          422,
+          ErrorCode.UNIT_PRODUCT_MISMATCH,
+          "Unit does not belong to this product",
+        );
+      }
+      if (!productUnit.unit.isActive) {
+        throw new AppError(422, ErrorCode.UNIT_INACTIVE, "Unit is inactive");
+      }
+    }
 
     const duplicate = await batchRepository.findByNumber(input.productId, input.batchNumber);
     if (duplicate) {

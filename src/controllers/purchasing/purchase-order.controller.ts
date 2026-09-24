@@ -81,14 +81,6 @@ export const purchaseOrderController = {
     sendSuccess(res, data, { status: 201 });
   }),
 
-  markAwaitingDelivery: asyncHandler(async (req: Request, res: Response) => {
-    const data = await purchaseOrderService.markAwaitingDelivery(
-      req.params.id as string,
-      req.auth?.user,
-    );
-    sendSuccess(res, data);
-  }),
-
   close: asyncHandler(async (req: Request, res: Response) => {
     const data = await purchaseOrderService.close(req.params.id as string, req.auth?.user);
     sendSuccess(res, data);

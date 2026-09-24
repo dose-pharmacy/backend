@@ -26,6 +26,12 @@ export type CreateRequirementInput = {
 export type UpdateRequirementInput = Partial<{
   requiredBy: Date | null;
   notes: string | null;
+  /**
+   * Optional line upserts: adds products that are not yet on the requirement and
+   * updates the quantity/unit/reason/notes of products already present. Products
+   * are matched by id, so the same product never appears twice on a requirement.
+   */
+  lines: AddRequirementLineInput[];
 }>;
 
 export type AddRequirementLineInput = {
@@ -50,6 +56,11 @@ export type UpdateRequirementLineInput = Partial<{
 export type RequirementListQuery = PageQuery & {
   status?: PurchaseRequirementStatus;
   search?: string;
+};
+
+export type RequirementLinesByProductQuery = PageQuery & {
+  requirementId?: string;
+  status?: PurchaseRequirementStatus;
 };
 
 /** Prisma handle usable both inside and outside an interactive transaction. */
@@ -108,7 +119,7 @@ type LineRow = {
   id: string;
   requirementId: string;
   productId: string;
-  product: { id: string; name: string; sku: string };
+  product: { id: string; name: string; sku: string; brand: string | null };
   unitId: string | null;
   unit: { id: string; name: string; symbol: string } | null;
   quantityNeeded: Prisma.Decimal;
@@ -143,7 +154,7 @@ export type RequirementLineView = {
   id: string;
   requirementId: string;
   productId: string;
-  product: { id: string; name: string; sku: string };
+  product: { id: string; name: string; sku: string; brand: string | null };
   /** Unit the required quantity is expressed in; null = legacy line (base unit). */
   unitId: string | null;
   unit: { id: string; name: string; symbol: string } | null;
@@ -462,7 +473,7 @@ function generatePRNumber(): string {
 }
 
 const LINE_INCLUDE_ACTIVE = {
-  product: { select: { id: true, name: true, sku: true } },
+  product: { select: { id: true, name: true, sku: true, brand: true } },
   unit: { select: { id: true, name: true, symbol: true } },
   allocations: {
     where: ACTIVE_ALLOCATION_WHERE,
@@ -474,7 +485,7 @@ const LINE_INCLUDE_ACTIVE = {
 // Detail view keeps cancelled allocations for auditability; the mapper still excludes
 // them from the derived ordered quantity.
 const LINE_INCLUDE_ALL = {
-  product: { select: { id: true, name: true, sku: true } },
+  product: { select: { id: true, name: true, sku: true, brand: true } },
   unit: { select: { id: true, name: true, symbol: true } },
   allocations: {
     include: ALLOCATION_INCLUDE,
@@ -649,7 +660,7 @@ export const requirementService = {
     const line = await prisma.purchaseRequirementLine.findUnique({
       where: { id: lineId },
       include: {
-        product: { select: { id: true, name: true, sku: true } },
+        product: { select: { id: true, name: true, sku: true, brand: true } },
         requirement: {
           select: { id: true, reference: true, status: true, requiredBy: true },
         },
@@ -682,16 +693,146 @@ export const requirementService = {
     };
   },
 
-  async update(id: string, input: UpdateRequirementInput, actor?: Pick<AuthenticatedUser, "id">) {
-    await assertRequirementOpen(id);
+  /**
+   * Requirement lines for a single product across all requirements. Each line
+   * carries the required amount, its unit and the amount already created/ordered,
+   * so callers can see how much of a product is still needed on each requirement.
+   */
+  async listLinesByProduct(productId: string, query: RequirementLinesByProductQuery) {
+    const { page, limit, skip, take } = resolvePagination(query);
 
-    const updatedReq = await prisma.purchaseRequirement.update({
-      where: { id },
-      data: {
-        requiredBy: input.requiredBy,
-        notes: input.notes,
-      },
-      include: { lines: { include: LINE_INCLUDE_ACTIVE } },
+    const where: Prisma.PurchaseRequirementLineWhereInput = {
+      productId,
+      ...(query.requirementId ? { requirementId: query.requirementId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+    };
+
+    const [items, total] = await prisma.$transaction([
+      prisma.purchaseRequirementLine.findMany({
+        where,
+        include: LINE_INCLUDE_ACTIVE,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take,
+      }),
+      prisma.purchaseRequirementLine.count({ where }),
+    ]);
+
+    return {
+      items: (items as unknown as LineRow[]).map(mapRequirementLine),
+      meta: buildPaginationMeta(total, page, limit),
+    };
+  },
+
+  /** Validates a product, resolves its unit and returns the base-quantity snapshot. */
+  async prepareLineValues(
+    productId: string,
+    quantityNeeded: number,
+    unitId?: string | null,
+  ) {
+    const resolvedUnitId = await resolveLineUnitId(productId, unitId);
+    const { baseQuantity } = await productUnitService.toBaseQuantity(
+      productId,
+      resolvedUnitId,
+      quantityNeeded,
+    );
+    return { resolvedUnitId, baseQuantity };
+  },
+
+  async update(
+    id: string,
+    input: UpdateRequirementInput,
+    actor?: Pick<AuthenticatedUser, "id">,
+  ) {
+    const result = await prisma.$transaction(async (tx) => {
+      await assertRequirementOpen(id, tx);
+
+      const updated = await tx.purchaseRequirement.update({
+        where: { id },
+        data: {
+          requiredBy: input.requiredBy,
+          notes: input.notes,
+        },
+        include: { lines: { include: LINE_INCLUDE_ACTIVE } },
+      });
+
+      if (input.lines && input.lines.length > 0) {
+        const productIds = input.lines.map((l) => l.productId);
+        if (new Set(productIds).size !== productIds.length) {
+          throw new AppError(
+            422,
+            ErrorCode.DUPLICATE_PRODUCT_IN_REQUIREMENT,
+            "Duplicate products in requirement",
+          );
+        }
+        for (const pid of productIds) {
+          await assertProductExists(pid);
+        }
+
+        for (const li of input.lines) {
+          const existing = await tx.purchaseRequirementLine.findUnique({
+            where: {
+              requirementId_productId: { requirementId: id, productId: li.productId },
+            },
+            select: { id: true, productId: true, quantityNeeded: true, unitId: true },
+          });
+
+          if (existing) {
+            // Updating an existing product line on the requirement (matched by id).
+            const { resolvedUnitId, baseQuantity } = await this.prepareLineValues(
+              existing.productId,
+              li.quantityNeeded,
+              li.unitId ?? existing.unitId,
+            );
+            const alreadyOrdered = await activeAllocatedForLine(existing.id, tx);
+            if (baseQuantity.toNumber() < alreadyOrdered) {
+              throw new AppError(
+                409,
+                ErrorCode.REQUIREMENT_QUANTITY_BELOW_ORDERED,
+                "Cannot reduce the required quantity below what has already been ordered",
+                {
+                  requiredQuantity: baseQuantity.toNumber(),
+                  currentlyOrderedQuantity: alreadyOrdered,
+                },
+              );
+            }
+
+            const data: Prisma.PurchaseRequirementLineUpdateInput = {
+              quantityNeeded: li.quantityNeeded,
+              quantityNeededBase: baseQuantity.toNumber(),
+            };
+            if (li.unitId !== undefined) {
+              data.unit = { connect: { id: resolvedUnitId } };
+            }
+            if (li.reasonCode !== undefined) data.reasonCode = li.reasonCode;
+            if (li.notes !== undefined) data.notes = li.notes;
+            await tx.purchaseRequirementLine.update({ where: { id: existing.id }, data });
+          } else {
+            // Adding a new product to the requirement.
+            const { resolvedUnitId, baseQuantity } = await this.prepareLineValues(
+              li.productId,
+              li.quantityNeeded,
+              li.unitId,
+            );
+            await tx.purchaseRequirementLine.create({
+              data: {
+                requirementId: id,
+                productId: li.productId,
+                quantityNeeded: li.quantityNeeded,
+                unitId: resolvedUnitId,
+                quantityNeededBase: baseQuantity.toNumber(),
+                reasonCode: li.reasonCode,
+                notes: li.notes,
+                status: PurchaseRequirementStatus.OPEN,
+              },
+            });
+          }
+        }
+
+        await recomputeRequirementStatus(id, tx);
+      }
+
+      return updated;
     });
 
     await recordAuditEvent({
@@ -699,16 +840,14 @@ export const requirementService = {
       entityId: id,
       actorId: actor?.id ?? null,
       metadata: {
-        reference: updatedReq.reference,
-        requiredBy: updatedReq.requiredBy?.toISOString() ?? null,
+        reference: result.reference,
+        requiredBy: result.requiredBy?.toISOString() ?? null,
         notesChanged: input.notes !== undefined,
+        linesProvided: input.lines?.length ?? 0,
       },
     });
 
-    return {
-      ...updatedReq,
-      lines: (updatedReq.lines as unknown as LineRow[]).map(mapRequirementLine),
-    };
+    return this.getById(id);
   },
 
   async addLine(requirementId: string, input: AddRequirementLineInput) {
@@ -877,7 +1016,7 @@ export const requirementService = {
         purchaseOrderItem: {
           purchaseOrder: {
             status: {
-              in: [PurchaseOrderStatus.REGISTERED, PurchaseOrderStatus.AWAITING_DELIVERY],
+              in: [PurchaseOrderStatus.AWAITING_DELIVERY],
             },
           },
         },

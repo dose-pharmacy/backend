@@ -28,6 +28,19 @@ export const createRequirementSchema = z.object({
 export const updateRequirementSchema = z.object({
   requiredBy: z.coerce.date().nullable().optional(),
   notes: z.string().trim().max(1000).nullable().optional(),
+  // Optional line upserts: adding a new product or updating an existing one.
+  // Products are matched by id, so a full line list can be synced in one call.
+  lines: z
+    .array(
+      z.object({
+        productId: uuidSchema,
+        quantityNeeded: quantitySchema,
+        unitId: uuidSchema.optional(),
+        reasonCode: reasonCodeEnum.optional(),
+        notes: z.string().trim().max(500).nullable().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export const addRequirementLineSchema = createRequirementLineSchema;
@@ -46,6 +59,18 @@ export const requirementListQuerySchema = z
   .object({
     status: requirementStatusEnum.optional(),
     search: z.string().trim().max(200).optional(),
+  })
+  .merge(paginationQuerySchema);
+
+/**
+ * Requirement lines for a single product (across all requirements). Returns,
+ * per line, the required amount, its unit and the amount already created/ordered.
+ */
+export const requirementLinesByProductQuerySchema = z
+  .object({
+    productId: uuidSchema,
+    requirementId: uuidSchema.optional(),
+    status: requirementStatusEnum.optional(),
   })
   .merge(paginationQuerySchema);
 

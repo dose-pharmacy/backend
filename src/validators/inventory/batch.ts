@@ -19,6 +19,8 @@ const fields = {
   expiryDate: dateField("Expiry date"),
   purchaseCost: moneySchema.optional(),
   supplierReference: z.string().trim().max(200).optional(),
+  /** Informational unit for the batch (validated against the product, not persisted). */
+  unitId: uuidSchema.optional(),
 };
 
 export const createBatchSchema = z

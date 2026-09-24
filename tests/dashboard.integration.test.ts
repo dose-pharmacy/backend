@@ -205,12 +205,13 @@ describe("dashboard endpoints", () => {
     });
     poAwaitingId = poAwaiting.id;
 
-    // One registered with partial receiving (quantityReceived > 0 but < ordered)
+    // One awaiting delivery with partial receiving (moved straight from the
+    // old REGISTERED state; quantityReceived > 0 but < ordered).
     const poReg = await prisma.purchaseOrder.create({
       data: {
         poNumber: `PO-PR-${suffix}`,
         supplierId,
-        status: "REGISTERED",
+        status: "AWAITING_DELIVERY",
         createdById: userId,
         items: {
           create: [{ productId, quantityOrdered: 30, unitCost: 10, quantityReceived: 10 }],

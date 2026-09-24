@@ -45,6 +45,16 @@ export type SupplierProductBatchQuery = {
   locationId?: string;
 };
 
+export type SupplierReceivedProductsQuery = PageQuery & {
+  search?: string;
+  /** Only products with current stock (default true). */
+  inStock?: boolean;
+  /** Exclude batches already expired (default true). */
+  excludeExpired?: boolean;
+  /** Narrow the per-location stock rows to one location. */
+  locationId?: string;
+};
+
 const PRODUCT_SELECTION = {
   id: true,
   name: true,
@@ -195,5 +205,141 @@ export const supplierCatalogService = {
       .filter((batch) => query.inStock === false || batch.locations.length > 0);
 
     return { items, supplier: { id: supplier.id, name: supplier.name }, product: { id: product.id, name: product.name } };
+  },
+
+  /**
+   * Products received from one supplier, grouped with their batches. Each batch
+   * exposes its purchase cost per unit and current stock breakdown
+   * (quantity, reserved, available) per location. This powers the "received
+   * products" dropdown for returns, where the user picks a batch and sees how
+   * much is currently on hand and what it cost.
+   *
+   * Receipt rule mirrors the batch catalog: a product/batch belongs to the
+   * supplier when `Batch.supplierId = supplierId` (stamped at goods-receipt
+   * confirmation). Batches with a NULL supplier are excluded.
+   */
+  async listReceivedProductsForSupplier(
+    supplierId: string,
+    query: SupplierReceivedProductsQuery,
+  ): Promise<{ items: unknown[]; meta: ReturnType<typeof buildPaginationMeta>; supplier: { id: string; name: string } }> {
+    const supplier = await prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { id: true, name: true },
+    });
+    if (!supplier) {
+      throw new AppError(404, ErrorCode.SUPPLIER_NOT_FOUND, "Supplier not found");
+    }
+
+    const { page, limit, skip, take } = resolvePagination(query);
+    const today = startOfTodayUtc();
+
+    const batchWhere: Prisma.BatchWhereInput = {
+      supplierId,
+      ...(query.excludeExpired === false ? {} : { expiryDate: { gte: today } }),
+      ...(query.inStock === false
+        ? {}
+        : { stock: { some: { quantity: { gt: 0 }, ...(query.locationId ? { locationId: query.locationId } : {}) } } }),
+    };
+
+    const productWhere: Prisma.ProductWhereInput = {
+      batches: { some: batchWhere },
+      ...(query.search
+        ? {
+            OR: [
+              { name: { contains: query.search, mode: "insensitive" as const } },
+              { genericName: { contains: query.search, mode: "insensitive" as const } },
+              { brand: { contains: query.search, mode: "insensitive" as const } },
+              { sku: { contains: query.search, mode: "insensitive" as const } },
+            ],
+          }
+        : {}),
+    };
+
+    const [products, total] = await prisma.$transaction([
+      prisma.product.findMany({
+        where: productWhere,
+        select: {
+          ...PRODUCT_SELECTION,
+          batches: {
+            where: batchWhere,
+            select: {
+              id: true,
+              batchNumber: true,
+              expiryDate: true,
+              receivedDate: true,
+              purchaseCost: true,
+              supplierReference: true,
+              stock: {
+                where: { quantity: { gt: 0 }, ...(query.locationId ? { locationId: query.locationId } : {}) },
+                select: {
+                  locationId: true,
+                  location: { select: { id: true, name: true } },
+                  quantity: true,
+                  reservedQuantity: true,
+                },
+                orderBy: { location: { name: "asc" } },
+              },
+            },
+            orderBy: [{ receivedDate: "desc" }, { batchNumber: "asc" }],
+          },
+        },
+        orderBy: { name: "asc" },
+        skip,
+        take,
+      }),
+      prisma.product.count({ where: productWhere }),
+    ]);
+
+    const items = products.map((product) => {
+      const batches = product.batches
+        .map((batch) => {
+          const currentStockQuantity = batch.stock.reduce(
+            (sum, s) => sum + s.quantity.toNumber(),
+            0,
+          );
+          const availableStockQuantity = batch.stock.reduce(
+            (sum, s) => sum + s.quantity.minus(s.reservedQuantity).toNumber(),
+            0,
+          );
+          return {
+            id: batch.id,
+            batchNumber: batch.batchNumber,
+            expiryDate: batch.expiryDate,
+            receivedDate: batch.receivedDate,
+            /** Purchasing cost per unit of this batch. */
+            purchaseCost: batch.purchaseCost ? batch.purchaseCost.toNumber() : null,
+            supplierReference: batch.supplierReference,
+            currentStockQuantity,
+            availableStockQuantity,
+            locations: batch.stock.map((s) => ({
+              locationId: s.location.id,
+              locationName: s.location.name,
+              quantity: s.quantity.toNumber(),
+              reservedQuantity: s.reservedQuantity.toNumber(),
+              availableQuantity: s.quantity.minus(s.reservedQuantity).toNumber(),
+            })),
+          };
+        })
+        .filter((batch) => query.inStock === false || batch.currentStockQuantity > 0);
+
+      return {
+        product: {
+          id: product.id,
+          name: product.name,
+          genericName: product.genericName,
+          brand: product.brand,
+          sku: product.sku,
+          isActive: product.isActive,
+          isNarcotic: product.isNarcotic,
+        },
+        batches,
+        totalCurrentStockQuantity: batches.reduce(
+          (sum, b) => sum + b.currentStockQuantity,
+          0,
+        ),
+      };
+    });
+
+    return { items, meta: buildPaginationMeta(total, page, limit), supplier: { id: supplier.id, name: supplier.name } };
   },
 };

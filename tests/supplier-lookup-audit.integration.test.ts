@@ -140,7 +140,7 @@ beforeAll(async () => {
     data: {
       poNumber: `PO-A-${suffix}`,
       supplierId: supplierAId,
-      status: "REGISTERED",
+      status: "AWAITING_DELIVERY",
       createdById: userId,
       items: {
         create: [
@@ -155,7 +155,7 @@ beforeAll(async () => {
     data: {
       poNumber: `PO-B-${suffix}`,
       supplierId: supplierBId,
-      status: "REGISTERED",
+      status: "AWAITING_DELIVERY",
       createdById: userId,
       items: { create: [{ productId: p3Id, quantityOrdered: 20, unitId, unitCost: 4 }] },
     },
@@ -469,7 +469,7 @@ describe.skipIf(!process.env.DATABASE_URL)("audit trail (integration)", () => {
       data: {
         poNumber: `PO-GR-${suffix}`,
         supplierId: supplierAId,
-        status: "REGISTERED",
+        status: "AWAITING_DELIVERY",
         createdById: userId,
         items: { create: [{ productId: p2Id, quantityOrdered: 10, unitId, unitCost: 3 }] },
       },

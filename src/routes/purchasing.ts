@@ -21,6 +21,7 @@ import {
   addRequirementLineSchema,
   updateRequirementLineSchema,
   requirementListQuerySchema,
+  requirementLinesByProductQuerySchema,
   requirementParamsSchema,
   requirementLineParamsSchema,
 } from "../validators/purchasing/requirement.js";
@@ -57,6 +58,7 @@ import {
   supplierProductListQuerySchema,
   supplierProductParamsSchema,
   supplierProductBatchQuerySchema,
+  supplierReceivedProductsQuerySchema,
 } from "../validators/purchasing/supplier-catalog.js";
 
 export const purchasingRouter = Router();
@@ -113,6 +115,13 @@ purchasingRouter.get(
   validate({ params: supplierProductParamsSchema, query: supplierProductBatchQuerySchema }),
   supplierCatalogController.listBatchesForSupplierProduct,
 );
+// Received products (with batches, stock and purchase cost) for a supplier.
+purchasingRouter.get(
+  "/suppliers/:supplierId/received-products",
+  ...admin,
+  validate({ params: supplierIdParamsSchema, query: supplierReceivedProductsQuerySchema }),
+  supplierCatalogController.listReceivedProductsForSupplier,
+);
 
 // ---------------------------------------------------------------------------
 // Purchase Requirements
@@ -133,6 +142,13 @@ purchasingRouter.post(
   "/requirements/generate-from-reorder",
   ...admin,
   requirementController.generateFromReorder,
+);
+// Must be registered before "/requirements/:id" so "lines" is not captured as an id.
+purchasingRouter.get(
+  "/requirements/lines",
+  ...admin,
+  validate({ query: requirementLinesByProductQuerySchema }),
+  requirementController.linesByProduct,
 );
 purchasingRouter.get(
   "/requirements/:id",
@@ -244,12 +260,6 @@ purchasingRouter.post(
   ...admin,
   validate({ params: purchaseOrderItemParamsSchema, body: acceptShortageSchema }),
   purchaseOrderController.acceptShortage,
-);
-purchasingRouter.post(
-  "/purchase-orders/:id/mark-awaiting-delivery",
-  ...admin,
-  validate({ params: purchaseOrderParamsSchema }),
-  purchaseOrderController.markAwaitingDelivery,
 );
 purchasingRouter.post(
   "/purchase-orders/:id/close",

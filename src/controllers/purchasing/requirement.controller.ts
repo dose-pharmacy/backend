@@ -3,6 +3,7 @@ import {
   requirementService,
   type CreateRequirementInput,
   type RequirementListQuery,
+  type RequirementLinesByProductQuery,
   type UpdateRequirementInput,
   type AddRequirementLineInput,
   type UpdateRequirementLineInput,
@@ -32,6 +33,22 @@ export const requirementController = {
   getById: asyncHandler(async (req: Request, res: Response) => {
     const data = await requirementService.getById(req.params.id as string);
     sendSuccess(res, data);
+  }),
+
+  /** Requirement lines for one product (required amount + unit + amount created). */
+  linesByProduct: asyncHandler(async (req: Request, res: Response) => {
+    const query = req.query as Record<string, string | undefined>;
+    const input: RequirementLinesByProductQuery = {
+      page: query.page ? Number(query.page) : undefined,
+      limit: query.limit ? Number(query.limit) : undefined,
+      requirementId: query.requirementId,
+      status: query.status as RequirementLinesByProductQuery["status"],
+    };
+    const data = await requirementService.listLinesByProduct(
+      req.query.productId as string,
+      input,
+    );
+    sendSuccess(res, data.items, { meta: data.meta });
   }),
 
   update: asyncHandler(async (req: Request, res: Response) => {

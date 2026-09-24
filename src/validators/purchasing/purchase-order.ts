@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema, decimalNumber } from "../inventory/common.js";
 
-const poStatusEnum = z.enum(["REGISTERED", "AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"]);
+const poStatusEnum = z.enum(["AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"]);
 const poPaymentStatusEnum = z.enum(["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID", "ALL"]);
 
 const positiveMoneySchema = decimalNumber({
@@ -75,7 +75,7 @@ export const purchaseOrderItemParamsSchema = z.object({
 });
 
 export const poStatusActionSchema = z.object({
-  // No body needed for cancel/mark-delivered/close actions
+  // No body needed for cancel/close actions.
 });
 
 export const acceptShortageSchema = z

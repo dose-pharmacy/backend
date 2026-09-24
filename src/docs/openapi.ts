@@ -1295,9 +1295,13 @@ export const openApiDocument = {
       },
       ProductGroupUpdateInput: {
         type: "object",
+        // Update accepts the full create payload echoed back: `description` may be
+        // `null` to clear it)Skip; `isActive` accepts the strings "true"/"false" and
+        // `defaultProfitMargin` accepts numeric strings. A name-only call never
+        // gets rejected because a stale value is present.
         properties: {
           name: { type: "string", maxLength: 100, example: "Analgesics" },
-          description: { type: "string", maxLength: 500, example: "Updated pain relief medicines" },
+          description: { type: "string", maxLength: 500, nullable: true, example: "Updated pain relief medicines" },
           defaultProfitMargin: { type: "number", minimum: 0, maximum: 100, example: 22 },
           isActive: { type: "boolean", example: true },
         },
@@ -1333,6 +1337,10 @@ export const openApiDocument = {
           expiryDate: { type: "string", format: "date", example: "2027-08-31" },
           purchaseCost: { type: "number", minimum: 0, example: 110 },
           supplierReference: { type: "string", maxLength: 200, example: "ABC Pharma invoice 1042" },
+          // Informational only — never persisted. Validated to belong to the
+          // product; supplied so the client can reconcile the batch against the
+          // product's configured unit when displaying received batches.
+          unitId: { type: "string", format: "uuid", example: "unit-uuid" },
         },
         example: {
           productId: "product-uuid",

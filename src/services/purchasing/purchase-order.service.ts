@@ -514,7 +514,9 @@ async function createPurchaseOrderTx(
       supplierId: input.supplierId,
       expectedDeliveryDate: input.expectedDeliveryDate,
       notes: input.notes,
-      status: PurchaseOrderStatus.REGISTERED,
+      // Purchase orders start as AWAITING_DELIVERY; header/items stay editable
+      // until receiving begins.
+      status: PurchaseOrderStatus.AWAITING_DELIVERY,
       createdById: actor.id,
     },
   });
@@ -633,7 +635,6 @@ export const purchaseOrderService = {
 
     const countByStatus = new Map(statusGroups.map((g) => [g.status, g._count]));
     const summary = {
-      registered: countByStatus.get("REGISTERED") ?? 0,
       awaitingDelivery: countByStatus.get("AWAITING_DELIVERY") ?? 0,
       received: countByStatus.get("RECEIVED") ?? 0,
       closed: countByStatus.get("CLOSED") ?? 0,
@@ -1107,8 +1108,8 @@ export const purchaseOrderService = {
   },
 
   /**
-   * Removes an item from a draft (REGISTERED) order and releases its requirement
-   * allocation. Received/confirmed orders keep their history.
+   * Removes an item from a PO that has not started receiving yet (AWAITING_DELIVERY)
+   * and releases its requirement allocation. Received orders keep their history.
    */
   async removeItem(itemId: string) {
     return prisma.$transaction(async (tx) => {
@@ -1126,11 +1127,16 @@ export const purchaseOrderService = {
           "Purchase order item not found",
         );
       }
-      if (existing.purchaseOrder.status !== PurchaseOrderStatus.REGISTERED) {
+      const poStatus = existing.purchaseOrder.status;
+      if (
+        poStatus === PurchaseOrderStatus.CANCELLED ||
+        poStatus === PurchaseOrderStatus.CLOSED ||
+        poStatus === PurchaseOrderStatus.RECEIVED
+      ) {
         throw new AppError(
           409,
           ErrorCode.PO_STATUS_TRANSITION_INVALID,
-          "Only items on a registered order can be removed",
+          "Only items on an order that has not been received can be removed",
         );
       }
       if (existing.quantityReceived.greaterThan(0)) {
@@ -1227,36 +1233,6 @@ export const purchaseOrderService = {
       const cancelled = await tx.purchaseOrder.findUnique({ where: { id }, include: PO_DETAIL_INCLUDE });
       return purchaseOrderService.attachDetailSummaries(cancelled!);
     }, TX_OPTIONS);
-  },
-
-  async markAwaitingDelivery(id: string, actor?: Pick<AuthenticatedUser, "id">) {
-    const po = await prisma.purchaseOrder.findUnique({
-      where: { id },
-      select: { id: true, status: true },
-    });
-    if (!po) {
-      throw new AppError(404, ErrorCode.PURCHASE_ORDER_NOT_FOUND, "Purchase order not found");
-    }
-    if (po.status !== PurchaseOrderStatus.REGISTERED) {
-      throw new AppError(
-        409,
-        ErrorCode.PO_STATUS_TRANSITION_INVALID,
-        "Only registered orders can be marked as awaiting delivery",
-      );
-    }
-
-    const updated = await prisma.purchaseOrder.update({
-      where: { id },
-      data: { status: PurchaseOrderStatus.AWAITING_DELIVERY },
-      include: PO_DETAIL_INCLUDE,
-    });
-    await recordAuditEvent({
-      event: AuditEvent.PURCHASE_ORDER_MARKED_AWAITING_DELIVERY,
-      entityId: id,
-      actorId: actor?.id ?? null,
-      metadata: { poNumber: updated.poNumber },
-    });
-    return this.attachDetailSummaries(updated);
   },
 
   async close(id: string, actor?: Pick<AuthenticatedUser, "id">) {
