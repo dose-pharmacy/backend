@@ -56,15 +56,19 @@ export const saleItemSchema = z.object({
  * prices and discounts, allocates batches with FEFO, creates the sale +
  * items + payments + batch allocations and moves stock (SALE/OUT) — all in
  * one transaction. Every item needs a quantity > 0; every sale needs at
- * least one item and one payment (total payments must cover totalAmount).
+ * least one item. Payments are optional for full credit sales; for partial
+ * credit, payments can be less than total. Customer name/phone required
+ * when there is an outstanding balance.
  */
 export const createSaleSchema = z
   .object({
     locationId: uuidSchema,
     items: z.array(saleItemSchema).min(1, "At least one item is required"),
-    payments: z.array(salePaymentSchema).min(1, "At least one payment is required"),
+    payments: z.array(salePaymentSchema).optional(),
     billDiscount: discountSchema.optional(),
     notes: z.string().trim().max(500).optional(),
+    customerName: z.string().trim().max(200).optional(),
+    customerPhone: z.string().trim().max(50).optional(),
   })
   ;
 
@@ -88,3 +92,13 @@ export const cancelSaleSchema = z
     reason: z.string().trim().max(500).optional(),
   })
   .optional();
+
+/**
+ * Payment against an existing credit sale. Amount must be positive and
+ * cannot exceed the outstanding balance (validated server-side).
+ */
+export const addSalePaymentSchema = z.object({
+  method: paymentMethodSchema,
+  amount: moneySchema,
+  reference: z.string().trim().max(200).optional(),
+});

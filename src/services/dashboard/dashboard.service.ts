@@ -21,6 +21,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.js";
 import { startOfTodayUtc, addUtcDays } from "../../utils/date-time.js";
+import { fetchOutstandingCredit, fetchTotalCollections } from "../financials/reports/report-query.service.js";
 
 // ── Shared constants ──────────────────────────────────────────────────────
 
@@ -50,6 +51,11 @@ export type DashboardSummary = {
   };
   slowMoving: {
     flaggedCount: number;
+  };
+  credit: {
+    outstandingCredit: number;
+    creditSalesCount: number;
+    todayCollections: number;
   };
 };
 
@@ -205,6 +211,10 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     partiallyReceived,
     outstandingInvoices,
     slowMovingFlagged,
+    // Credit metrics
+    outstandingCredit,
+    _creditSalesCount,
+    todayCollections,
   ] = await Promise.all([
     // Today's completed sales revenue
     prisma.sale.aggregate({
@@ -247,6 +257,23 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     }),
     // Slow-moving: persisted isFlagged only — never triggers evaluation
     prisma.slowMovingConfiguration.count({ where: { isFlagged: true } }),
+    // Credit metrics
+    fetchOutstandingCredit(),
+    prisma.sale.count({
+      where: {
+        status: "COMPLETED",
+        OR: [
+          { customerName: { not: null } },
+          { customerPhone: { not: null } },
+        ],
+        paidAmount: { lt: new Prisma.Decimal(0) }, // This won't work directly, use raw query
+      },
+    }),
+    // Today's collections (payments received today by payment date)
+    fetchTotalCollections({
+      start: today,
+      end: new Date(today.getTime() + 24 * 60 * 60 * 1000 - 1),
+    }),
   ]);
 
   const todayRevenue = salesAgg._sum.totalAmount?.toNumber() ?? 0;
@@ -255,6 +282,16 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     transactions > 0
       ? Math.round((todayRevenue / transactions) * 100) / 100
       : 0;
+
+  // Fix credit sales count with proper query
+  const creditSalesCountResult = await prisma.$queryRaw<[{ count: bigint }]>`
+    SELECT COUNT(*)::bigint AS count
+    FROM sale s
+    WHERE s.status = 'COMPLETED'::"SaleStatus"
+    AND (s."customerName" IS NOT NULL OR s."customerPhone" IS NOT NULL)
+    AND s."paidAmount" < s."totalAmount"
+  `;
+  const actualCreditSalesCount = Number(creditSalesCountResult[0]?.count ?? 0);
 
   return {
     sales: {
@@ -277,6 +314,11 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     },
     slowMoving: {
       flaggedCount: slowMovingFlagged,
+    },
+    credit: {
+      outstandingCredit: Math.round(outstandingCredit * 100) / 100,
+      creditSalesCount: actualCreditSalesCount,
+      todayCollections: Math.round(todayCollections * 100) / 100,
     },
   };
 }

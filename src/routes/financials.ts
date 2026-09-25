@@ -7,6 +7,7 @@ import { slowMovingConfigController } from "../controllers/financials/slow-movin
 import { financialReportController } from "../controllers/financials/financial-report.controller.js";
 import { narcoticReportController } from "../controllers/financials/narcotic-report.controller.js";
 import { saleController } from "../controllers/financials/sale.controller.js";
+import { creditSalesController } from "../controllers/financials/credit-sales.controller.js";
 import {
   requireAuthenticatedUser,
   requireRole,
@@ -60,6 +61,10 @@ import {
   voidSaleSchema,
   saleDetailQuerySchema,
 } from "../validators/financials/sale.js";
+import {
+  creditSalesListQuerySchema,
+  creditSaleParamsSchema,
+} from "../validators/financials/credit-sales.js";
 
 export const financialsRouter = Router();
 
@@ -335,4 +340,20 @@ financialsRouter.post(
   ...admin,
   validate({ params: saleParamsSchema, body: voidSaleSchema }),
   saleController.voidSale,
+);
+
+// ---------------------------------------------------------------------------
+// Credit Sales
+// ---------------------------------------------------------------------------
+financialsRouter.get(
+  "/credit-sales",
+  ...admin,
+  validate({ query: creditSalesListQuerySchema }),
+  creditSalesController.list,
+);
+financialsRouter.get(
+  "/credit-sales/:id",
+  ...admin,
+  validate({ params: creditSaleParamsSchema }),
+  creditSalesController.getById,
 );

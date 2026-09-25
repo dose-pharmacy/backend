@@ -362,6 +362,129 @@ export async function fetchPaymentTotalsByMethod(
   }));
 }
 
+/**
+ * Collections (actual money received) per method for the scope, based on
+ * SalePayment.createdAt (when money was actually collected), not sale date.
+ * This is used for collection reporting where payment date matters.
+ */
+export async function fetchCollectionsByMethod(
+  scope: ResolvedReportScope,
+): Promise<Array<{ method: string; amount: number }>> {
+  const rows = await prisma.salePayment.groupBy({
+    by: ["method"],
+    where: {
+      createdAt: { gte: scope.start, lte: scope.end },
+      sale: {
+        status: VALID_SALE_STATUS,
+        ...(scope.locationId ? { locationId: scope.locationId } : {}),
+      },
+    },
+    _sum: { amount: true },
+    orderBy: { method: "asc" },
+  });
+
+  return rows.map((row) => ({
+    method: row.method,
+    amount: row._sum.amount?.toNumber() ?? 0,
+  }));
+}
+
+/**
+ * Total collections for the scope (sum of all payments by payment date).
+ */
+export async function fetchTotalCollections(
+  scope: ResolvedReportScope,
+): Promise<number> {
+  const result = await prisma.salePayment.aggregate({
+    where: {
+      createdAt: { gte: scope.start, lte: scope.end },
+      sale: {
+        status: VALID_SALE_STATUS,
+        ...(scope.locationId ? { locationId: scope.locationId } : {}),
+      },
+    },
+    _sum: { amount: true },
+  });
+  return toNumber(result._sum.amount);
+}
+
+/**
+ * Current outstanding credit balance across all credit sales.
+ * This is a current balance metric, not limited to the reporting period.
+ * Outstanding = sum of (totalAmount - paidAmount) for sales with outstanding > 0.
+ */
+export async function fetchOutstandingCredit(
+  scope: { locationId?: string } = {},
+): Promise<number> {
+  // Use raw SQL for accurate outstanding calculation
+  const conditions: Prisma.Sql[] = [
+    Prisma.sql`s.status = ${VALID_SALE_STATUS}::"SaleStatus"`,
+    Prisma.sql`s."paidAmount" < s."totalAmount"`,
+  ];
+  if (scope.locationId) {
+    conditions.push(Prisma.sql`s."locationId" = ${scope.locationId}`);
+  }
+  const predicate = Prisma.join(conditions, " AND ");
+
+  const rows = await prisma.$queryRaw<
+    Array<{ outstanding: unknown }>
+  >`
+    SELECT COALESCE(SUM(s."totalAmount" - s."paidAmount"), 0) AS outstanding
+    FROM sale s
+    WHERE ${predicate}
+  `;
+
+  return toNumber(rows[0]?.outstanding);
+}
+
+/**
+ * Credit sales count - number of sales that have/had credit (customer info present).
+ * Can be filtered by period (sales created in period) or show all currently outstanding.
+ */
+export async function fetchCreditSalesCount(
+  scope: ResolvedReportScope,
+  options: { includeHistorical?: boolean } = {},
+): Promise<number> {
+  const { includeHistorical = false } = options;
+  const conditions: Prisma.Sql[] = [
+    Prisma.sql`s.status = ${VALID_SALE_STATUS}::"SaleStatus"`,
+    Prisma.sql`(s."customerName" IS NOT NULL OR s."customerPhone" IS NOT NULL)`,
+  ];
+
+  if (includeHistorical) {
+    // Count all sales that ever had credit (customer info not null)
+    // Period filter on sale createdAt
+    conditions.push(
+      Prisma.sql`s."createdAt" >= ${toSqlTimestamp(scope.start)}::timestamp`,
+    );
+    conditions.push(
+      Prisma.sql`s."createdAt" <= ${toSqlTimestamp(scope.end)}::timestamp`,
+    );
+  } else {
+    // Count only currently outstanding credit sales
+    conditions.push(Prisma.sql`s."paidAmount" < s."totalAmount"`);
+  }
+
+  if (scope.locationId) {
+    conditions.push(Prisma.sql`s."locationId" = ${scope.locationId}`);
+  }
+  if (scope.productGroupId) {
+    // This would require joining through sale items - skip for now
+  }
+
+  const predicate = Prisma.join(conditions, " AND ");
+
+  const rows = await prisma.$queryRaw<
+    Array<{ count: unknown }>
+  >`
+    SELECT COUNT(*)::int AS count
+    FROM sale s
+    WHERE ${predicate}
+  `;
+
+  return toNumber(rows[0]?.count);
+}
+
 export const reportQueryService = {
   VALID_SALE_STATUS,
   resolveReportScope,
@@ -370,6 +493,10 @@ export const reportQueryService = {
   fetchProductSalesAggregates,
   fetchSalesTotals,
   fetchPaymentTotalsByMethod,
+  fetchCollectionsByMethod,
+  fetchTotalCollections,
+  fetchOutstandingCredit,
+  fetchCreditSalesCount,
   getSalesTrend,
   toNumber,
   safeRatio,

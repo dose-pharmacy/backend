@@ -46,6 +46,7 @@ export const AuditEvent = {
   PURCHASE_RETURN_CREATED: "PURCHASE_RETURN_CREATED",
 
   SALE_COMPLETED: "SALE_COMPLETED",
+  PAYMENT_RECEIVED: "PAYMENT_RECEIVED",
 
   STOCK_ADJUSTMENT_CREATED: "STOCK_ADJUSTMENT_CREATED",
 } as const;
@@ -93,6 +94,7 @@ const EVENT_META: Record<AuditEventName, { action: AuditAction; entity: AuditEnt
   PURCHASE_RETURN_CREATED: { action: AuditAction.CREATE, entity: AuditEntity.PURCHASE_RETURN },
 
   SALE_COMPLETED: { action: AuditAction.CREATE, entity: AuditEntity.SALE },
+  PAYMENT_RECEIVED: { action: AuditAction.CREATE, entity: AuditEntity.PAYMENT },
 
   STOCK_ADJUSTMENT_CREATED: { action: AuditAction.CREATE, entity: AuditEntity.STOCK_TRANSACTION },
 };

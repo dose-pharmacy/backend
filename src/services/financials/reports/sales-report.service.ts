@@ -3,6 +3,10 @@ import { prisma } from "../../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../../utils/pagination.js";
 import {
   fetchPaymentTotalsByMethod,
+  fetchCollectionsByMethod,
+  fetchTotalCollections,
+  fetchOutstandingCredit,
+  fetchCreditSalesCount,
   resolveReportScope,
   validSaleItemWhere,
   validSaleWhere,
@@ -125,13 +129,17 @@ async function getSalesSummaryFn(
 ) {
   const scope = resolveReportScope(query);
 
-  const [salesAgg, paymentsByMethod, topGroups] = await Promise.all([
+  const [salesAgg, paymentsByMethod, collectionsByMethod, totalCollections, outstandingCredit, creditSalesCount, topGroups] = await Promise.all([
     prisma.sale.aggregate({
       where: validSaleWhere(scope),
       _sum: { totalAmount: true, subtotal: true, totalDiscount: true },
       _count: true,
     }),
     fetchPaymentTotalsByMethod(scope),
+    fetchCollectionsByMethod(scope),
+    fetchTotalCollections(scope),
+    fetchOutstandingCredit({ locationId: scope.locationId }),
+    fetchCreditSalesCount(scope, { includeHistorical: true }),
     // Aggregated per product in the database; only the top 10 groups return.
     prisma.saleItem.groupBy({
       by: ["productId"],
@@ -171,7 +179,13 @@ async function getSalesSummaryFn(
     totalDiscount: salesAgg._sum.totalDiscount?.toNumber() ?? 0,
     transactionCount,
     averageTransaction: transactionCount ? totalAmount / transactionCount : 0,
-    paymentsByMethod,
+    // Collections (money actually received during the period, by payment date)
+    totalCollections,
+    collectionsByMethod,
+    // Outstanding credit (current balance, not period-specific)
+    outstandingCredit,
+    creditSalesCount,
+    paymentsByMethod, // Legacy field - payments by sale date
     topProducts,
   };
 }

@@ -13,6 +13,7 @@ import {
   createSaleSchema,
   saleListQuerySchema,
   saleParamsSchema,
+  addSalePaymentSchema,
 } from "../validators/pos/sale.js";
 
 export const posRouter = Router();
@@ -59,6 +60,12 @@ posRouter.get(
   ...posStaff,
   validate({ params: saleParamsSchema }),
   saleController.getById,
+);
+posRouter.post(
+  "/sales/:id/payments",
+  ...posStaff,
+  validate({ params: saleParamsSchema, body: addSalePaymentSchema }),
+  saleController.addPayment,
 );
 posRouter.post(
   "/sales/:id/cancel",

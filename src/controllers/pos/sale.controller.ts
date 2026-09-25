@@ -3,6 +3,7 @@ import {
   saleService,
   type CreateSaleInput,
   type ListSalesQuery,
+  type SalePaymentInput,
 } from "../../services/pos/sale.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
@@ -39,6 +40,16 @@ export const saleController = {
     };
     const { items, meta } = await saleService.list(input);
     sendSuccess(res, items, { meta });
+  }),
+
+  addPayment: asyncHandler(async (req: Request, res: Response) => {
+    const actor = assertActor(req);
+    const data = await saleService.addPayment(
+      req.params.id as string,
+      actor,
+      req.body as SalePaymentInput,
+    );
+    sendSuccess(res, data);
   }),
 
   cancel: asyncHandler(async (req: Request, res: Response) => {

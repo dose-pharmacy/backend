@@ -37,6 +37,9 @@ export type CreateSaleInput = {
   payments: SalePaymentInput[];
   billDiscount?: { type: DiscountType; value: number };
   notes?: string;
+  // Customer information for credit sales (required when outstanding > 0)
+  customerName?: string;
+  customerPhone?: string;
 };
 
 export type ListSalesQuery = PageQuery & {
@@ -294,8 +297,9 @@ export const saleService = {
           const totalDiscount = roundTo(billDiscountAmount, 2);
           const totalAmount = roundTo(subtotal.minus(totalDiscount), 2);
 
-          // 4. Payments (split payments supported). Total payments must
-          //    cover the total; the excess is recorded as change.
+          // 4. Payments (split payments supported). Payments can be less than
+          //    total for credit sales. The excess is recorded as change only for
+          //    fully paid sales. Outstanding balance = totalAmount - paidAmount.
           let paidAmount = zero;
           const payments = input.payments.map((payment) => {
             paidAmount = paidAmount.plus(toDecimal(payment.amount));
@@ -305,18 +309,47 @@ export const saleService = {
               reference: payment.reference ?? null,
             };
           });
-          if (paidAmount.lessThan(totalAmount)) {
+
+          // Calculate outstanding amount
+          const outstandingAmount = roundTo(totalAmount.minus(paidAmount), 2);
+
+          // Credit sales: payments can be less than totalAmount (including zero for full credit)
+          // Reject overpayment - payments cannot exceed totalAmount
+          if (paidAmount.greaterThan(totalAmount)) {
             throw new AppError(
               422,
-              ErrorCode.INSUFFICIENT_PAYMENT,
-              "Total payments are less than the sale total",
+              ErrorCode.OVERPAYMENT,
+              "Total payments cannot exceed the sale total",
               {
                 total: totalAmount.toNumber(),
                 paid: paidAmount.toNumber(),
               },
             );
           }
-          const changeAmount = roundTo(paidAmount.minus(totalAmount), 2);
+
+          // For credit sales (outstanding > 0), customer information is required
+          if (outstandingAmount.gt(0)) {
+            if (!input.customerName || !input.customerName.trim()) {
+              throw new AppError(
+                422,
+                ErrorCode.MISSING_CUSTOMER_INFO,
+                "Customer name is required for credit sales",
+              );
+            }
+            if (!input.customerPhone || !input.customerPhone.trim()) {
+              throw new AppError(
+                422,
+                ErrorCode.MISSING_CUSTOMER_INFO,
+                "Customer phone is required for credit sales",
+              );
+            }
+          }
+
+          // Change amount is only applicable for fully paid sales (cash overpayment)
+          // For credit sales, changeAmount is always 0
+          const changeAmount = outstandingAmount.eq(0)
+            ? roundTo(paidAmount.minus(totalAmount), 2)
+            : new Prisma.Decimal(0);
 
           // 5. FEFO batch allocation per line.
           const allocationsPerItem: Array<
@@ -346,6 +379,9 @@ export const saleService = {
               cashierId: actor.id,
               notes: input.notes ?? null,
               completedAt: new Date(),
+              // Customer info for credit sales
+              customerName: outstandingAmount.gt(0) ? input.customerName?.trim() ?? null : null,
+              customerPhone: outstandingAmount.gt(0) ? input.customerPhone?.trim() ?? null : null,
               items: {
                 create: preparedItems.map((prepared, index) => ({
                   productId: prepared.productId,
@@ -491,6 +527,127 @@ export const saleService = {
     ]);
 
     return { items, meta: buildPaginationMeta(total, page, limit) };
+  },
+
+  /**
+   * Adds a payment to an existing completed sale (for credit sales).
+   * This allows customers to pay off their outstanding balance later.
+   *
+   * Validates:
+   * - Sale exists and is COMPLETED (not CANCELLED or DRAFT)
+   * - Sale has outstanding balance > 0
+   * - Payment amount does not exceed outstanding balance
+   * - Uses advisory lock to prevent concurrent payment overpayment
+   */
+  async addPayment(
+    saleId: string,
+    actor: Pick<AuthenticatedUser, "id">,
+    payment: SalePaymentInput,
+  ) {
+    return await prisma.$transaction(
+      async (tx) => {
+        // Lock the sale row to prevent concurrent payments from overpaying
+        const sale = await tx.sale.findUnique({
+          where: { id: saleId },
+          select: {
+            id: true,
+            status: true,
+            totalAmount: true,
+            paidAmount: true,
+            customerName: true,
+            customerPhone: true,
+          },
+        });
+
+        if (!sale) {
+          throw new AppError(404, ErrorCode.SALE_NOT_FOUND, "Sale not found");
+        }
+
+        if (sale.status !== "COMPLETED") {
+          throw new AppError(
+            409,
+            ErrorCode.SALE_NOT_CANCELLABLE,
+            `Cannot add payment to a ${sale.status.toLowerCase()} sale`,
+          );
+        }
+
+        const outstandingAmount = roundTo(
+          sale.totalAmount.minus(sale.paidAmount),
+          2,
+        );
+
+        if (outstandingAmount.lte(0)) {
+          throw new AppError(
+            409,
+            ErrorCode.OVERPAYMENT,
+            "Sale is already fully paid",
+          );
+        }
+
+        const paymentAmount = toDecimal(payment.amount);
+        if (paymentAmount.greaterThan(outstandingAmount)) {
+          throw new AppError(
+            422,
+            ErrorCode.OVERPAYMENT,
+            "Payment amount exceeds outstanding balance",
+            {
+              outstanding: outstandingAmount.toNumber(),
+              payment: paymentAmount.toNumber(),
+            },
+          );
+        }
+
+        const newPaidAmount = roundTo(sale.paidAmount.plus(paymentAmount), 2);
+        const newOutstanding = roundTo(sale.totalAmount.minus(newPaidAmount), 2);
+        const newChangeAmount = newOutstanding.eq(0)
+          ? roundTo(newPaidAmount.minus(sale.totalAmount), 2)
+          : new Prisma.Decimal(0);
+
+        // Create the payment record
+        await tx.salePayment.create({
+          data: {
+            saleId,
+            method: payment.method,
+            amount: paymentAmount,
+            reference: payment.reference ?? null,
+          },
+        });
+
+        // Update the sale with new paidAmount and changeAmount
+        await tx.sale.update({
+          where: { id: saleId },
+          data: {
+            paidAmount: newPaidAmount,
+            changeAmount: newChangeAmount,
+          },
+        });
+
+        // Audit the payment
+        await recordAuditEvent(
+          {
+            event: AuditEvent.PAYMENT_RECEIVED,
+            entityId: saleId,
+            actorId: actor.id,
+            metadata: {
+              paymentMethod: payment.method,
+              paymentAmount: paymentAmount.toNumber(),
+              newPaidAmount: newPaidAmount.toNumber(),
+              newOutstanding: newOutstanding.toNumber(),
+              reference: payment.reference ?? null,
+            },
+          },
+          tx,
+        );
+
+        // Return updated sale with full details
+        return this.getById(saleId);
+      },
+      {
+        maxWait: 10_000,
+        timeout: 30_000,
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      },
+    );
   },
 
   /**

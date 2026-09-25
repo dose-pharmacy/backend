@@ -925,6 +925,9 @@ model Sale {
   cancelledById     String?
   cancelledBy       User?             @relation("CancelledSales", fields: [cancelledById], references: [id])
   cancelReason      String?
+  // Customer information for credit sales (outstanding balance > 0)
+  customerName      String?
+  customerPhone     String?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
@@ -937,6 +940,7 @@ model Sale {
   @@index([status])
   @@index([cashierId])
   @@index([createdAt])
+  @@index([customerPhone])
   // Reporting scans filter on status + a createdAt range (optionally by
   // location). Composite indexes match those predicates directly instead of
   // intersecting the single-column indexes above.
