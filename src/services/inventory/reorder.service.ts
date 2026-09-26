@@ -19,7 +19,7 @@ export type ReorderConfig = {
   productId: string;
   product: { id: string; name: string; sku: string; minimumStock: Prisma.Decimal; reorderPoint: Prisma.Decimal | null };
   minimumStockLevel: number;
-  reorderPoint: number;
+  reorderPoint: number | null;
   leadTimeDays: number;
   reorderQuantity: number;
   useSalesVelocity: boolean;
@@ -59,7 +59,13 @@ export type ReorderDashboardResult = {
 export type ReorderSuggestionsQuery = PageQuery;
 
 export type ReorderSuggestionItem = {
-  product: { id: string; name: string; sku: string; brand: string | null; baseUnit: { id: string; name: string; symbol: string | null } | null };
+  product: { 
+    id: string; 
+    name: string; 
+    sku: string; 
+    brand: string | null; 
+    baseUnit: { id: string; name: string; symbol: string | null } | null 
+  };
   currentStock: number;
   reorderPoint: number;
   minimumStockLevel: number;
@@ -69,6 +75,7 @@ export type ReorderSuggestionItem = {
   averageDailySales: number | null;
   bufferQuantity: number;
   hasSalesData: boolean;
+  stockStatus: "OUT_OF_STOCK" | "LOW_STOCK";
 };
 
 export const reorderService = {
@@ -95,50 +102,7 @@ export const reorderService = {
     };
   },
 
-  async upsertConfig(productId: string, input: ReorderConfigInput): Promise<ReorderConfig> {
-    const product = await prisma.product.findUnique({
-      where: { id: productId },
-      select: { id: true },
-    });
-    if (!product) {
-      throw new AppError(404, ErrorCode.PRODUCT_NOT_FOUND, "Product not found");
-    }
-
-    const config = await prisma.reorderConfiguration.upsert({
-      where: { productId },
-      create: {
-        productId,
-        minimumStockLevel: input.minimumStockLevel,
-        reorderPoint: input.reorderPoint,
-        leadTimeDays: input.leadTimeDays ?? 7,
-        reorderQuantity: input.reorderQuantity,
-        useSalesVelocity: input.useSalesVelocity ?? false,
-        bufferPercentage: input.bufferPercentage ?? 20,
-      },
-      update: {
-        minimumStockLevel: input.minimumStockLevel,
-        reorderPoint: input.reorderPoint,
-        leadTimeDays: input.leadTimeDays ?? 7,
-        reorderQuantity: input.reorderQuantity,
-        useSalesVelocity: input.useSalesVelocity ?? false,
-        bufferPercentage: input.bufferPercentage ?? 20,
-      },
-      include: {
-        product: {
-          select: { id: true, name: true, sku: true, minimumStock: true, reorderPoint: true },
-        },
-      },
-    });
-
-    return {
-      ...config,
-      minimumStockLevel: config.minimumStockLevel.toNumber(),
-      reorderPoint: config.reorderPoint.toNumber(),
-      reorderQuantity: config.reorderQuantity.toNumber(),
-      bufferPercentage: config.bufferPercentage.toNumber(),
-    };
-  },
-
+  
   async getDashboard(query: ReorderDashboardQuery): Promise<ReorderDashboardResult> {
     const { skip, take } = resolvePagination(query);
 
@@ -253,11 +217,81 @@ export const reorderService = {
     return { items: paginatedItems, summary };
   },
 
-  async getSuggestions(query: ReorderSuggestionsQuery): Promise<{ items: ReorderSuggestionItem[]; meta: ReturnType<typeof buildPaginationMeta> }> {
-    const { page, limit, skip, take } = resolvePagination(query);
+ async upsertConfig(
+  productId: string,
+  input: ReorderConfigInput,
+): Promise<ReorderConfig> {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    select: { id: true },
+  });
 
-    // Get all products with reorder config
-    const configs = await prisma.reorderConfiguration.findMany({
+  if (!product) {
+    throw new AppError(
+      404,
+      ErrorCode.PRODUCT_NOT_FOUND,
+      "Product not found",
+    );
+  }
+
+  const config = await prisma.reorderConfiguration.upsert({
+    where: { productId },
+
+    create: {
+      productId,
+      minimumStockLevel: input.minimumStockLevel,
+      reorderPoint: input.reorderPoint,
+      leadTimeDays: input.leadTimeDays ?? 7,
+      reorderQuantity: input.reorderQuantity,
+      useSalesVelocity: input.useSalesVelocity ?? false,
+      bufferPercentage: input.bufferPercentage ?? 20,
+    },
+
+    update: {
+      minimumStockLevel: input.minimumStockLevel,
+      reorderPoint: input.reorderPoint,
+      leadTimeDays: input.leadTimeDays ?? 7,
+      reorderQuantity: input.reorderQuantity,
+      useSalesVelocity: input.useSalesVelocity ?? false,
+      bufferPercentage: input.bufferPercentage ?? 20,
+    },
+
+    include: {
+      product: {
+        select: {
+          id: true,
+          name: true,
+          sku: true,
+          minimumStock: true,
+          reorderPoint: true,
+        },
+      },
+    },
+  });
+
+  return {
+    ...config,
+    minimumStockLevel: config.minimumStockLevel.toNumber(),
+    reorderPoint:
+      config.reorderPoint !== null
+        ? config.reorderPoint.toNumber()
+        : null,
+    reorderQuantity: config.reorderQuantity.toNumber(),
+    bufferPercentage: config.bufferPercentage.toNumber(),
+  };
+},
+
+async getSuggestions(
+  query: ReorderSuggestionsQuery,
+): Promise<{
+  items: ReorderSuggestionItem[];
+  meta: ReturnType<typeof buildPaginationMeta>;
+}> {
+  const { page, limit, skip, take } =
+    resolvePagination(query);
+
+  const configs =
+    await prisma.reorderConfiguration.findMany({
       include: {
         product: {
           select: {
@@ -265,93 +299,268 @@ export const reorderService = {
             name: true,
             sku: true,
             brand: true,
+
             units: {
-              where: { isBaseUnit: true },
+              where: {
+                isBaseUnit: true,
+              },
               take: 1,
-              select: { unit: { select: { id: true, name: true, symbol: true } } },
+              select: {
+                unit: {
+                  select: {
+                    id: true,
+                    name: true,
+                    symbol: true,
+                  },
+                },
+              },
             },
           },
         },
       },
     });
 
-    const productIds = configs.map((c) => c.productId);
+  if (configs.length === 0) {
+    return {
+      items: [],
+      meta: buildPaginationMeta(0, page, limit),
+    };
+  }
 
-    // Get current stock
-    const stockAgg = await prisma.inventoryStock.groupBy({
+  const productIds = configs.map(
+    (config) => config.productId,
+  );
+
+  const stockAgg =
+    await prisma.inventoryStock.groupBy({
       by: ["productId"],
+
       where: {
-        productId: { in: productIds },
-        quantity: { gt: 0 },
+        productId: {
+          in: productIds,
+        },
+        quantity: {
+          gt: 0,
+        },
       },
-      _sum: { quantity: true },
-    });
-    const stockMap = new Map(
-      stockAgg.map((row) => [row.productId, row._sum.quantity?.toNumber() ?? 0]),
-    );
 
-    // No sales data available yet
-    const hasSalesData = false;
-    const averageDailySalesMap = new Map<string, number>();
-
-    const items: ReorderSuggestionItem[] = configs
-      .filter((config) => {
-        const currentStock = stockMap.get(config.productId) ?? 0;
-        const reorderPoint = config.reorderPoint.toNumber();
-        // Only suggest for products at or below reorder point
-        return currentStock <= reorderPoint;
-      })
-      .map((config) => {
-        const currentStock = stockMap.get(config.productId) ?? 0;
-        const reorderPoint = config.reorderPoint.toNumber();
-        const minimumStockLevel = config.minimumStockLevel.toNumber();
-        const reorderQuantity = config.reorderQuantity.toNumber();
-        const leadTimeDays = config.leadTimeDays;
-        const useSalesVelocity = config.useSalesVelocity;
-        const bufferPercentage = config.bufferPercentage.toNumber();
-
-        let suggestedQuantity = reorderQuantity;
-        let calculationMethod: "CONFIGURED" | "SALES_VELOCITY" = "CONFIGURED";
-        let averageDailySales: number | null = null;
-        let bufferQuantity = 0;
-
-        if (useSalesVelocity && hasSalesData) {
-          averageDailySales = averageDailySalesMap.get(config.productId) ?? 0;
-          bufferQuantity = averageDailySales * leadTimeDays * (bufferPercentage / 100);
-          suggestedQuantity = Math.ceil(averageDailySales * leadTimeDays + bufferQuantity);
-          calculationMethod = "SALES_VELOCITY";
-        }
-
-        return {
-          product: {
-            id: config.product.id,
-            name: config.product.name,
-            sku: config.product.sku,
-            brand: config.product.brand,
-            baseUnit: config.product.units[0]?.unit ?? null,
-          },
-          currentStock,
-          reorderPoint,
-          minimumStockLevel,
-          suggestedQuantity,
-          calculationMethod,
-          leadTimeDays,
-          averageDailySales,
-          bufferQuantity,
-          hasSalesData,
-        };
-      });
-
-    // Sort by urgency (most urgent first)
-    items.sort((a, b) => {
-      const aUrgency = a.currentStock <= 0 ? 0 : a.currentStock <= a.minimumStockLevel ? 1 : 2;
-      const bUrgency = b.currentStock <= 0 ? 0 : b.currentStock <= b.minimumStockLevel ? 1 : 2;
-      return aUrgency - bUrgency;
+      _sum: {
+        quantity: true,
+      },
     });
 
-    const paginatedItems = items.slice(skip, skip + take);
-    const meta = buildPaginationMeta(items.length, page, limit);
+  const stockMap = new Map<string, number>(
+    stockAgg.map((row) => [
+      row.productId,
+      row._sum.quantity?.toNumber() ?? 0,
+    ]),
+  );
 
-    return { items: paginatedItems, meta };
-  },
+  /*
+   * Sales velocity is not implemented yet.
+   */
+  const hasSalesData = false;
+
+  const averageDailySalesMap =
+    new Map<string, number>();
+
+  type RawSuggestionItem = ReorderSuggestionItem | null;
+
+  // Build items with nullable for filtering
+  const rawItems: RawSuggestionItem[] = configs
+    .map((config) => {
+      const currentStock =
+        stockMap.get(config.productId) ?? 0;
+
+      const minimumStockLevel =
+        config.minimumStockLevel.toNumber();
+
+      /*
+       * If reorderPoint is explicitly configured,
+       * use it.
+       *
+       * Otherwise fall back to minimumStockLevel.
+       */
+      const effectiveReorderPoint =
+        config.reorderPoint !== null
+          ? config.reorderPoint.toNumber()
+          : minimumStockLevel;
+
+      /*
+       * Only products at or below the effective
+       * reorder threshold should be suggested.
+       *
+       * This includes completely out-of-stock products.
+       */
+      if (currentStock > effectiveReorderPoint) {
+        return null;
+      }
+
+      const reorderQuantity =
+        config.reorderQuantity.toNumber();
+
+      const leadTimeDays =
+        config.leadTimeDays;
+
+      const useSalesVelocity =
+        config.useSalesVelocity;
+
+      const bufferPercentage =
+        config.bufferPercentage.toNumber();
+
+      /*
+       * Explicit stock status.
+       */
+      const stockStatus =
+        currentStock <= 0
+          ? "OUT_OF_STOCK"
+          : "LOW_STOCK";
+
+      /*
+       * Calculate suggested quantity.
+       */
+      let suggestedQuantity = reorderQuantity;
+
+      let calculationMethod:
+        | "CONFIGURED"
+        | "SALES_VELOCITY" = "CONFIGURED";
+
+      let averageDailySales: number | null = null;
+
+      let bufferQuantity = 0;
+
+      if (
+        useSalesVelocity &&
+        hasSalesData
+      ) {
+        averageDailySales =
+          averageDailySalesMap.get(
+            config.productId,
+          ) ?? 0;
+
+        bufferQuantity =
+          averageDailySales *
+          leadTimeDays *
+          (bufferPercentage / 100);
+
+        suggestedQuantity = Math.ceil(
+          averageDailySales *
+            leadTimeDays +
+            bufferQuantity,
+        );
+
+        calculationMethod =
+          "SALES_VELOCITY";
+      }
+
+      suggestedQuantity = Math.max(
+        0,
+        suggestedQuantity,
+      );
+
+      return {
+        product: {
+          id: config.product.id,
+          name: config.product.name,
+          sku: config.product.sku,
+          brand: config.product.brand,
+          baseUnit:
+            config.product.units[0]?.unit ??
+            null,
+        },
+
+        currentStock,
+
+        /*
+         * This is the actual threshold used to
+         * determine whether a reorder is needed.
+         */
+        reorderPoint:
+          effectiveReorderPoint,
+
+        /*
+         * Keep the configured minimum stock level
+         * available in the response.
+         */
+        minimumStockLevel,
+
+        suggestedQuantity,
+
+        calculationMethod,
+
+        leadTimeDays,
+
+        averageDailySales,
+
+        bufferQuantity,
+
+        hasSalesData,
+
+        stockStatus,
+      };
+    });
+
+  // Filter out nulls and type as ReorderSuggestionItem[]
+  const items: ReorderSuggestionItem[] = rawItems.filter((item): item is ReorderSuggestionItem => item !== null);
+
+  /*
+   * Most urgent products first:
+   *
+   * 1. OUT_OF_STOCK
+   * 2. LOW_STOCK
+   *
+   * For products with the same status, products
+   * with less stock relative to their threshold
+   * appear first.
+   */
+  items.sort((a, b) => {
+    if (
+      a.stockStatus === "OUT_OF_STOCK" &&
+      b.stockStatus !== "OUT_OF_STOCK"
+    ) {
+      return -1;
+    }
+
+    if (
+      a.stockStatus !== "OUT_OF_STOCK" &&
+      b.stockStatus === "OUT_OF_STOCK"
+    ) {
+      return 1;
+    }
+
+    /*
+     * For low-stock products, compare the ratio
+     * of current stock to effective reorder point.
+     *
+     * Lower ratio = more urgent.
+     */
+    const aRatio =
+      a.reorderPoint > 0
+        ? a.currentStock / a.reorderPoint
+        : 0;
+
+    const bRatio =
+      b.reorderPoint > 0
+        ? b.currentStock / b.reorderPoint
+        : 0;
+
+    return aRatio - bRatio;
+  });
+
+  const paginatedItems = items.slice(
+    skip,
+    skip + take,
+  );
+
+  const meta = buildPaginationMeta(
+    items.length,
+    page,
+    limit,
+  );
+
+  return {
+    items: paginatedItems,
+    meta,
+  };
+},
 };

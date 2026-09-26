@@ -101,6 +101,8 @@ enum AuditEntity {
   GENERIC_PRODUCT
   MANUFACTURER
   PURCHASE_REQUIREMENT
+  NOTIFICATION
+  NOTIFICATION_SETTINGS
 }
 
 // ============================================================
@@ -152,6 +154,39 @@ enum PurchaseReturnReason {
   EXPIRED
   DAMAGED
   INCORRECT_DELIVERY
+}
+
+// ============================================================
+// Supplier Invoice Payment Terms
+// ============================================================
+
+enum PaymentTerms {
+  CREDIT
+  NO_CREDIT
+}
+
+// ============================================================
+// Notification System
+// ============================================================
+
+enum NotificationType {
+  PAYMENT_APPROACHING_DUE
+  PAYMENT_DUE_TODAY
+  PAYMENT_OVERDUE
+  EXPIRING_WITHIN_1_YEAR
+  EXPIRING_WITHIN_6_MONTHS
+  PRODUCT_EXPIRED
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum NotificationEntityType {
+  SUPPLIER_INVOICE
+  INVENTORY_BATCH
 }
 
 // ============================================================
@@ -221,6 +256,7 @@ model User {
   purchaseReturns        PurchaseReturn[]      @relation("RecordedPurchaseReturns")
   recordedPayments       Payment[]             @relation("RecordedPayments")
   auditTrails            AuditTrail[]
+  notifications          Notification[]
 
   @@unique([email])
   @@map("user")
@@ -778,7 +814,14 @@ model GoodsReceiptItem {
   batchId             String?
   batch               Batch?            @relation(fields: [batchId], references: [id], onDelete: SetNull)
 
-  @@unique([goodsReceiptId, purchaseOrderItemId])
+  // One delivery of a single PO item may arrive as several batches (e.g. 60 in
+  // batch A + 40 in batch B), so a receipt can hold MULTIPLE items for the same
+  // PO item. Uniqueness is per (goods receipt, PO item, batch) in practice via
+  // the batch link; a plain index keeps the lookup fast without blocking
+  // multi-batch receiving. The previous @@unique([goodsReceiptId,
+  // purchaseOrderItemId]) forbade this and was removed in
+  // migration 20260926120000_invoice_receiving_multi_batch.
+  @@index([goodsReceiptId, purchaseOrderItemId])
   @@index([purchaseOrderItemId])
   @@index([batchId])
   @@map("goods_receipt_item")
@@ -805,7 +848,13 @@ model SupplierInvoice {
   // since the financial split was introduced; kept so old API consumers and
   // historical rows keep working.
   invoiceAmount      Decimal               @db.Decimal(12, 2)
-  paymentTerms       String?
+  paymentTerms       PaymentTerms?
+  paymentMethod      PaymentMethod?
+  // Reference to the uploaded supplier invoice document (invoice-assisted
+  // receiving). Null for manually entered invoices. Storage is provided by the
+  // caller/deployment's document host; the backend only stores the locator so
+  // the original invoice can be retrieved later.
+  documentUrl        String?
   // totalAmount minus the sum of recorded payments. Payments always settle
   // the invoice TOTAL, never the goods amount alone.
   outstandingBalance Decimal               @db.Decimal(12, 2)
@@ -1124,4 +1173,48 @@ model AuditTrail {
   @@index([action])
   @@index([createdAt])
   @@map("audit_trail")
+}
+
+// ============================================================
+// Notification System
+// ============================================================
+
+model Notification {
+  id           String               @id @default(uuid())
+  userId       String
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         NotificationType
+  title        String
+  message      String
+  severity     NotificationSeverity @default(WARNING)
+  entityType   NotificationEntityType
+  entityId     String
+  isRead       Boolean              @default(false)
+  readAt       DateTime?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@index([type])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("notification")
+}
+
+model NotificationSettings {
+  id                    String   @id @default(uuid())
+  // Payment reminder settings
+  paymentRemindersEnabled Boolean  @default(true)
+  remindBeforeDueDays     Int      @default(7)
+  remindOnDueDate         Boolean  @default(true)
+  remindWhenOverdue       Boolean  @default(true)
+  // Expiry alert settings
+  expiryAlertsEnabled     Boolean  @default(true)
+  alertWithin6Months      Boolean  @default(true)
+  alertWithin1Year        Boolean  @default(true)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@map("notification_settings")
 }

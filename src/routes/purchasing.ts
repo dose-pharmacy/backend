@@ -7,6 +7,7 @@ import { goodsReceiptController } from "../controllers/purchasing/goods-receipt.
 import { supplierInvoiceController } from "../controllers/purchasing/supplier-invoice.controller.js";
 import { purchaseReturnController } from "../controllers/purchasing/purchase-return.controller.js";
 import { supplierCatalogController } from "../controllers/purchasing/supplier-catalog.controller.js";
+import { invoiceReceivingController } from "../controllers/purchasing/invoice-receiving.controller.js";
 import { requireAuthenticatedUser, requireRole } from "../middleware/authorize.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -60,6 +61,10 @@ import {
   supplierProductBatchQuerySchema,
   supplierReceivedProductsQuerySchema,
 } from "../validators/purchasing/supplier-catalog.js";
+import {
+  invoiceUploadSchema,
+  invoiceReceivingParamsSchema,
+} from "../validators/purchasing/invoice-receiving.js";
 
 export const purchasingRouter = Router();
 
@@ -306,6 +311,26 @@ purchasingRouter.delete(
   ...admin,
   validate({ params: goodsReceiptParamsSchema }),
   goodsReceiptController.remove,
+);
+
+// ---------------------------------------------------------------------------
+// Invoice-assisted receiving
+//
+// Upload the extracted supplier invoice -> read-only receiving preview; then
+// confirm to atomically create + confirm a Goods Receipt and create the linked
+// Supplier Invoice through the canonical receiving services.
+// ---------------------------------------------------------------------------
+purchasingRouter.post(
+  "/purchase-orders/:id/invoice-upload",
+  ...admin,
+  validate({ params: invoiceReceivingParamsSchema, body: invoiceUploadSchema }),
+  invoiceReceivingController.preview,
+);
+purchasingRouter.post(
+  "/purchase-orders/:id/invoice-upload/confirm",
+  ...admin,
+  validate({ params: invoiceReceivingParamsSchema, body: invoiceUploadSchema }),
+  invoiceReceivingController.confirm,
 );
 
 // ---------------------------------------------------------------------------

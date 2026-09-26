@@ -38,6 +38,10 @@ export const AuditEvent = {
   GOODS_RECEIPT_CONFIRMED: "GOODS_RECEIPT_CONFIRMED",
   GOODS_RECEIPT_DELETED: "GOODS_RECEIPT_DELETED",
 
+  // Invoice-assisted receiving: a supplier invoice was turned into a confirmed
+  // goods receipt + supplier invoice in one atomic operation.
+  INVOICE_RECEIVING_CONFIRMED: "INVOICE_RECEIVING_CONFIRMED",
+
   SUPPLIER_INVOICE_CREATED: "SUPPLIER_INVOICE_CREATED",
   SUPPLIER_INVOICE_UPDATED: "SUPPLIER_INVOICE_UPDATED",
   SUPPLIER_INVOICE_DELETED: "SUPPLIER_INVOICE_DELETED",
@@ -85,6 +89,7 @@ const EVENT_META: Record<AuditEventName, { action: AuditAction; entity: AuditEnt
   GOODS_RECEIPT_RESOLVED: { action: AuditAction.UPDATE, entity: AuditEntity.GOODS_RECEIPT },
   GOODS_RECEIPT_CONFIRMED: { action: AuditAction.CONFIRM, entity: AuditEntity.GOODS_RECEIPT },
   GOODS_RECEIPT_DELETED: { action: AuditAction.DELETE, entity: AuditEntity.GOODS_RECEIPT },
+  INVOICE_RECEIVING_CONFIRMED: { action: AuditAction.CONFIRM, entity: AuditEntity.GOODS_RECEIPT },
 
   SUPPLIER_INVOICE_CREATED: { action: AuditAction.CREATE, entity: AuditEntity.SUPPLIER_INVOICE },
   SUPPLIER_INVOICE_UPDATED: { action: AuditAction.UPDATE, entity: AuditEntity.SUPPLIER_INVOICE },

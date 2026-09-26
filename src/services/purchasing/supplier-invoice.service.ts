@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, PaymentTerms, PaymentMethod } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
@@ -7,6 +7,7 @@ import { toDecimal } from "../../utils/decimal.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
+import type { DbClient } from "./requirement.service.js";
 
 export type InvoiceItemInput = {
   purchaseOrderItemId: string;
@@ -31,14 +32,21 @@ export type CreateSupplierInvoiceInput = {
   taxAmount?: number;
   additionalChargesAmount?: number;
   discountAmount?: number;
-  paymentTerms?: string | null;
+  paymentTerms?: PaymentTerms | null;
+  paymentMethod?: PaymentMethod | null;
+  /**
+   * Locator of the uploaded supplier invoice document (invoice-assisted
+   * receiving). Null for manually entered invoices.
+   */
+  documentUrl?: string | null;
   /** PO-linked invoices allocate goods to specific PO items. */
   items?: InvoiceItemInput[];
 };
 
 export type UpdateSupplierInvoiceInput = Partial<{
   dueDate: Date | null;
-  paymentTerms: string | null;
+  paymentTerms: PaymentTerms | null;
+  paymentMethod: PaymentMethod | null;
 }>;
 
 export type RecordPaymentInput = {
@@ -79,8 +87,8 @@ function statusForOutstanding(outstanding: Prisma.Decimal, totalAmount: Prisma.D
   return "OPEN" as const;
 }
 
-async function assertSupplierActive(supplierId: string) {
-  const supplier = await prisma.supplier.findUnique({
+async function assertSupplierActive(supplierId: string, db: DbClient = prisma) {
+  const supplier = await db.supplier.findUnique({
     where: { id: supplierId },
     select: { id: true, isActive: true },
   });
@@ -296,10 +304,18 @@ export const supplierInvoiceService = {
    * Non-PO invoices keep the simple flow: the client supplies goodsAmount; tax,
    * charges and discount are applied server-side to compute the total.
    */
-  async create(input: CreateSupplierInvoiceInput, actor: Pick<AuthenticatedUser, "id">) {
-    await assertSupplierActive(input.supplierId);
+  async create(
+    input: CreateSupplierInvoiceInput,
+    actor: Pick<AuthenticatedUser, "id">,
+    externalTx?: Prisma.TransactionClient,
+  ) {
+    // Composable with the invoice-assisted receiving flow: an external
+    // transaction makes invoice creation atomic with receipt creation and
+    // confirmation. Standalone calls keep their own transaction.
+    const db = externalTx ?? prisma;
+    await assertSupplierActive(input.supplierId, db);
 
-    const duplicate = await prisma.supplierInvoice.findUnique({
+    const duplicate = await db.supplierInvoice.findUnique({
       where: {
         supplierId_invoiceNumber: {
           supplierId: input.supplierId,
@@ -313,7 +329,7 @@ export const supplierInvoiceService = {
 
     let po: { id: string; supplierId: string } | null = null;
     if (input.purchaseOrderId) {
-      const found = await prisma.purchaseOrder.findUnique({
+      const found = await db.purchaseOrder.findUnique({
         where: { id: input.purchaseOrderId },
         select: { id: true, supplierId: true },
       });
@@ -333,7 +349,15 @@ export const supplierInvoiceService = {
       throw new AppError(422, ErrorCode.BAD_REQUEST, "Tax, charges and discount must be non-negative");
     }
 
-    return prisma.$transaction(async (tx) => {
+    // Validate payment terms (server-side validation as defense in depth)
+    if (input.paymentTerms === "CREDIT" && !input.dueDate) {
+      throw new AppError(422, ErrorCode.BAD_REQUEST, "dueDate is required when paymentTerms is CREDIT");
+    }
+    if (input.paymentTerms === "NO_CREDIT" && input.dueDate) {
+      throw new AppError(422, ErrorCode.BAD_REQUEST, "dueDate must not be provided when paymentTerms is NO_CREDIT");
+    }
+
+    const run = async (tx: Prisma.TransactionClient) => {
       let goodsAmount: Prisma.Decimal;
       const invoiceItems: ValidatedAllocation[] = [];
 
@@ -369,7 +393,8 @@ export const supplierInvoiceService = {
       });
       if (totalAmount.lt(0)) {
         throw new AppError(422, ErrorCode.BAD_REQUEST, "Invoice total cannot be negative");
-      }      const invoice = await tx.supplierInvoice.create({
+      }
+      const invoice = await tx.supplierInvoice.create({
           data: {
             invoiceNumber: input.invoiceNumber,
           supplierId: input.supplierId,
@@ -384,6 +409,8 @@ export const supplierInvoiceService = {
           // Legacy field mirrors totalAmount so old consumers keep working.
           invoiceAmount: totalAmount,
           paymentTerms: input.paymentTerms,
+          paymentMethod: input.paymentMethod,
+          documentUrl: input.documentUrl,
           outstandingBalance: totalAmount,
           status: "OPEN",
           createdById: actor.id,
@@ -416,7 +443,12 @@ export const supplierInvoiceService = {
       );
 
       return invoice;
-    }, { timeout: 30_000, maxWait: 15_000 });
+    };
+
+    if (externalTx) {
+      return run(externalTx);
+    }
+    return prisma.$transaction(run, { timeout: 30_000, maxWait: 15_000 });
   },
 
   async getById(id: string) {
@@ -435,13 +467,24 @@ export const supplierInvoiceService = {
   async update(id: string, input: UpdateSupplierInvoiceInput, actor?: Pick<AuthenticatedUser, "id">) {
     const invoice = await prisma.supplierInvoice.findUnique({
       where: { id },
-      select: { id: true, status: true },
+      select: { id: true, status: true, paymentTerms: true, dueDate: true },
     });
     if (!invoice) {
       throw new AppError(404, ErrorCode.SUPPLIER_INVOICE_NOT_FOUND, "Invoice not found");
     }
     if (invoice.status === "PAID") {
       throw new AppError(409, ErrorCode.BAD_REQUEST, "Cannot modify a fully paid invoice");
+    }
+
+    // Validate payment terms changes
+    const newPaymentTerms = input.paymentTerms ?? invoice.paymentTerms;
+    const newDueDate = input.dueDate !== undefined ? input.dueDate : invoice.dueDate;
+    
+    if (newPaymentTerms === "CREDIT" && !newDueDate) {
+      throw new AppError(422, ErrorCode.BAD_REQUEST, "dueDate is required when paymentTerms is CREDIT");
+    }
+    if (newPaymentTerms === "NO_CREDIT" && newDueDate) {
+      throw new AppError(422, ErrorCode.BAD_REQUEST, "dueDate must not be provided when paymentTerms is NO_CREDIT");
     }
 
     const updated = await prisma.supplierInvoice.update({

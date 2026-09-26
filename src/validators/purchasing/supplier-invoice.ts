@@ -3,6 +3,9 @@ import { paginationQuerySchema, uuidSchema, decimalNumber, moneySchema, quantity
 
 const invoiceStatusEnum = z.enum(["OPEN", "PARTIALLY_PAID", "PAID"]);
 
+const paymentTermsEnum = z.enum(["CREDIT", "NO_CREDIT"]);
+const paymentMethodEnum = z.enum(["CASH", "CARD", "DIGITAL_TRANSFER"]);
+
 const positiveMoneySchema = decimalNumber({
   minInclusive: 0.01,
   maxInclusive: 9999999999.99,
@@ -32,7 +35,8 @@ export const createSupplierInvoiceSchema = z
     taxAmount: moneySchema.optional(),
     additionalChargesAmount: moneySchema.optional(),
     discountAmount: moneySchema.optional(),
-    paymentTerms: z.string().trim().max(500).optional(),
+    paymentTerms: paymentTermsEnum.optional(),
+    paymentMethod: paymentMethodEnum.optional(),
     // Goods allocation for PO-linked invoices. Required when purchaseOrderId
     // is present; prevents double-invoicing of received goods.
     items: z.array(invoiceItemSchema).optional(),
@@ -61,12 +65,42 @@ export const createSupplierInvoiceSchema = z
         message: "goodsAmount is required when a discount is applied",
       });
     }
+    // Payment terms validation
+    if (value.paymentTerms === "CREDIT" && !value.dueDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dueDate"],
+        message: "dueDate is required when paymentTerms is CREDIT",
+      });
+    }
+    // NO_CREDIT with dueDate: reject as inconsistent
+    if (value.paymentTerms === "NO_CREDIT" && value.dueDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dueDate"],
+        message: "dueDate must not be provided when paymentTerms is NO_CREDIT",
+      });
+    }
   });
 
 export const updateSupplierInvoiceSchema = z.object({
   dueDate: z.coerce.date().nullable().optional(),
-  paymentTerms: z.string().trim().max(500).nullable().optional(),
-});
+  paymentTerms: paymentTermsEnum.nullable().optional(),
+  paymentMethod: paymentMethodEnum.nullable().optional(),
+})
+  .superRefine((value, ctx) => {
+    // If paymentTerms is being updated to CREDIT, dueDate must be provided
+    if (value.paymentTerms === "CREDIT" && value.dueDate === undefined && value.dueDate !== null) {
+      // Note: we can't easily check the existing dueDate here, but the service layer will validate
+    }
+    if (value.paymentTerms === "NO_CREDIT" && value.dueDate !== undefined && value.dueDate !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dueDate"],
+        message: "dueDate must not be provided when paymentTerms is NO_CREDIT",
+      });
+    }
+  });
 
 export const recordPaymentSchema = z.object({
   amount: positiveMoneySchema,

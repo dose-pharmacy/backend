@@ -15,7 +15,8 @@
 4. [Goods Receipts](#goods-receipts)
 5. [Supplier Invoices](#supplier-invoices)
 6. [Purchase Returns](#purchase-returns)
-7. [Error Codes](#error-codes)
+7. [Invoice-Assisted Receiving](#invoice-assisted-receiving)
+8. [Error Codes](#error-codes)
 
 ---
 
@@ -1791,6 +1792,24 @@ DELETE /purchase-returns/:id
 
 **Error Responses:**
 - `404 PURCHASE_RETURN_NOT_FOUND`
+
+---
+
+## 🧾 Invoice-Assisted Receiving
+
+Select a Purchase Order, supply the (already extracted) supplier invoice, review
+a read-only preview, then confirm to atomically create a Goods Receipt + Supplier
+Invoice through the **same canonical receiving services** as the manual web form.
+
+```
+POST /purchase-orders/:id/invoice-upload          (preview, read-only)
+POST /purchase-orders/:id/invoice-upload/confirm  (atomic, 201)
+```
+
+The uploaded invoice is a helper input only — never the authority over inventory.
+It is validated against the PO's **current** remaining quantities. Full request/
+response schemas, matching rules, discrepancy codes and confirmation errors are
+documented in [INVOICE_RECEIVING_API.md](./INVOICE_RECEIVING_API.md).
 
 ---
 

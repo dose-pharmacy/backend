@@ -9,6 +9,7 @@ import { roundTo, toDecimal } from "../../utils/decimal.js";
 import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
+import type { DbClient } from "./requirement.service.js";
 
 export type CreateGRInput = {
   purchaseOrderId: string;
@@ -19,6 +20,12 @@ export type CreateGRInput = {
     locationId: string;
     deliveredQty: number;
     actualQty: number;
+    // Expected quantity for THIS receipt line. The manual web form omits it and
+    // the PO item's current remaining quantity is used. The invoice-assisted
+    // flow sets it to the supplier's document quantity for the line so a
+    // document/physical mismatch is reflected in the receipt status without
+    // misreading a multi-batch delivery as a shortage.
+    expectedQty?: number;
     batchNumber?: string | null;
     manufacturingDate?: Date | null;
     expiryDate?: Date | null;
@@ -62,8 +69,8 @@ function assertExpiryValid(expiry: Date): void {
   }
 }
 
-async function assertPOExistsAndValid(poId: string) {
-  const po = await prisma.purchaseOrder.findUnique({
+async function assertPOExistsAndValid(poId: string, db: DbClient = prisma) {
+  const po = await db.purchaseOrder.findUnique({
     where: { id: poId },
     select: { id: true, status: true, supplierId: true },
   });
@@ -76,8 +83,8 @@ async function assertPOExistsAndValid(poId: string) {
   return po;
 }
 
-async function assertLocationActive(locationId: string) {
-  const location = await prisma.inventoryLocation.findUnique({
+async function assertLocationActive(locationId: string, db: DbClient = prisma) {
+  const location = await db.inventoryLocation.findUnique({
     where: { id: locationId },
     select: { id: true, isActive: true },
   });
@@ -89,8 +96,8 @@ async function assertLocationActive(locationId: string) {
   }
 }
 
-async function assertPOItemBelongsToPO(poItemId: string, poId: string) {
-  const item = await prisma.purchaseOrderItem.findUnique({
+async function assertPOItemBelongsToPO(poItemId: string, poId: string, db: DbClient = prisma) {
+  const item = await db.purchaseOrderItem.findUnique({
     where: { id: poItemId },
     select: { id: true, purchaseOrderId: true, productId: true, quantityOrdered: true, quantityOrderedBase: true, quantityReceived: true, quantityShort: true, unitId: true, unit: { select: { id: true, name: true, symbol: true } }, unitCost: true },
   });
@@ -156,21 +163,31 @@ export const goodsReceiptService = {
     return { items, meta: buildPaginationMeta(total, page, limit), summary };
   },
 
-  async create(input: CreateGRInput, actor: Pick<AuthenticatedUser, "id">) {
-    const po = await assertPOExistsAndValid(input.purchaseOrderId);
+  async create(
+    input: CreateGRInput,
+    actor: Pick<AuthenticatedUser, "id">,
+    externalTx?: Prisma.TransactionClient,
+  ) {
+    // Composable with the invoice-assisted receiving flow: when an external
+    // transaction is supplied every read/write uses it, so the receipt is
+    // created atomically with the rest of the receiving operation. The manual
+    // web form calls this without a tx and keeps its previous behaviour.
+    const db = externalTx ?? prisma;
+    const po = await assertPOExistsAndValid(input.purchaseOrderId, db);
 
     // Validate each item
     const validatedItems = [];
     for (const item of input.items) {
       // Check PO item belongs to PO
-      const poItem = await assertPOItemBelongsToPO(item.purchaseOrderItemId, input.purchaseOrderId);
+      const poItem = await assertPOItemBelongsToPO(item.purchaseOrderItemId, input.purchaseOrderId, db);
 
       // Check location
-      await assertLocationActive(item.locationId);
+      await assertLocationActive(item.locationId, db);
 
-      // Compute expected qty = remaining on PO item. Accepted shortages reduce
-      // the outstanding expectation: they are already reconciled against the order.
-      const expectedQty =
+      // Remaining quantity on the PO item. Accepted shortages reduce the
+      // outstanding expectation: they are already reconciled against the order.
+      // This is the hard cap for what may be received on the item.
+      const remainingQty =
         Number(poItem.quantityOrdered) -
         Number(poItem.quantityReceived) -
         Number(poItem.quantityShort);
@@ -193,12 +210,12 @@ export const goodsReceiptService = {
       }
 
       // Never receive more than the remaining quantity on the PO item.
-      if (item.actualQty > expectedQty) {
+      if (item.actualQty > remainingQty) {
         throw new AppError(
           422,
           ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
           "Actual quantity exceeds the remaining quantity on the purchase order item",
-          { remainingQuantity: expectedQty, requestedQuantity: item.actualQty },
+          { remainingQuantity: remainingQty, requestedQuantity: item.actualQty },
         );
       }
 
@@ -215,7 +232,11 @@ export const goodsReceiptService = {
 
       validatedItems.push({
         ...item,
-        expectedQty,
+        // The expected/documented quantity for this line. Defaults to the PO
+        // item's remaining quantity (manual web form); the invoice-assisted
+        // flow passes the supplier document quantity so a document/physical
+        // mismatch surfaces as a receipt discrepancy.
+        expectedQty: item.expectedQty ?? remainingQty,
         poItem,
       });
     }
@@ -225,7 +246,7 @@ export const goodsReceiptService = {
       validatedItems.map((i) => ({ expectedQty: i.expectedQty, deliveredQty: i.deliveredQty, actualQty: i.actualQty }))
     );
 
-    const receipt = await prisma.goodsReceipt.create({
+    const receipt = await db.goodsReceipt.create({
       data: {
         receiptNumber: generateReceiptNumber(),
         purchaseOrderId: input.purchaseOrderId,
@@ -264,18 +285,21 @@ export const goodsReceiptService = {
       },
     });
 
-    await recordAuditEvent({
-      event: AuditEvent.GOODS_RECEIPT_CREATED,
-      entityId: receipt.id,
-      actorId: actor.id,
-      metadata: {
-        receiptNumber: receipt.receiptNumber,
-        purchaseOrderId: input.purchaseOrderId,
-        supplierId: po.supplierId,
-        status,
-        itemCount: validatedItems.length,
+    await recordAuditEvent(
+      {
+        event: AuditEvent.GOODS_RECEIPT_CREATED,
+        entityId: receipt.id,
+        actorId: actor.id,
+        metadata: {
+          receiptNumber: receipt.receiptNumber,
+          purchaseOrderId: input.purchaseOrderId,
+          supplierId: po.supplierId,
+          status,
+          itemCount: validatedItems.length,
+        },
       },
-    });
+      db,
+    );
 
     return receipt;
   },
@@ -407,9 +431,15 @@ export const goodsReceiptService = {
    * - Accepted shortages never increase stock and never double-count against
    *   requirements.
    */
-  async confirm(id: string, actor: Pick<AuthenticatedUser, "id">) {
-    return prisma.$transaction(
-      async (tx) => {
+  async confirm(
+    id: string,
+    actor: Pick<AuthenticatedUser, "id">,
+    externalTx?: Prisma.TransactionClient,
+  ) {
+    // `run` is the canonical confirmation body. Supplying `externalTx` lets the
+    // invoice-assisted receiving flow compose create + confirm + invoice in one
+    // atomic transaction without duplicating any of this logic.
+    const run = async (tx: Prisma.TransactionClient) => {
         const receipt = await tx.goodsReceipt.findUnique({
           where: { id },
           include: {
@@ -598,9 +628,12 @@ export const goodsReceiptService = {
             },
           },
         });
-      },
-      { timeout: 30_000, maxWait: 15_000 },
-    );
+    };
+
+    if (externalTx) {
+      return run(externalTx);
+    }
+    return prisma.$transaction(run, { timeout: 30_000, maxWait: 15_000 });
   },
 
   async remove(id: string, actor?: Pick<AuthenticatedUser, "id">) {

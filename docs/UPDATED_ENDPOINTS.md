@@ -240,5 +240,15 @@ ordered/fulfilled base-quantity progress.
   "summary": { "registered": 10, "awaitingDelivery": 8, "received": 15, "closed": 20, "cancelled": 2 }
 }
 ```
+
+### POST /purchase-orders/:id/invoice-upload — invoice-assisted receiving (preview)
+```
+POST /purchase-orders/:id/invoice-upload          → read-only receiving preview
+POST /purchase-orders/:id/invoice-upload/confirm  → atomic Goods Receipt + Supplier Invoice (201)
+```
+Accepts the already-extracted, normalized supplier invoice; matches it against
+the selected PO and validates against the PO's **current** remaining quantities.
+The preview mutates nothing; confirmation orchestrates the canonical receiving
+services inside one transaction. See [INVOICE_RECEIVING_API.md](./INVOICE_RECEIVING_API.md).
 ---
 

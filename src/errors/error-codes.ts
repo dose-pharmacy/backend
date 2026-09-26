@@ -103,6 +103,26 @@ export const ErrorCode = {
   SUPPLIER_INVOICE_PAYMENT_EXCEEDS_BALANCE: "SUPPLIER_INVOICE_PAYMENT_EXCEEDS_BALANCE",
   SUPPLIER_INVOICE_EXCEEDS_RECEIVED: "SUPPLIER_INVOICE_EXCEEDS_RECEIVED",
 
+  // Purchasing: invoice-assisted receiving
+  // The uploaded invoice cannot still be received against the selected PO.
+  PURCHASE_ORDER_CANNOT_RECEIVE: "PURCHASE_ORDER_CANNOT_RECEIVE",
+  // An invoice line could not be matched to any item of the selected PO.
+  UNMATCHED_INVOICE_ITEM: "UNMATCHED_INVOICE_ITEM",
+  // The invoice quantity (or accepted quantity) exceeds the PO's current
+  // remaining quantity for the item.
+  INVOICE_QUANTITY_EXCEEDS_PO_REMAINING: "INVOICE_QUANTITY_EXCEEDS_PO_REMAINING",
+  // The invoice line unit does not match the PO item's ordered unit and no
+  // explicit conversion applies.
+  INVOICE_UNIT_MISMATCH: "INVOICE_UNIT_MISMATCH",
+  // A batch number is required to receive a line but the extraction could not
+  // provide one (or the user did not correct it).
+  MISSING_BATCH: "MISSING_BATCH",
+  // Expiry date is required to receive a line but was not provided.
+  MISSING_EXPIRY: "MISSING_EXPIRY",
+  // A receiving discrepancy (documented vs physically accepted) exists and no
+  // resolution note was supplied.
+  RECEIVING_DISCREPANCY_UNRESOLVED: "RECEIVING_DISCREPANCY_UNRESOLVED",
+
   // Purchasing: purchase returns
   PURCHASE_RETURN_NOT_FOUND: "PURCHASE_RETURN_NOT_FOUND",
   DUPLICATE_RETURN_NUMBER: "DUPLICATE_RETURN_NUMBER",
