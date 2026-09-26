@@ -2,7 +2,7 @@ import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema, moneySchema, decimalNumber } from "../inventory/common.js";
 
 const saleStatusEnum = z.enum(["COMPLETED", "CANCELLED"]);
-const paymentMethodEnum = z.enum(["CASH", "CARD", "DIGITAL_TRANSFER"]);
+const paymentMethodEnum = z.enum(["CASH", "MOBILE_TRANSFER", "CHECK"]);
 
 const positiveMoneySchema = decimalNumber({
   minInclusive: 0.01,

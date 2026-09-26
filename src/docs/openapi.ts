@@ -15,6 +15,43 @@ const productIdPathParam = {
   schema: { type: "string", format: "uuid" },
 };
 
+/** Reusable path parameter fragments. */
+const supplierIdPathParam = {
+  name: "supplierId",
+  in: "path" as const,
+  required: true,
+  schema: { type: "string", format: "uuid" },
+};
+
+const itemIdPathParam = {
+  name: "itemId",
+  in: "path" as const,
+  required: true,
+  schema: { type: "string", format: "uuid" },
+};
+
+const lineIdPathParam = {
+  name: "lineId",
+  in: "path" as const,
+  required: true,
+  schema: { type: "string", format: "uuid" },
+};
+
+/** Shared pagination query parameters used by list endpoints. */
+const pageQueryParam = { name: "page", in: "query" as const, schema: { type: "integer", minimum: 1, default: 1, example: 1 } };
+const limitQueryParam = { name: "limit", in: "query" as const, schema: { type: "integer", minimum: 1, maximum: 100, default: 20, example: 20 } };
+const searchQueryParam = { name: "search", in: "query" as const, schema: { type: "string" }, description: "Search text applied to the endpoint's searchable fields" };
+
+/** Shared request/response body fragments. */
+const jsonBody = (ref: string, required = true) => ({
+  required,
+  content: { "application/json": { schema: { $ref: `#/components/schemas/${ref}` } } },
+});
+const okRef = (ref: string) => ({
+  description: "Success",
+  content: { "application/json": { schema: { $ref: `#/components/schemas/${ref}` } } },
+});
+
 const productUnitPathParams = [
   {
     name: "productId",
@@ -426,7 +463,11 @@ export const openApiDocument = {
       get: {
         tags: ["Expiry"],
         summary: "Get expiry dashboard",
-        parameters: [{ name: "thresholds", in: "query", schema: { type: "string", example: "30,60,90" }, description: "Comma-separated expiry thresholds in days" }, { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } }, { name: "productId", in: "query", schema: { type: "string", format: "uuid" } }],
+        parameters: [
+          { name: "thresholds", in: "query", schema: { type: "string", example: "30,60,90" }, description: "Comma-separated expiry thresholds in days used for the status buckets" },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by location" },
+          { name: "productId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by product" },
+        ],
         responses: { "200": { description: "Expiry metrics", content: { "application/json": { schema: { $ref: "#/components/schemas/ExpiryDashboardResponse" } } } }, ...authErrorResponses },
       },
     },
@@ -434,7 +475,15 @@ export const openApiDocument = {
       get: {
         tags: ["Expiry"],
         summary: "List batches by expiry window",
-        parameters: [{ name: "thresholds", in: "query", schema: { type: "string", example: "30,60,90" } }, { name: "windowStart", in: "query", schema: { type: "integer", minimum: 0, example: 0 } }, { name: "windowEnd", in: "query", schema: { type: "integer", minimum: 1, example: 30 } }, { name: "page", in: "query", schema: { type: "integer", minimum: 1 } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } }, { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } }, { name: "productId", in: "query", schema: { type: "string", format: "uuid" } }],
+        parameters: [
+          { name: "thresholds", in: "query", schema: { type: "string", example: "30,60,90" }, description: "Comma-separated expiry thresholds in days used for the status buckets" },
+          { name: "windowStart", in: "query", schema: { type: "integer", minimum: 0, default: 0, example: 0 }, description: "Start of the days-remaining window (inclusive)" },
+          { name: "windowEnd", in: "query", schema: { type: "integer", minimum: 1, default: 30, example: 30 }, description: "End of the days-remaining window (inclusive)" },
+          pageQueryParam,
+          limitQueryParam,
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by location" },
+          { name: "productId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by product" },
+        ],
         responses: { "200": { description: "Expiring batches", content: { "application/json": { schema: { $ref: "#/components/schemas/ExpiryBatchListResponse" } } } }, ...authErrorResponses },
       },
     },
@@ -1443,20 +1492,26 @@ export const openApiDocument = {
       patch: {
         tags: ["Notifications"],
         summary: "Mark all notifications as read",
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": { description: "All notifications marked as read", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, ...authErrorResponses }
       }
     },
     "/purchasing/suppliers": {
       get: {
         tags: ["Purchasing"],
         summary: "List suppliers",
-        responses: { "200": { description: "Suppliers list", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        parameters: [
+          searchQueryParam,
+          { name: "isActive", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Filter by active status" },
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("SupplierListResponse"), ...authErrorResponses }
       },
       post: {
         tags: ["Purchasing"],
         summary: "Create supplier",
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("SupplierCreateInput"),
+        responses: { "201": okRef("SupplierResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/suppliers/{id}": {
@@ -1464,20 +1519,20 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Get supplier",
         parameters: [idPathParam],
-        responses: { "200": { description: "Supplier data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("SupplierResponse"), "404": { description: "Supplier not found" }, ...authErrorResponses }
       },
       patch: {
         tags: ["Purchasing"],
         summary: "Update supplier",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("SupplierUpdateInput"),
+        responses: { "200": okRef("SupplierResponse"), "404": { description: "Supplier not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
         summary: "Delete supplier",
         parameters: [idPathParam],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": { description: "Supplier deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Supplier not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/suppliers/{supplierId}/products": {
@@ -1485,9 +1540,13 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "List products for supplier",
         parameters: [
-          { name: "supplierId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
+          supplierIdPathParam,
+          searchQueryParam,
+          { name: "isActive", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Filter by active status" },
+          pageQueryParam,
+          limitQueryParam,
         ],
-        responses: { "200": { description: "List of products", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("SupplierProductListResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/suppliers/{supplierId}/products/{productId}/batches": {
@@ -1495,47 +1554,71 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "List batches for supplier product",
         parameters: [
-          { name: "supplierId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
-          { name: "productId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
+          supplierIdPathParam,
+          productIdPathParam,
+          { name: "inStock", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Only batches with stock on hand" },
+          { name: "excludeExpired", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Exclude expired batches" },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by location" },
         ],
-        responses: { "200": { description: "List of batches", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("SupplierBatchListResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/suppliers/{supplierId}/received-products": {
       get: {
         tags: ["Purchasing"],
         summary: "List received products for supplier",
+        description: "Products received from this supplier, with batches, stock on hand and purchase cost.",
         parameters: [
-          { name: "supplierId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
+          supplierIdPathParam,
+          searchQueryParam,
+          { name: "inStock", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Only products with stock on hand" },
+          { name: "excludeExpired", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Exclude expired batches" },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by location" },
+          pageQueryParam,
+          limitQueryParam,
         ],
-        responses: { "200": { description: "List of received products", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("SupplierReceivedProductsResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/requirements": {
       get: {
         tags: ["Purchasing"],
         summary: "List purchase requirements",
-        responses: { "200": { description: "Requirements list", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        parameters: [
+          { name: "status", in: "query", schema: { type: "string", enum: ["OPEN", "PARTIALLY_FULFILLED", "FULFILLED", "CLOSED"] }, description: "Filter by fulfillment status" },
+          searchQueryParam,
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("RequirementListResponse"), ...authErrorResponses }
       },
       post: {
         tags: ["Purchasing"],
         summary: "Create purchase requirement",
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("RequirementCreateInput"),
+        responses: { "201": okRef("RequirementResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/requirements/generate-from-reorder": {
       post: {
         tags: ["Purchasing"],
         summary: "Generate purchase requirements from reorder suggestions",
-        responses: { "200": { description: "Generated requirements", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("RequirementListResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/requirements/lines": {
       get: {
         tags: ["Purchasing"],
-        summary: "Get requirement lines",
-        responses: { "200": { description: "Requirement lines list", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        summary: "Get requirement lines for a product",
+        description: "Requirement lines across all requirements for one product, with the amount already created/ordered.",
+        parameters: [
+          { name: "productId", in: "query", required: true, schema: { type: "string", format: "uuid" }, description: "Product to list lines for" },
+          { name: "requirementId", in: "query", schema: { type: "string", format: "uuid" }, description: "Limit to a single requirement" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["OPEN", "PARTIALLY_FULFILLED", "FULFILLED", "CLOSED"] } },
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("RequirementLineListResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/requirements/{id}": {
@@ -1543,20 +1626,20 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Get requirement",
         parameters: [idPathParam],
-        responses: { "200": { description: "Requirement data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("RequirementResponse"), "404": { description: "Requirement not found" }, ...authErrorResponses }
       },
       patch: {
         tags: ["Purchasing"],
         summary: "Update requirement",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("RequirementUpdateInput"),
+        responses: { "200": okRef("RequirementResponse"), "404": { description: "Requirement not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
         summary: "Delete requirement",
         parameters: [idPathParam],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": { description: "Requirement deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Requirement not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/requirements/{id}/close": {
@@ -1564,7 +1647,7 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Close requirement",
         parameters: [idPathParam],
-        responses: { "200": { description: "Closed", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("RequirementResponse"), "404": { description: "Requirement not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/requirements/{id}/lines": {
@@ -1572,77 +1655,77 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Add requirement line",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("RequirementLineInput"),
+        responses: { "201": okRef("RequirementResponse"), "404": { description: "Requirement not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/requirements/lines/{lineId}": {
       patch: {
         tags: ["Purchasing"],
         summary: "Update requirement line",
-        parameters: [
-          { name: "lineId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
-        ],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        parameters: [lineIdPathParam],
+        requestBody: jsonBody("RequirementLineUpdateInput"),
+        responses: { "200": okRef("RequirementLineResponse"), "404": { description: "Requirement line not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
         summary: "Delete requirement line",
-        parameters: [
-          { name: "lineId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
-        ],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        parameters: [lineIdPathParam],
+        responses: { "200": { description: "Requirement line deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Requirement line not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/requirements/lines/{lineId}/order-preview": {
       get: {
         tags: ["Purchasing"],
-        summary: "Get order preview for line",
-        parameters: [
-          { name: "lineId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
-        ],
-        responses: { "200": { description: "Preview data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        summary: "Get order preview for requirement line",
+        description: "Read-only prefill data for ordering a requirement line.",
+        parameters: [lineIdPathParam],
+        responses: { "200": okRef("RequirementOrderPreviewResponse"), "404": { description: "Requirement line not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders": {
       get: {
         tags: ["Purchasing"],
         summary: "List purchase orders",
-        responses: { "200": { description: "List of orders", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        parameters: [
+          { name: "supplierId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by supplier" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"] }, description: "Filter by order status" },
+          { name: "paymentStatus", in: "query", schema: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID", "ALL"] }, description: "Filter by payment status" },
+          searchQueryParam,
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("PurchaseOrderListResponse"), ...authErrorResponses }
       },
       post: {
         tags: ["Purchasing"],
         summary: "Create purchase order",
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("PurchaseOrderCreateInput"),
+        responses: { "201": okRef("PurchaseOrderResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/from-requirement": {
       post: {
         tags: ["Purchasing"],
-        summary: "Create PO from requirement",
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        summary: "Create purchase order from requirement lines",
+        description: "The product is derived from each requirement line, so the client only supplies the line, quantity and unit cost.",
+        requestBody: jsonBody("PurchaseOrderFromRequirementInput"),
+        responses: { "201": okRef("PurchaseOrderResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/items/{itemId}": {
       patch: {
         tags: ["Purchasing"],
-        summary: "Update PO item",
-        parameters: [
-          { name: "itemId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
-        ],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        summary: "Update purchase order item",
+        parameters: [itemIdPathParam],
+        requestBody: jsonBody("PurchaseOrderItemUpdateInput"),
+        responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "PO item not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
-        summary: "Delete PO item",
-        parameters: [
-          { name: "itemId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
-        ],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        summary: "Delete purchase order item",
+        parameters: [itemIdPathParam],
+        responses: { "200": { description: "PO item removed", content: { "application/json": { schema: { $ref: "#/components/schemas/PurchaseOrderResponse" } } } }, "404": { description: "PO item not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/{id}": {
@@ -1650,56 +1733,62 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Get purchase order",
         parameters: [idPathParam],
-        responses: { "200": { description: "PO data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       },
       patch: {
         tags: ["Purchasing"],
         summary: "Update purchase order",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("PurchaseOrderUpdateInput"),
+        responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/{id}/cancel": {
       post: {
         tags: ["Purchasing"],
-        summary: "Cancel PO",
+        summary: "Cancel purchase order",
         parameters: [idPathParam],
-        responses: { "200": { description: "Canceled", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/items/{itemId}/accept-shortage": {
       post: {
         tags: ["Purchasing"],
-        summary: "Accept shortage for PO item",
-        parameters: [
-          { name: "itemId", in: "path", required: true, schema: { type: "string", format: "uuid" } }
-        ],
-        responses: { "200": { description: "Accepted shortage", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        summary: "Accept shortage for purchase order item",
+        description: "Accept a delivered quantity smaller than ordered. `quantityShort` defaults to the full remaining quantity.",
+        parameters: [itemIdPathParam],
+        requestBody: jsonBody("AcceptShortageInput", false),
+        responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "PO item not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/{id}/close": {
       post: {
         tags: ["Purchasing"],
-        summary: "Close PO",
+        summary: "Close purchase order",
         parameters: [idPathParam],
-        responses: { "200": { description: "Closed", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/goods-receipts": {
       get: {
         tags: ["Purchasing"],
         summary: "List goods receipts",
-        responses: { "200": { description: "List of goods receipts", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        parameters: [
+          { name: "purchaseOrderId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by purchase order" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["MATCHED", "DISCREPANCY", "RESOLVED"] }, description: "Filter by receipt status" },
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("GoodsReceiptListResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/{id}/goods-receipts": {
       post: {
         tags: ["Purchasing"],
-        summary: "Create goods receipt for PO",
+        summary: "Create goods receipt for purchase order",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("GoodsReceiptCreateInput"),
+        responses: { "201": okRef("GoodsReceiptResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/goods-receipts/{id}": {
@@ -1707,22 +1796,22 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Get goods receipt",
         parameters: [idPathParam],
-        responses: { "200": { description: "Goods receipt data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("GoodsReceiptResponse"), "404": { description: "Goods receipt not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
         summary: "Delete goods receipt",
         parameters: [idPathParam],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": { description: "Goods receipt deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Goods receipt not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/goods-receipts/{id}/resolve": {
       patch: {
         tags: ["Purchasing"],
-        summary: "Resolve goods receipt",
+        summary: "Resolve goods receipt discrepancies",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Resolved", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("GoodsReceiptResolveInput"),
+        responses: { "200": okRef("GoodsReceiptResponse"), "404": { description: "Goods receipt not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/goods-receipts/{id}/confirm": {
@@ -1730,38 +1819,47 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Confirm goods receipt",
         parameters: [idPathParam],
-        responses: { "200": { description: "Confirmed", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("GoodsReceiptResponse"), "404": { description: "Goods receipt not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/{id}/invoice-upload": {
       post: {
         tags: ["Purchasing"],
-        summary: "Upload invoice for PO",
+        summary: "Upload supplier invoice for receiving preview",
+        description: "Read-only receiving preview built from the extracted invoice. Confirm via the confirm endpoint.",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Preview data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("InvoiceUploadInput"),
+        responses: { "200": okRef("InvoiceReceivingPreviewResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-orders/{id}/invoice-upload/confirm": {
       post: {
         tags: ["Purchasing"],
-        summary: "Confirm uploaded invoice",
+        summary: "Confirm uploaded invoice and receive goods",
+        description: "Atomically creates + confirms a Goods Receipt and creates the linked Supplier Invoice.",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Confirmed", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("InvoiceUploadInput"),
+        responses: { "200": okRef("InvoiceReceivingConfirmResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/supplier-invoices": {
       get: {
         tags: ["Purchasing"],
         summary: "List supplier invoices",
-        responses: { "200": { description: "List of supplier invoices", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        parameters: [
+          { name: "supplierId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by supplier" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["OPEN", "PARTIALLY_PAID", "PAID"] }, description: "Filter by invoice status" },
+          searchQueryParam,
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("SupplierInvoiceListResponse"), ...authErrorResponses }
       },
       post: {
         tags: ["Purchasing"],
         summary: "Create supplier invoice",
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("SupplierInvoiceCreateInput"),
+        responses: { "201": okRef("SupplierInvoiceResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/supplier-invoices/{id}": {
@@ -1769,20 +1867,20 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Get supplier invoice",
         parameters: [idPathParam],
-        responses: { "200": { description: "Supplier invoice data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("SupplierInvoiceResponse"), "404": { description: "Supplier invoice not found" }, ...authErrorResponses }
       },
       patch: {
         tags: ["Purchasing"],
         summary: "Update supplier invoice",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Updated", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("SupplierInvoiceUpdateInput"),
+        responses: { "200": okRef("SupplierInvoiceResponse"), "404": { description: "Supplier invoice not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
         summary: "Delete supplier invoice",
         parameters: [idPathParam],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": { description: "Supplier invoice deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Supplier invoice not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/supplier-invoices/{id}/payments": {
@@ -1790,21 +1888,28 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Record payment for supplier invoice",
         parameters: [idPathParam],
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "200": { description: "Payment recorded", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("SupplierInvoicePaymentInput"),
+        responses: { "200": okRef("SupplierInvoiceResponse"), "404": { description: "Supplier invoice not found" }, ...authErrorResponses }
       }
     },
     "/purchasing/purchase-returns": {
       get: {
         tags: ["Purchasing"],
         summary: "List purchase returns",
-        responses: { "200": { description: "List of purchase returns", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericListResponse" } } } }, ...authErrorResponses }
+        parameters: [
+          { name: "supplierId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by supplier" },
+          { name: "productId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by product" },
+          { name: "reason", in: "query", schema: { type: "string", enum: ["EXPIRED", "DAMAGED", "INCORRECT_DELIVERY"] }, description: "Filter by return reason" },
+          pageQueryParam,
+          limitQueryParam,
+        ],
+        responses: { "200": okRef("PurchaseReturnListResponse"), ...authErrorResponses }
       },
       post: {
         tags: ["Purchasing"],
         summary: "Create purchase return",
-        requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } },
-        responses: { "201": { description: "Created", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        requestBody: jsonBody("PurchaseReturnCreateInput"),
+        responses: { "201": okRef("PurchaseReturnResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/purchase-returns/{id}": {
@@ -1812,13 +1917,13 @@ export const openApiDocument = {
         tags: ["Purchasing"],
         summary: "Get purchase return",
         parameters: [idPathParam],
-        responses: { "200": { description: "Purchase return data", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": okRef("PurchaseReturnResponse"), "404": { description: "Purchase return not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
         summary: "Delete purchase return",
         parameters: [idPathParam],
-        responses: { "200": { description: "Deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } }, ...authErrorResponses }
+        responses: { "200": { description: "Purchase return deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Purchase return not found" }, ...authErrorResponses }
       }
     }
   },
@@ -3760,6 +3865,615 @@ SlowMovingEvaluationResponse: {
           meta: { $ref: "#/components/schemas/PaginationMeta" },
         },
       },
+      // ============================= Purchasing =============================
+      SupplierCreateInput: {
+        type: "object",
+        required: ["name"],
+        properties: {
+          name: { type: "string", maxLength: 200, example: "MedSupply Ltd" },
+          contactPerson: { type: "string", maxLength: 200, example: "Jane Doe" },
+          email: { type: "string", format: "email", example: "sales@medsupply.com" },
+          phone: { type: "string", maxLength: 50, example: "+251911223344" },
+          address: { type: "string", maxLength: 500, example: "Bole Road, Addis Ababa" },
+          paymentTerms: { type: "string", maxLength: 500, example: "Net 30" },
+          isActive: { type: "boolean", example: true },
+        },
+      },
+      SupplierUpdateInput: {
+        type: "object",
+        properties: {
+          name: { type: "string", maxLength: 200, example: "MedSupply Ltd" },
+          contactPerson: { type: "string", maxLength: 200, example: "Jane Doe" },
+          email: { type: "string", format: "email", example: "sales@medsupply.com" },
+          phone: { type: "string", maxLength: 50, example: "+251911223344" },
+          address: { type: "string", maxLength: 500 },
+          paymentTerms: { type: "string", maxLength: 500 },
+          isActive: { type: "boolean" },
+        },
+      },
+      Supplier: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          name: { type: "string" },
+          contactPerson: { type: "string", nullable: true },
+          email: { type: "string", format: "email", nullable: true },
+          phone: { type: "string", nullable: true },
+          address: { type: "string", nullable: true },
+          paymentTerms: { type: "string", nullable: true },
+          isActive: { type: "boolean" },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
+      SupplierResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/Supplier" },
+        },
+      },
+      SupplierListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/Supplier" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      SupplierProductListResponse: {
+        type: "object",
+        description: "Paginated list of products supplied by the given supplier.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                productId: { type: "string", format: "uuid" },
+                productName: { type: "string" },
+                sku: { type: "string" },
+                brand: { type: "string", nullable: true },
+                isActive: { type: "boolean" },
+              },
+            },
+          },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      SupplierBatchListResponse: {
+        type: "object",
+        description: "Batches supplied by the given supplier for one product.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                batchNumber: { type: "string" },
+                expiryDate: { type: "string", format: "date" },
+                quantityOnHand: { type: "number" },
+                purchaseCost: { type: "number", nullable: true },
+              },
+            },
+          },
+        },
+      },
+      SupplierReceivedProductsResponse: {
+        type: "object",
+        description: "Products received from the supplier, with batches, stock and purchase cost.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                productId: { type: "string", format: "uuid" },
+                productName: { type: "string" },
+                sku: { type: "string" },
+                totalQuantity: { type: "number" },
+                batches: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: { type: "string", format: "uuid" },
+                      batchNumber: { type: "string" },
+                      expiryDate: { type: "string", format: "date" },
+                      quantity: { type: "number" },
+                      purchaseCost: { type: "number", nullable: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      RequirementLineInput: {
+        type: "object",
+        required: ["productId", "quantityNeeded"],
+        properties: {
+          productId: { type: "string", format: "uuid" },
+          unitId: { type: "string", format: "uuid", description: "Quantity unit; defaults to the product's base unit" },
+          quantityNeeded: { type: "number", minimum: 0, example: 100 },
+          reasonCode: { type: "string", enum: ["LOW_STOCK", "REORDER_ALERT", "MANUAL"], example: "LOW_STOCK" },
+          notes: { type: "string", maxLength: 500 },
+        },
+      },
+      RequirementCreateInput: {
+        type: "object",
+        required: ["lines"],
+        properties: {
+          requiredBy: { type: "string", format: "date-time" },
+          notes: { type: "string", maxLength: 1000 },
+          lines: { type: "array", minItems: 1, items: { $ref: "#/components/schemas/RequirementLineInput" } },
+        },
+      },
+      RequirementUpdateInput: {
+        type: "object",
+        properties: {
+          requiredBy: { type: "string", format: "date-time", nullable: true },
+          notes: { type: "string", maxLength: 1000, nullable: true },
+          lines: {
+            type: "array",
+            description: "Optional line upserts; products are matched by id",
+            items: {
+              type: "object",
+              properties: {
+                productId: { type: "string", format: "uuid" },
+                quantityNeeded: { type: "number", minimum: 0 },
+                unitId: { type: "string", format: "uuid" },
+                reasonCode: { type: "string", enum: ["LOW_STOCK", "REORDER_ALERT", "MANUAL"] },
+                notes: { type: "string", maxLength: 500, nullable: true },
+              },
+            },
+          },
+        },
+      },
+      RequirementLineUpdateInput: {
+        type: "object",
+        properties: {
+          quantityNeeded: { type: "number", minimum: 0 },
+          unitId: { type: "string", format: "uuid" },
+          reasonCode: { type: "string", enum: ["LOW_STOCK", "REORDER_ALERT", "MANUAL"] },
+          notes: { type: "string", maxLength: 500, nullable: true },
+        },
+      },
+      RequirementLine: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          requirementId: { type: "string", format: "uuid" },
+          productId: { type: "string", format: "uuid" },
+          quantityNeeded: { type: "number" },
+          quantityNeededBase: { type: "number", description: "Quantity converted to the product's base unit" },
+          unitId: { type: "string", format: "uuid", nullable: true },
+          reasonCode: { type: "string", enum: ["LOW_STOCK", "REORDER_ALERT", "MANUAL"], nullable: true },
+          notes: { type: "string", nullable: true },
+        },
+      },
+      Requirement: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          status: { type: "string", enum: ["OPEN", "PARTIALLY_FULFILLED", "FULFILLED", "CLOSED"] },
+          requiredBy: { type: "string", format: "date-time", nullable: true },
+          notes: { type: "string", nullable: true },
+          lines: { type: "array", items: { $ref: "#/components/schemas/RequirementLine" } },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
+      RequirementResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/Requirement" },
+        },
+      },
+      RequirementListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/Requirement" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      RequirementLineResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/RequirementLine" },
+        },
+      },
+      RequirementLineListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/RequirementLine" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      RequirementOrderPreviewResponse: {
+        type: "object",
+        description: "Prefill data for ordering a requirement line (read-only).",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              requirementLineId: { type: "string", format: "uuid" },
+              productId: { type: "string", format: "uuid" },
+              productName: { type: "string" },
+              quantityNeeded: { type: "number" },
+              quantityAlreadyOrdered: { type: "number" },
+              suggestedQuantity: { type: "number" },
+            },
+          },
+        },
+      },
+      PurchaseOrderItemInput: {
+        type: "object",
+        required: ["productId", "quantityOrdered", "unitCost"],
+        properties: {
+          productId: { type: "string", format: "uuid" },
+          unitId: { type: "string", format: "uuid", description: "Quantity unit; defaults to the product's base unit" },
+          quantityOrdered: { type: "number", minimum: 0, example: 50 },
+          unitCost: { type: "number", minimum: 0.01, example: 12.5 },
+          requirementLineId: { type: "string", format: "uuid", description: "Link the item to a requirement line" },
+        },
+      },
+      PurchaseOrderCreateInput: {
+        type: "object",
+        required: ["supplierId", "items"],
+        properties: {
+          supplierId: { type: "string", format: "uuid" },
+          expectedDeliveryDate: { type: "string", format: "date-time" },
+          notes: { type: "string", maxLength: 1000 },
+          items: { type: "array", minItems: 1, items: { $ref: "#/components/schemas/PurchaseOrderItemInput" } },
+        },
+      },
+      PurchaseOrderFromRequirementInput: {
+        type: "object",
+        required: ["supplierId", "items"],
+        properties: {
+          supplierId: { type: "string", format: "uuid" },
+          expectedDeliveryDate: { type: "string", format: "date-time" },
+          notes: { type: "string", maxLength: 1000 },
+          items: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              required: ["requirementLineId", "quantityOrdered", "unitCost"],
+              properties: {
+                requirementLineId: { type: "string", format: "uuid" },
+                quantityOrdered: { type: "number", minimum: 0 },
+                unitCost: { type: "number", minimum: 0.01 },
+              },
+            },
+          },
+        },
+      },
+      PurchaseOrderUpdateInput: {
+        type: "object",
+        properties: {
+          expectedDeliveryDate: { type: "string", format: "date-time", nullable: true },
+          notes: { type: "string", maxLength: 1000, nullable: true },
+        },
+      },
+      PurchaseOrderItemUpdateInput: {
+        type: "object",
+        description: "At least one of quantityOrdered or unitCost is required.",
+        properties: {
+          quantityOrdered: { type: "number", minimum: 0 },
+          unitCost: { type: "number", minimum: 0.01 },
+        },
+      },
+      AcceptShortageInput: {
+        type: "object",
+        description: "At least one field is required. quantityShort defaults to the full remaining quantity.",
+        properties: {
+          quantityShort: { type: "number", minimum: 0 },
+          shortReason: { type: "string", maxLength: 500, nullable: true },
+        },
+      },
+      PurchaseOrderItem: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          purchaseOrderId: { type: "string", format: "uuid" },
+          productId: { type: "string", format: "uuid" },
+          quantityOrdered: { type: "number" },
+          quantityReceived: { type: "number" },
+          quantityShort: { type: "number" },
+          unitCost: { type: "number" },
+          requirementLineId: { type: "string", format: "uuid", nullable: true },
+        },
+      },
+      PurchaseOrder: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          supplierId: { type: "string", format: "uuid" },
+          status: { type: "string", enum: ["AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"] },
+          paymentStatus: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID"] },
+          expectedDeliveryDate: { type: "string", format: "date-time", nullable: true },
+          notes: { type: "string", nullable: true },
+          items: { type: "array", items: { $ref: "#/components/schemas/PurchaseOrderItem" } },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
+      PurchaseOrderResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/PurchaseOrder" },
+        },
+      },
+      PurchaseOrderListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/PurchaseOrder" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      GoodsReceiptItemInput: {
+        type: "object",
+        required: ["purchaseOrderItemId", "locationId", "deliveredQty", "actualQty"],
+        properties: {
+          purchaseOrderItemId: { type: "string", format: "uuid" },
+          locationId: { type: "string", format: "uuid" },
+          deliveredQty: { type: "number", minimum: 0, description: "Quantity delivered per the supplier" },
+          actualQty: { type: "number", minimum: 0, description: "Quantity physically counted" },
+          batchNumber: { type: "string", maxLength: 100 },
+          manufacturingDate: { type: "string", format: "date-time" },
+          expiryDate: { type: "string", format: "date-time" },
+        },
+      },
+      GoodsReceiptCreateInput: {
+        type: "object",
+        required: ["items"],
+        properties: {
+          receivedDate: { type: "string", format: "date-time" },
+          discrepancyNote: { type: "string", maxLength: 1000 },
+          items: { type: "array", minItems: 1, items: { $ref: "#/components/schemas/GoodsReceiptItemInput" } },
+        },
+      },
+      GoodsReceiptResolveInput: {
+        type: "object",
+        properties: {
+          discrepancyNote: { type: "string", maxLength: 1000 },
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                deliveredQty: { type: "number", minimum: 0 },
+                actualQty: { type: "number", minimum: 0 },
+                batchNumber: { type: "string", maxLength: 100, nullable: true },
+                manufacturingDate: { type: "string", format: "date-time", nullable: true },
+                expiryDate: { type: "string", format: "date-time", nullable: true },
+              },
+            },
+          },
+        },
+      },
+      GoodsReceipt: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          purchaseOrderId: { type: "string", format: "uuid" },
+          status: { type: "string", enum: ["MATCHED", "DISCREPANCY", "RESOLVED"] },
+          receivedDate: { type: "string", format: "date-time" },
+          discrepancyNote: { type: "string", nullable: true },
+          confirmedAt: { type: "string", format: "date-time", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+      GoodsReceiptResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/GoodsReceipt" },
+        },
+      },
+      GoodsReceiptListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/GoodsReceipt" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      InvoiceUploadItem: {
+        type: "object",
+        required: ["quantity"],
+        properties: {
+          purchaseOrderItemId: { type: "string", format: "uuid", description: "User-confirmed match against a PO item" },
+          productCode: { type: "string", maxLength: 100 },
+          productName: { type: "string", maxLength: 300 },
+          quantity: { type: "number", minimum: 0, description: "Document/invoice quantity for the line" },
+          acceptedQuantity: { type: "number", minimum: 0, description: "Physically accepted quantity; defaults to quantity" },
+          unit: { type: "string", maxLength: 50 },
+          unitPrice: { type: "number" },
+          batchNumber: { type: "string", maxLength: 100, nullable: true },
+          expiryDate: { type: "string", format: "date-time" },
+          manufacturingDate: { type: "string", format: "date-time" },
+          locationId: { type: "string", format: "uuid" },
+        },
+      },
+      InvoiceUploadInput: {
+        type: "object",
+        required: ["locationId", "invoiceNumber", "items"],
+        properties: {
+          locationId: { type: "string", format: "uuid" },
+          receivedDate: { type: "string", format: "date-time" },
+          invoiceNumber: { type: "string", maxLength: 100, example: "INV-2026-001" },
+          invoiceDate: { type: "string", format: "date-time" },
+          grandTotal: { type: "number" },
+          supplierName: { type: "string", maxLength: 200, description: "Informational only; the PO's supplier is authoritative" },
+          documentUrl: { type: "string", maxLength: 2000 },
+          discrepancyNote: { type: "string", maxLength: 1000, description: "Required when documented and accepted quantities differ" },
+          paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"] },
+          dueDate: { type: "string", format: "date-time", description: "Required when paymentTerms is CREDIT" },
+          paymentMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
+          items: { type: "array", minItems: 1, items: { $ref: "#/components/schemas/InvoiceUploadItem" } },
+        },
+      },
+      InvoiceReceivingPreviewResponse: {
+        type: "object",
+        description: "Read-only receiving preview built from the uploaded invoice.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "object", description: "Preview of goods receipt lines and discrepancies" },
+        },
+      },
+      InvoiceReceivingConfirmResponse: {
+        type: "object",
+        description: "Created goods receipt and supplier invoice references.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "object", description: "Goods receipt and supplier invoice references" },
+        },
+      },
+      SupplierInvoiceItem: {
+        type: "object",
+        properties: {
+          purchaseOrderItemId: { type: "string", format: "uuid" },
+          quantity: { type: "number", description: "Quantity invoiced, in the PO item's ordered unit" },
+          unitCost: { type: "number" },
+        },
+      },
+      SupplierInvoiceCreateInput: {
+        type: "object",
+        required: ["invoiceNumber", "supplierId"],
+        properties: {
+          invoiceNumber: { type: "string", maxLength: 100, example: "INV-2026-001" },
+          supplierId: { type: "string", format: "uuid" },
+          purchaseOrderId: { type: "string", format: "uuid" },
+          invoiceDate: { type: "string", format: "date-time" },
+          dueDate: { type: "string", format: "date-time", description: "Required when paymentTerms is CREDIT" },
+          goodsAmount: { type: "number", description: "Required for non-PO invoices" },
+          taxAmount: { type: "number" },
+          additionalChargesAmount: { type: "number" },
+          discountAmount: { type: "number" },
+          paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"] },
+          paymentMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
+          items: { type: "array", description: "Required when purchaseOrderId is present", items: { $ref: "#/components/schemas/SupplierInvoiceItem" } },
+        },
+      },
+      SupplierInvoiceUpdateInput: {
+        type: "object",
+        properties: {
+          dueDate: { type: "string", format: "date-time", nullable: true },
+          paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
+          paymentMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"], nullable: true },
+        },
+      },
+      SupplierInvoicePaymentInput: {
+        type: "object",
+        required: ["amount"],
+        properties: {
+          amount: { type: "number", minimum: 0.01, example: 1500 },
+          paymentDate: { type: "string", format: "date-time" },
+          notes: { type: "string", maxLength: 500 },
+        },
+      },
+      SupplierInvoice: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          invoiceNumber: { type: "string" },
+          supplierId: { type: "string", format: "uuid" },
+          purchaseOrderId: { type: "string", format: "uuid", nullable: true },
+          status: { type: "string", enum: ["OPEN", "PARTIALLY_PAID", "PAID"] },
+          invoiceDate: { type: "string", format: "date-time" },
+          dueDate: { type: "string", format: "date-time", nullable: true },
+          goodsAmount: { type: "number" },
+          taxAmount: { type: "number" },
+          additionalChargesAmount: { type: "number" },
+          discountAmount: { type: "number" },
+          totalAmount: { type: "number" },
+          paidAmount: { type: "number" },
+          paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
+          paymentMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"], nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+      },
+      SupplierInvoiceResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/SupplierInvoice" },
+        },
+      },
+      SupplierInvoiceListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/SupplierInvoice" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      PurchaseReturnCreateInput: {
+        type: "object",
+        required: ["supplierId", "productId", "locationId", "reason", "quantity", "unitCost"],
+        properties: {
+          supplierId: { type: "string", format: "uuid" },
+          productId: { type: "string", format: "uuid" },
+          batchId: { type: "string", format: "uuid" },
+          locationId: { type: "string", format: "uuid" },
+          reason: { type: "string", enum: ["EXPIRED", "DAMAGED", "INCORRECT_DELIVERY"], example: "EXPIRED" },
+          quantity: { type: "number", minimum: 0, example: 10 },
+          unitId: { type: "string", format: "uuid" },
+          unitCost: { type: "number", minimum: 0.01, example: 12.5 },
+          debitNoteAmount: { type: "number" },
+          notes: { type: "string", maxLength: 1000 },
+        },
+      },
+      PurchaseReturn: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          supplierId: { type: "string", format: "uuid" },
+          productId: { type: "string", format: "uuid" },
+          batchId: { type: "string", format: "uuid", nullable: true },
+          locationId: { type: "string", format: "uuid" },
+          reason: { type: "string", enum: ["EXPIRED", "DAMAGED", "INCORRECT_DELIVERY"] },
+          quantity: { type: "number" },
+          unitCost: { type: "number" },
+          debitNoteAmount: { type: "number", nullable: true },
+          notes: { type: "string", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+      PurchaseReturnResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/PurchaseReturn" },
+        },
+      },
+      PurchaseReturnListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/PurchaseReturn" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+
       NotificationListItem: {
         type: "object",
         properties: {
@@ -3832,8 +4546,8 @@ SlowMovingEvaluationResponse: {
           alertWithin1Year: { type: "boolean" },
         },
       },
-      },
     },
+  },
   security: [{ sessionCookie: [] }],
 } as const;
 

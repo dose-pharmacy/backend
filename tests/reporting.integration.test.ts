@@ -233,7 +233,7 @@ beforeAll(async () => {
           },
         ],
       },
-      payments: { create: [{ method: "CARD", amount: 100 }] },
+      payments: { create: [{ method: "CHECK", amount: 100 }] },
     },
   });
 });

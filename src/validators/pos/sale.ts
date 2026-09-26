@@ -6,7 +6,7 @@ import {
   uuidSchema,
 } from "../inventory/common.js";
 
-export const paymentMethodSchema = z.enum(["CASH", "CARD", "DIGITAL_TRANSFER"]);
+export const paymentMethodSchema = z.enum(["CASH", "MOBILE_TRANSFER", "CHECK"]);
 export const discountTypeSchema = z.enum(["PERCENTAGE", "FIXED_AMOUNT"]);
 
 /**

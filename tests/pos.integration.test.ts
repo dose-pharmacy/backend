@@ -927,12 +927,12 @@ describe("pos: sales", () => {
       items: [{ productId: paracetamolId, unitId: boxUnitId, quantity: 1 }], // 160
       payments: [
         { method: "CASH", amount: 60 },
-        { method: "DIGITAL_TRANSFER", amount: 100 },
+        { method: "MOBILE_TRANSFER", amount: 100 },
       ],
     }).expect(201);
     expect(res.body.data.paidAmount).toBe(160);
     expect(res.body.data.payments.map((p: { method: string }) => p.method).sort()).toEqual(
-      ["CASH", "DIGITAL_TRANSFER"],
+      ["CASH", "MOBILE_TRANSFER"],
     );
     expect(res.body.data.changeAmount).toBe(0);
   });

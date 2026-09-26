@@ -1,4 +1,4 @@
-import { Prisma, PurchaseOrderStatus } from "@prisma/client";
+import { Prisma, PurchaseOrderStatus, PaymentMethod } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
@@ -96,7 +96,7 @@ export type InvoiceUploadInput = {
   /** Due date for CREDIT payment terms. */
   dueDate?: Date;
   /** Payment method for the supplier invoice. */
-  paymentMethod?: "CASH" | "CARD" | "DIGITAL_TRANSFER";
+  paymentMethod?: PaymentMethod;
   items: InvoiceUploadItemInput[];
 };
 

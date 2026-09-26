@@ -44,7 +44,7 @@ export const invoiceUploadSchema = z.object({
   paymentTerms: z.enum(["CREDIT", "NO_CREDIT"]).optional(),
   dueDate: z.coerce.date().optional(),
   // Payment method for the supplier invoice
-  paymentMethod: z.enum(["CASH", "CARD", "DIGITAL_TRANSFER"]).optional(),
+  paymentMethod: z.enum(["CASH", "MOBILE_TRANSFER", "CHECK"]).optional(),
   items: z.array(invoiceUploadItemSchema).min(1, "At least one invoice line is required"),
 }).superRefine((value, ctx) => {
   if (value.paymentTerms === "CREDIT" && !value.dueDate) {

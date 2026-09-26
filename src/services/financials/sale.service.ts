@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, PaymentMethod } from "@prisma/client";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
@@ -21,7 +21,7 @@ export type CreateSaleInput = {
   }>;
   billDiscountAmount?: number;
   payments: Array<{
-    method: "CASH" | "CARD" | "DIGITAL_TRANSFER";
+    method: PaymentMethod;
     amount: number;
     reference?: string | null;
   }>;

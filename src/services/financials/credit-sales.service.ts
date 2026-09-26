@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, PaymentMethod } from "@prisma/client";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
 import type { PageQuery } from "../../utils/pagination.js";
@@ -142,7 +142,7 @@ export const creditSalesService = {
             where: { saleId: { in: saleIds } },
             orderBy: { createdAt: "asc" },
           })
-        : ([] as { id: string; saleId: string; method: "CASH" | "CARD" | "DIGITAL_TRANSFER"; amount: Prisma.Decimal; reference: string | null; createdAt: Date }[]),
+        : ([] as { id: string; saleId: string; method: PaymentMethod; amount: Prisma.Decimal; reference: string | null; createdAt: Date }[]),
       saleIds.length > 0
         ? prisma.saleItem.groupBy({
             by: ["saleId"],

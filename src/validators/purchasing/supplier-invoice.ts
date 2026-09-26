@@ -4,7 +4,7 @@ import { paginationQuerySchema, uuidSchema, decimalNumber, moneySchema, quantity
 const invoiceStatusEnum = z.enum(["OPEN", "PARTIALLY_PAID", "PAID"]);
 
 const paymentTermsEnum = z.enum(["CREDIT", "NO_CREDIT"]);
-const paymentMethodEnum = z.enum(["CASH", "CARD", "DIGITAL_TRANSFER"]);
+const paymentMethodEnum = z.enum(["CASH", "MOBILE_TRANSFER", "CHECK"]);
 
 const positiveMoneySchema = decimalNumber({
   minInclusive: 0.01,
