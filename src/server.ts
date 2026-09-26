@@ -5,9 +5,14 @@ import {
   connectDatabase,
   disconnectDatabase,
 } from "./database/prisma.js";
+import { notificationService } from "./services/notification/notification.service.js";
+import { websocketService } from "./services/websocket/websocket.service.js";
+import cron, { ScheduledTask } from "node-cron";
 
 let server: ReturnType<typeof app.listen> | undefined;
 let shuttingDown = false;
+let paymentReminderJob: ScheduledTask | undefined;
+let expiryAlertJob: ScheduledTask | undefined;
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) {
@@ -15,6 +20,16 @@ async function shutdown(signal: string): Promise<void> {
   }
   shuttingDown = true;
   logger.info({ signal }, "Shutting down");
+
+  // Stop cron jobs
+  if (paymentReminderJob) {
+    paymentReminderJob.stop();
+    paymentReminderJob = undefined;
+  }
+  if (expiryAlertJob) {
+    expiryAlertJob.stop();
+    expiryAlertJob = undefined;
+  }
 
   if (server) {
     await new Promise<void>((resolve) => {
@@ -26,11 +41,37 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
+function startCronJobs(): void {
+  // Payment reminder job - runs every hour at minute 0
+  paymentReminderJob = cron.schedule("0 * * * *", async () => {
+    if (shuttingDown) return;
+    try {
+      const result = await notificationService.runPaymentReminderScheduler();
+      logger.info({ paymentReminders: result }, "Payment reminder cron job completed");
+    } catch (error) {
+      logger.error({ err: error }, "Payment reminder cron job failed");
+    }
+  });
+
+  // Expiry alert job - runs daily at 6 AM UTC
+  expiryAlertJob = cron.schedule("0 6 * * *", async () => {
+    if (shuttingDown) return;
+    try {
+      const result = await notificationService.runExpiryAlertScheduler();
+      logger.info({ expiryAlerts: result }, "Expiry alert cron job completed");
+    } catch (error) {
+      logger.error({ err: error }, "Expiry alert cron job failed");
+    }
+  });
+
+  logger.info("Cron jobs started: payment reminders (hourly), expiry alerts (daily at 6 AM UTC)");
+}
+
 async function main(): Promise<void> {
   await connectDatabase();
 
   await new Promise<void>((resolve, reject) => {
-    server = app.listen(env.port, env.host, () => {
+    const httpServer = app.listen(env.port, env.host, () => {
       logger.info(
         {
           port: env.port,
@@ -41,9 +82,14 @@ async function main(): Promise<void> {
         },
         "Server started",
       );
+      // Initialize WebSocket server
+      websocketService.initialize(httpServer);
+      // Start cron jobs
+      startCronJobs();
       resolve();
     });
-    server.on("error", reject);
+    server = httpServer;
+    httpServer.on("error", reject);
   });
 }
 

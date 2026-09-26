@@ -1025,6 +1025,26 @@ export const openApiDocument = {
         },
       },
     },
+    "/pos/sales/{id}/payments": {
+      post: {
+        tags: ["Sales"],
+        summary: "Add a payment to an existing completed sale (credit sales)",
+        description:
+          "Records a payment against a completed sale that has an outstanding balance. The payment amount must not exceed the current outstanding balance. Supports CASH, MOBILE_TRANSFER, and CHECK payment methods. The sale's paidAmount and outstandingBalance are updated atomically with concurrency protection.",
+        parameters: [idPathParam],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SaleAddPaymentInput" } } },
+        },
+        responses: {
+          "200": { description: "Payment recorded", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleResponse" } } } },
+          "404": { description: "Sale not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "409": { description: "Sale is not completed or has no outstanding balance", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "422": { description: "Payment amount exceeds outstanding balance", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
     "/financials/reports/sales/trend": {
       get: {
         tags: ["Financial Reports"],
@@ -1193,6 +1213,178 @@ export const openApiDocument = {
         responses: {
           "200": { description: "Evaluation result", content: { "application/json": { schema: { $ref: "#/components/schemas/SlowMovingEvaluationResponse" } } } },
           "409": { description: "Another evaluation is already running", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+
+    // ============================================================================
+    // Dashboard (ADMIN only)
+    // ============================================================================
+    "/dashboard/summary": {
+      get: {
+        tags: ["Dashboard"],
+        summary: "Get operational dashboard metrics",
+        description:
+          "Returns a compact set of operational KPIs across sales, inventory, purchasing, slow-moving, and credit. All queries run in parallel.",
+        responses: {
+          "200": { description: "Dashboard metrics", content: { "application/json": { schema: { $ref: "#/components/schemas/DashboardMetricsResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/dashboard/attention": {
+      get: {
+        tags: ["Dashboard"],
+        summary: "Get attention items for immediate action",
+        description:
+          "Returns small actionable lists (≤5 items per category) so the user can see what needs immediate action without navigating to each module.",
+        responses: {
+          "200": { description: "Attention lists", content: { "application/json": { schema: { $ref: "#/components/schemas/DashboardAttentionResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/dashboard/recent-activity": {
+      get: {
+        tags: ["Dashboard"],
+        summary: "Get recent operational activity",
+        description:
+          "Returns the 10 most recent operational events (sales, goods receipts, purchase orders) merged and sorted newest-first.",
+        responses: {
+          "200": { description: "Recent activity", content: { "application/json": { schema: { $ref: "#/components/schemas/DashboardRecentActivityResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+
+    // ============================================================================
+    // Notifications (user-specific, ADMIN for settings/scheduler)
+    // ============================================================================
+    "/notifications": {
+      get: {
+        tags: ["Notifications"],
+        summary: "List notifications for the current user",
+        description:
+          "Returns paginated notifications with optional filtering by read status and type. Includes unread count.",
+        parameters: [
+          { name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+          { name: "isRead", in: "query", schema: { type: "boolean" }, description: "Filter by read status" },
+          { name: "type", in: "query", schema: { type: "string", enum: ["PAYMENT_APPROACHING_DUE", "PAYMENT_DUE_TODAY", "PAYMENT_OVERDUE", "EXPIRING_WITHIN_1_YEAR", "EXPIRING_WITHIN_6_MONTHS", "PRODUCT_EXPIRED"] } },
+        ],
+        responses: {
+          "200": { description: "Notifications", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationListResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+      patch: {
+        tags: ["Notifications"],
+        summary: "Mark all notifications as read",
+        responses: {
+          "200": { description: "All notifications marked as read", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/notifications/:id/read": {
+      patch: {
+        tags: ["Notifications"],
+        summary: "Mark a notification as read",
+        parameters: [idPathParam],
+        responses: {
+          "200": { description: "Notification marked as read", content: { "application/json": { schema: { $ref: "#/components/schemas/GenericDataResponse" } } } },
+          "404": { description: "Notification not found" },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/notifications/settings": {
+      get: {
+        tags: ["Notifications"],
+        summary: "Get notification settings",
+        description: "Returns the current notification configuration (singleton).",
+        security: [{ authOrigin: [], sessionCookie: [] }],
+        responses: {
+          "200": { description: "Notification settings", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationSettingsResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+      patch: {
+        tags: ["Notifications"],
+        summary: "Update notification settings",
+        description: "Updates the notification configuration. Requires ADMIN role.",
+        security: [{ authOrigin: [], sessionCookie: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/UpdateNotificationSettingsInput" } } },
+        },
+        responses: {
+          "200": { description: "Settings updated", content: { "application/json": { schema: { $ref: "#/components/schemas/NotificationSettingsResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/notifications/run/payment-reminders": {
+      post: {
+        tags: ["Notifications"],
+        summary: "Manually trigger payment reminder scheduler",
+        description: "Runs the payment reminder scheduler immediately. Requires ADMIN role.",
+        security: [{ authOrigin: [], sessionCookie: [] }],
+        responses: {
+          "200": { description: "Scheduler run result", content: { "application/json": { schema: { $ref: "#/components/schemas/SchedulerRunResult" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/notifications/run/expiry-alerts": {
+      post: {
+        tags: ["Notifications"],
+        summary: "Manually trigger expiry alert scheduler",
+        description: "Runs the expiry alert scheduler immediately. Requires ADMIN role.",
+        security: [{ authOrigin: [], sessionCookie: [] }],
+        responses: {
+          "200": { description: "Scheduler run result", content: { "application/json": { schema: { $ref: "#/components/schemas/SchedulerRunResult" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+
+    // ============================================================================
+    // Credit Sales (ADMIN only)
+    // ============================================================================
+    "/financials/credit-sales": {
+      get: {
+        tags: ["Credit Sales"],
+        summary: "List credit sales with filters",
+        description:
+          "Returns paginated credit sales with filtering by customer name, phone, sale number, status, location, and date range.",
+        parameters: [
+          { name: "page", in: "query", schema: { type: "integer", minimum: 1, default: 1 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+          { name: "customerName", in: "query", schema: { type: "string" }, description: "Filter by customer name" },
+          { name: "customerPhone", in: "query", schema: { type: "string" }, description: "Filter by customer phone" },
+          { name: "saleNumber", in: "query", schema: { type: "string" }, description: "Filter by sale number" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["OUTSTANDING", "PARTIALLY_PAID", "PAID", "ALL"] }, description: "Filter by payment status" },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "dateFrom", in: "query", schema: { type: "string", format: "date-time" } },
+          { name: "dateTo", in: "query", schema: { type: "string", format: "date-time" } },
+        ],
+        responses: {
+          "200": { description: "Credit sales list", content: { "application/json": { schema: { $ref: "#/components/schemas/CreditSaleListResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/financials/credit-sales/:id": {
+      get: {
+        tags: ["Credit Sales"],
+        summary: "Get credit sale detail",
+        description: "Returns full credit sale detail including items, payment history, and outstanding balance.",
+        parameters: [idPathParam],
+        responses: {
+          "200": { description: "Credit sale detail", content: { "application/json": { schema: { $ref: "#/components/schemas/CreditSaleDetailResponse" } } } },
+          "404": { description: "Credit sale not found" },
           ...authErrorResponses,
         },
       },
@@ -2677,7 +2869,7 @@ export const openApiDocument = {
             },
             { productId: "product-uuid-2", unitId: "tablet-unit-id", quantity: 5, actualUnitPrice: 1.5 },
           ],
-          payments: [{ method: "CASH", amount: 500 }, { method: "DIGITAL_TRANSFER", amount: 500 }],
+          payments: [{ method: "CASH", amount: 500 }, { method: "MOBILE_TRANSFER", amount: 500 }],
         },
       },
       SaleItemInput: {
@@ -2703,9 +2895,9 @@ export const openApiDocument = {
         type: "object",
         required: ["method", "amount"],
         properties: {
-          method: { type: "string", enum: ["CASH", "CARD", "DIGITAL_TRANSFER"] },
+          method: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
           amount: { type: "number", exclusiveMinimum: 0, example: 500 },
-          reference: { type: "string", maxLength: 200, description: "Card/transfer reference number" },
+          reference: { type: "string", maxLength: 200, description: "Payment reference (check number, transfer ID, etc.)" },
         },
       },
       SaleResponse: {
@@ -2755,7 +2947,7 @@ export const openApiDocument = {
               type: "object",
               properties: {
                 id: { type: "string", format: "uuid" },
-                method: { type: "string", enum: ["CASH", "CARD", "DIGITAL_TRANSFER"] },
+                method: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
                 amount: { type: "number" },
                 reference: { type: "string", nullable: true },
                 createdAt: { type: "string", format: "date-time" },
@@ -2802,6 +2994,15 @@ export const openApiDocument = {
           reason: { type: "string", maxLength: 500, example: "Wrong items scanned" },
         },
       },
+      SaleAddPaymentInput: {
+        type: "object",
+        required: ["method", "amount"],
+        properties: {
+          method: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"], example: "CASH" },
+          amount: { type: "number", format: "decimal", example: 5000, minimum: 0.01 },
+          reference: { type: "string", maxLength: 200, example: "CHQ-12345" },
+        },
+      },
       SalesTrendResponse: {
         type: "object",
         properties: {
@@ -2832,7 +3033,7 @@ export const openApiDocument = {
               totalDiscount: { type: "number" },
               transactionCount: { type: "integer" },
               averageTransaction: { type: "number" },
-              paymentsByMethod: { type: "array", items: { type: "object", properties: { method: { type: "string", enum: ["CASH", "CARD", "DIGITAL_TRANSFER"] }, amount: { type: "number" } } } },
+              paymentsByMethod: { type: "array", items: { type: "object", properties: { method: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] }, amount: { type: "number" } } } },
               topProducts: { type: "array", items: { type: "object", properties: { productId: { type: "string", format: "uuid" }, name: { type: "string" }, sku: { type: "string" }, revenue: { type: "number" }, quantity: { type: "number" } } } },
             },
           },
@@ -2870,7 +3071,7 @@ export const openApiDocument = {
           },
         },
       },
-      SlowMovingEvaluationResponse: {
+SlowMovingEvaluationResponse: {
         type: "object",
         properties: {
           success: { type: "boolean", example: true },
@@ -2887,8 +3088,320 @@ export const openApiDocument = {
           },
         },
       },
+      DashboardMetricsResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              totalProducts: { type: "integer" },
+              totalStock: { type: "number" },
+              lowStock: { type: "integer" },
+              outOfStock: { type: "integer" },
+              nearExpiry: { type: "integer" },
+              expiredBatches: { type: "integer" },
+              criticalExpiry: { type: "integer" },
+              expiringWithin6Months: { type: "integer" },
+              expiringWithin1Year: { type: "integer" },
+            },
+          },
+        },
+      },
+      DashboardAttentionResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              lowStock: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    productId: { type: "string", format: "uuid" },
+                    productName: { type: "string" },
+                    sku: { type: "string" },
+                    availableStock: { type: "number" },
+                    reorderPoint: { type: "number" },
+                    baseUnitName: { type: "string" },
+                  },
+                },
+              },
+              expiringSoon: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    batchId: { type: "string", format: "uuid" },
+                    productId: { type: "string", format: "uuid" },
+                    productName: { type: "string" },
+                    batchNumber: { type: "string" },
+                    expiryDate: { type: "string", format: "date-time" },
+                    remainingQuantity: { type: "number" },
+                    baseUnitName: { type: "string" },
+                  },
+                },
+              },
+              awaitingDelivery: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    purchaseOrderId: { type: "string", format: "uuid" },
+                    poNumber: { type: "string" },
+                    supplierName: { type: "string" },
+                    expectedDeliveryDate: { type: "string", format: "date-time", nullable: true },
+                  },
+                },
+              },
+              outstandingInvoices: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    invoiceId: { type: "string", format: "uuid" },
+                    invoiceNumber: { type: "string" },
+                    supplierName: { type: "string" },
+                    outstandingBalance: { type: "number" },
+                    dueDate: { type: "string", format: "date-time", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      DashboardRecentActivityResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["SALE_COMPLETED", "GOODS_RECEIVED", "PURCHASE_ORDER_CREATED"] },
+                reference: { type: "string" },
+                description: { type: "string" },
+                createdAt: { type: "string", format: "date-time" },
+              },
+            },
+          },
+        },
+      },
+      CreditSaleListItem: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          saleNumber: { type: "string" },
+          customerName: { type: "string", nullable: true },
+          customerPhone: { type: "string", nullable: true },
+          saleDate: { type: "string", format: "date-time" },
+          totalAmount: { type: "number" },
+          paidAmount: { type: "number" },
+          outstandingAmount: { type: "number" },
+          paymentStatus: { type: "string", enum: ["OUTSTANDING", "PARTIALLY_PAID", "PAID"] },
+          location: {
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              name: { type: "string" },
+            },
+          },
+          payments: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                method: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
+                amount: { type: "number" },
+                reference: { type: "string", nullable: true },
+                createdAt: { type: "string", format: "date-time" },
+              },
+            },
+          },
+        },
+      },
+      CreditSaleDetailResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              saleNumber: { type: "string" },
+              customerName: { type: "string", nullable: true },
+              customerPhone: { type: "string", nullable: true },
+              saleDate: { type: "string", format: "date-time" },
+              location: {
+                type: "object",
+                properties: {
+                  id: { type: "string", format: "uuid" },
+                  name: { type: "string" },
+                },
+              },
+              cashier: {
+                type: "object",
+                properties: {
+                  id: { type: "string", format: "uuid" },
+                  name: { type: "string" },
+                  email: { type: "string" },
+                },
+              },
+              totalAmount: { type: "number" },
+              paidAmount: { type: "number" },
+              outstandingAmount: { type: "number" },
+              paymentStatus: { type: "string", enum: ["OUTSTANDING", "PARTIALLY_PAID", "PAID"] },
+              items: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", format: "uuid" },
+                    product: {
+                      type: "object",
+                      properties: {
+                        id: { type: "string", format: "uuid" },
+                        name: { type: "string" },
+                        sku: { type: "string" },
+                        isNarcotic: { type: "boolean" },
+                      },
+                    },
+                    unit: {
+                      type: "object",
+                      properties: {
+                        id: { type: "string", format: "uuid" },
+                        name: { type: "string" },
+                        symbol: { type: "string" },
+                      },
+                    },
+                    quantity: { type: "number" },
+                    baseQuantity: { type: "number" },
+                    lineTotal: { type: "number" },
+                    originalUnitPrice: { type: "number" },
+                    actualUnitPrice: { type: "number" },
+                    conversionFactor: { type: "number" },
+                    batchAllocations: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          batchId: { type: "string", format: "uuid" },
+                          batchNumber: { type: "string" },
+                          expiryDate: { type: "string", format: "date-time" },
+                          baseQuantity: { type: "number" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+              payments: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", format: "uuid" },
+                    method: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
+                    amount: { type: "number" },
+                    reference: { type: "string", nullable: true },
+                    createdAt: { type: "string", format: "date-time" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      CreditSaleListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: { $ref: "#/components/schemas/CreditSaleListItem" },
+          },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+        },
+      },
+      NotificationListItem: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          type: { type: "string", enum: ["PAYMENT_APPROACHING_DUE", "PAYMENT_DUE_TODAY", "PAYMENT_OVERDUE", "EXPIRING_WITHIN_1_YEAR", "EXPIRING_WITHIN_6_MONTHS", "PRODUCT_EXPIRED"] },
+          title: { type: "string" },
+          message: { type: "string" },
+          severity: { type: "string", enum: ["INFO", "WARNING", "CRITICAL"] },
+          entityType: { type: "string", enum: ["SUPPLIER_INVOICE", "INVENTORY_BATCH"] },
+          entityId: { type: "string", format: "uuid" },
+          isRead: { type: "boolean" },
+          readAt: { type: "string", format: "date-time", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+      NotificationListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "array",
+            items: { $ref: "#/components/schemas/NotificationListItem" },
+          },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+          unreadCount: { type: "integer" },
+        },
+      },
+      NotificationSettingsResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              paymentRemindersEnabled: { type: "boolean" },
+              remindBeforeDueDays: { type: "integer" },
+              remindOnDueDate: { type: "boolean" },
+              remindWhenOverdue: { type: "boolean" },
+              expiryAlertsEnabled: { type: "boolean" },
+              alertWithin6Months: { type: "boolean" },
+              alertWithin1Year: { type: "boolean" },
+              createdAt: { type: "string", format: "date-time" },
+              updatedAt: { type: "string", format: "date-time" },
+            },
+          },
+        },
+      },
+      SchedulerRunResult: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              created: { type: "integer" },
+              skipped: { type: "integer" },
+            },
+          },
+        },
+      },
+      UpdateNotificationSettingsInput: {
+        type: "object",
+        properties: {
+          paymentRemindersEnabled: { type: "boolean" },
+          remindBeforeDueDays: { type: "integer", minimum: 1 },
+          remindOnDueDate: { type: "boolean" },
+          remindWhenOverdue: { type: "boolean" },
+          expiryAlertsEnabled: { type: "boolean" },
+          alertWithin6Months: { type: "boolean" },
+          alertWithin1Year: { type: "boolean" },
+        },
+      },
+      },
     },
-  },
   security: [{ sessionCookie: [] }],
 } as const;
 

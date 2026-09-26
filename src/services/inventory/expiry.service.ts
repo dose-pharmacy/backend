@@ -4,16 +4,16 @@ import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.j
 import { startOfTodayUtc, addUtcDays, isExpired } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
 
-export type ExpiryStatus = "EXPIRED" | "CRITICAL" | "EXPIRING_SOON" | "WARNING" | "NORMAL";
+export type ExpiryStatus = "EXPIRED" | "EXPIRING_WITHIN_6_MONTHS" | "EXPIRING_WITHIN_1_YEAR" | "NORMAL";
 
 export type ExpiryDashboardQuery = PageQuery & {
-  thresholds?: string;
   locationId?: string;
   productId?: string;
 };
 
 export type ExpiryWindow = {
   label: string;
+  status: ExpiryStatus;
   daysFrom: number;
   daysTo: number;
   batches: ExpiryBatchItem[];
@@ -68,58 +68,39 @@ export type ExpiryDashboardResult = {
   windows: ExpiryWindow[];
   summary: {
     expired: number;
-    critical: number;
-    expiringSoon: number;
-    warning: number;
+    expiringWithin6Months: number;
+    expiringWithin1Year: number;
     normal: number;
     totalBatches: number;
     totalQuantity: number;
   };
 };
 
-function parseThresholds(value: string | undefined): number[] {
-  if (!value) {
-    return [30, 60, 90];
-  }
-  const parsed = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((s) => Number.parseInt(s, 10))
-    .filter((n) => Number.isFinite(n) && n > 0)
-    .sort((a, b) => a - b);
-  if (parsed.length === 0 || parsed.length > 10) {
-    return [30, 60, 90];
-  }
-  return parsed;
-}
+const SIX_MONTHS_DAYS = 180;
+const ONE_YEAR_DAYS = 365;
 
-function calculateExpiryStatus(expiryDate: Date, thresholds: number[]): ExpiryStatus {
+function calculateExpiryStatus(expiryDate: Date): ExpiryStatus {
   if (isExpired(expiryDate)) {
     return "EXPIRED";
   }
   const today = startOfTodayUtc();
   const daysRemaining = Math.ceil((expiryDate.getTime() - today.getTime()) / 86_400_000);
 
-  if (daysRemaining <= thresholds[0]) {
-    return "CRITICAL";
+  if (daysRemaining <= SIX_MONTHS_DAYS) {
+    return "EXPIRING_WITHIN_6_MONTHS";
   }
-  if (daysRemaining <= thresholds[1]) {
-    return "EXPIRING_SOON";
-  }
-  if (daysRemaining <= thresholds[2]) {
-    return "WARNING";
+  if (daysRemaining <= ONE_YEAR_DAYS) {
+    return "EXPIRING_WITHIN_1_YEAR";
   }
   return "NORMAL";
 }
 
 export const expiryService = {
   async getDashboard(query: ExpiryDashboardQuery): Promise<ExpiryDashboardResult> {
-    const thresholds = parseThresholds(query.thresholds);
-    const maxThreshold = thresholds[thresholds.length - 1] ?? 90;
-    const maxExpiryDate = addUtcDays(startOfTodayUtc(), maxThreshold);
+    const today = startOfTodayUtc();
+    const maxExpiryDate = addUtcDays(today, ONE_YEAR_DAYS);
 
-    // Build where clause for batches
+    // Build where clause for batches - only batches with positive stock
     const where: Prisma.BatchWhereInput = {
       expiryDate: {
         lte: maxExpiryDate,
@@ -161,7 +142,7 @@ export const expiryService = {
       }
       return batch.stock.map((stock) => {
         const quantity = stock.quantity.toNumber();
-        const status = calculateExpiryStatus(batch.expiryDate, thresholds);
+        const status = calculateExpiryStatus(batch.expiryDate);
         const today = startOfTodayUtc();
         const daysRemaining = Math.ceil((batch.expiryDate.getTime() - today.getTime()) / 86_400_000);
 
@@ -186,43 +167,51 @@ export const expiryService = {
       });
     });
 
-    // Group into windows
-    const windows: ExpiryWindow[] = [];
-    let prevThreshold = 0;
-    for (let i = 0; i < thresholds.length; i++) {
-      const threshold = thresholds[i];
-      const windowItems = items.filter(
-        (item) => item.daysRemaining > prevThreshold && item.daysRemaining <= threshold,
-      );
-      const label = i === 0 ? `0-${threshold} days` : `${prevThreshold + 1}-${threshold} days`;
-      windows.push({
-        label,
-        daysFrom: prevThreshold + (i === 0 ? 0 : 1),
-        daysTo: threshold,
-        batches: windowItems,
-        totalQuantity: windowItems.reduce((sum, item) => sum + item.stock.quantity, 0),
-        batchCount: windowItems.length,
-      });
-      prevThreshold = threshold;
-    }
-
-    // Add expired window
-    const expiredItems = items.filter((item) => item.daysRemaining < 0);
-    windows.unshift({
-      label: "Expired",
-      daysFrom: -Infinity,
-      daysTo: -1,
-      batches: expiredItems,
-      totalQuantity: expiredItems.reduce((sum, item) => sum + item.stock.quantity, 0),
-      batchCount: expiredItems.length,
-    });
+    // Group into windows based on new business model
+    const windows: ExpiryWindow[] = [
+      {
+        label: "Expired",
+        status: "EXPIRED",
+        daysFrom: -Infinity,
+        daysTo: -1,
+        batches: items.filter((item) => item.status === "EXPIRED"),
+        totalQuantity: items.filter((item) => item.status === "EXPIRED").reduce((sum, item) => sum + item.stock.quantity, 0),
+        batchCount: items.filter((item) => item.status === "EXPIRED").length,
+      },
+      {
+        label: "Expiring Within 6 Months",
+        status: "EXPIRING_WITHIN_6_MONTHS",
+        daysFrom: 0,
+        daysTo: SIX_MONTHS_DAYS,
+        batches: items.filter((item) => item.status === "EXPIRING_WITHIN_6_MONTHS"),
+        totalQuantity: items.filter((item) => item.status === "EXPIRING_WITHIN_6_MONTHS").reduce((sum, item) => sum + item.stock.quantity, 0),
+        batchCount: items.filter((item) => item.status === "EXPIRING_WITHIN_6_MONTHS").length,
+      },
+      {
+        label: "Expiring Within 1 Year",
+        status: "EXPIRING_WITHIN_1_YEAR",
+        daysFrom: SIX_MONTHS_DAYS + 1,
+        daysTo: ONE_YEAR_DAYS,
+        batches: items.filter((item) => item.status === "EXPIRING_WITHIN_1_YEAR"),
+        totalQuantity: items.filter((item) => item.status === "EXPIRING_WITHIN_1_YEAR").reduce((sum, item) => sum + item.stock.quantity, 0),
+        batchCount: items.filter((item) => item.status === "EXPIRING_WITHIN_1_YEAR").length,
+      },
+      {
+        label: "Normal (Beyond 1 Year)",
+        status: "NORMAL",
+        daysFrom: ONE_YEAR_DAYS + 1,
+        daysTo: Infinity,
+        batches: items.filter((item) => item.status === "NORMAL"),
+        totalQuantity: items.filter((item) => item.status === "NORMAL").reduce((sum, item) => sum + item.stock.quantity, 0),
+        batchCount: items.filter((item) => item.status === "NORMAL").length,
+      },
+    ];
 
     // Calculate summary
     const summary = {
-      expired: items.filter((i) => i.daysRemaining < 0).length,
-      critical: items.filter((i) => i.status === "CRITICAL").length,
-      expiringSoon: items.filter((i) => i.status === "EXPIRING_SOON").length,
-      warning: items.filter((i) => i.status === "WARNING").length,
+      expired: items.filter((i) => i.status === "EXPIRED").length,
+      expiringWithin6Months: items.filter((i) => i.status === "EXPIRING_WITHIN_6_MONTHS").length,
+      expiringWithin1Year: items.filter((i) => i.status === "EXPIRING_WITHIN_1_YEAR").length,
       normal: items.filter((i) => i.status === "NORMAL").length,
       totalBatches: items.length,
       totalQuantity: items.reduce((sum, item) => sum + item.stock.quantity, 0),
@@ -234,9 +223,6 @@ export const expiryService = {
   async getBatchesByWindow(
     query: ExpiryDashboardQuery & { windowStart: number; windowEnd: number },
   ) {
-    const thresholds = parseThresholds(query.thresholds);
-    const { page, limit, skip, take } = resolvePagination(query);
-
     const today = startOfTodayUtc();
     const startDate = addUtcDays(today, query.windowStart);
     const endDate = addUtcDays(today, query.windowEnd);
@@ -251,6 +237,8 @@ export const expiryService = {
       },
       ...(query.productId ? { productId: query.productId } : {}),
     };
+
+    const { page, limit, skip, take } = resolvePagination(query);
 
     const [batches, total] = await prisma.$transaction([
       prisma.batch.findMany({
@@ -287,7 +275,7 @@ export const expiryService = {
       }
       return batch.stock.map((stock) => {
         const quantity = stock.quantity.toNumber();
-        const status = calculateExpiryStatus(batch.expiryDate, thresholds);
+        const status = calculateExpiryStatus(batch.expiryDate);
         const daysRemaining = Math.ceil((batch.expiryDate.getTime() - today.getTime()) / 86_400_000);
 
         return {

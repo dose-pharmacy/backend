@@ -2,28 +2,11 @@ import { prisma } from "../../database/prisma.js";
 import { startOfTodayUtc, addUtcDays } from "../../utils/date-time.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
-const DEFAULT_THRESHOLDS = [30, 60, 90];
-
-function parseThresholds(value: string | undefined): number[] {
-  if (!value) {
-    return DEFAULT_THRESHOLDS;
-  }
-  const parsed = value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((s) => Number.parseInt(s, 10))
-    .filter((n) => Number.isFinite(n) && n > 0)
-    .sort((a, b) => a - b);
-  if (parsed.length === 0 || parsed.length > 10) {
-    return DEFAULT_THRESHOLDS;
-  }
-  return parsed;
-}
+const SIX_MONTHS_DAYS = 180;
+const ONE_YEAR_DAYS = 365;
 
 export async function getDashboardMetrics(
-  user: AuthenticatedUser,
-  thresholds?: string,
+  _user: AuthenticatedUser,
 ): Promise<{
   totalProducts: number;
   totalStock: number;
@@ -32,22 +15,24 @@ export async function getDashboardMetrics(
   nearExpiry: number;
   expiredBatches: number;
   criticalExpiry: number;
+  expiringWithin6Months: number;
+  expiringWithin1Year: number;
 }> {
   // For now, single-tenant: no business scope filtering needed
   // When business scope is added, filter by businessId
 
-  const thresholdDays = parseThresholds(thresholds);
-  const maxThreshold = thresholdDays[thresholdDays.length - 1] ?? 90;
-  const maxExpiryDate = addUtcDays(startOfTodayUtc(), maxThreshold);
+  const today = startOfTodayUtc();
+  const sixMonthsDate = addUtcDays(today, SIX_MONTHS_DAYS);
+  const oneYearDate = addUtcDays(today, ONE_YEAR_DAYS);
 
   const [
     totalProducts,
     totalStockAgg,
     lowStockCount,
     outOfStockCount,
-    nearExpiryCount,
     expiredBatchesCount,
-    criticalExpiryCount,
+    expiringWithin6MonthsCount,
+    expiringWithin1YearCount,
   ] = await Promise.all([
     // Total active products
     prisma.product.count({
@@ -76,35 +61,35 @@ export async function getDashboardMetrics(
         WHERE s."productId" = p.id AND s.quantity > 0
       )
     `.then((rows) => Number(rows[0]?.count ?? 0)),
-    // Near expiry batches (within max threshold, not expired, has stock)
-    prisma.batch.count({
-      where: {
-        expiryDate: {
-          gte: startOfTodayUtc(),
-          lte: maxExpiryDate,
-        },
-        stock: {
-          some: { quantity: { gt: 0 } },
-        },
-      },
-    }),
     // Expired batches with stock
     prisma.batch.count({
       where: {
         expiryDate: {
-          lt: startOfTodayUtc(),
+          lt: today,
         },
         stock: {
           some: { quantity: { gt: 0 } },
         },
       },
     }),
-    // Critical expiry batches (within first threshold, e.g., 30 days)
+    // Expiring within 6 months (has stock, not expired)
     prisma.batch.count({
       where: {
         expiryDate: {
-          gte: startOfTodayUtc(),
-          lte: addUtcDays(startOfTodayUtc(), thresholdDays[0] ?? 30),
+          gte: today,
+          lte: sixMonthsDate,
+        },
+        stock: {
+          some: { quantity: { gt: 0 } },
+        },
+      },
+    }),
+    // Expiring within 1 year (has stock, not expired, beyond 6 months)
+    prisma.batch.count({
+      where: {
+        expiryDate: {
+          gte: sixMonthsDate,
+          lte: oneYearDate,
         },
         stock: {
           some: { quantity: { gt: 0 } },
@@ -118,8 +103,10 @@ export async function getDashboardMetrics(
     totalStock: totalStockAgg._sum.quantity?.toNumber() ?? 0,
     lowStock: lowStockCount,
     outOfStock: outOfStockCount,
-    nearExpiry: nearExpiryCount,
+    nearExpiry: expiringWithin6MonthsCount, // For backward compatibility
     expiredBatches: expiredBatchesCount,
-    criticalExpiry: criticalExpiryCount,
+    criticalExpiry: expiringWithin6MonthsCount, // For backward compatibility
+    expiringWithin6Months: expiringWithin6MonthsCount,
+    expiringWithin1Year: expiringWithin1YearCount,
   };
 }

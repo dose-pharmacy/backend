@@ -201,8 +201,8 @@ enum SaleStatus {
 
 enum PaymentMethod {
   CASH
-  CARD
-  DIGITAL_TRANSFER
+  MOBILE_TRANSFER
+  CHECK
 }
 
 enum DiscountType {

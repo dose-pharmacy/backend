@@ -13,7 +13,6 @@ export const expiryController = {
     const input: ExpiryDashboardQuery = {
       page: query.page ? Number(query.page) : undefined,
       limit: query.limit ? Number(query.limit) : undefined,
-      thresholds: query.thresholds,
       locationId: query.locationId,
       productId: query.productId,
     };
@@ -26,11 +25,10 @@ export const expiryController = {
     const input: ExpiryDashboardQuery & { windowStart: number; windowEnd: number } = {
       page: query.page ? Number(query.page) : undefined,
       limit: query.limit ? Number(query.limit) : undefined,
-      thresholds: query.thresholds,
       locationId: query.locationId,
       productId: query.productId,
       windowStart: query.windowStart ? Number(query.windowStart) : 0,
-      windowEnd: query.windowEnd ? Number(query.windowEnd) : 30,
+      windowEnd: query.windowEnd ? Number(query.windowEnd) : 180,
     };
     const { items, meta } = await expiryService.getBatchesByWindow(input);
     sendSuccess(res, items, { meta });
