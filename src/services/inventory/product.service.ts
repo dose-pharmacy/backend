@@ -279,6 +279,20 @@ export const productService = {
           },
         });
 
+      const reorderPoint = toOptionalDecimal(input.reorderPoint);
+
+        await tx.reorderConfiguration.create({
+          data: {
+            productId: created.id,
+            minimumStockLevel: toOptionalDecimal(input.minimumStock) ?? toDecimal(0),
+            reorderPoint: toOptionalDecimal(input.reorderPoint) ?? toDecimal(0),
+            leadTimeDays: 0,
+            reorderQuantity: 0,
+            useSalesVelocity: false,
+            bufferPercentage: 0,
+          },
+        });
+
         if (validatedUnits) {
           await tx.productUnit.createMany({
             data: validatedUnits.map((unitConfig) => ({
@@ -374,11 +388,30 @@ export const productService = {
             imageUrl: input.imageUrl,
             minimumStock:
               input.minimumStock !== undefined ? toDecimal(input.minimumStock) : undefined,
-            reorderPoint: toOptionalDecimal(input.reorderPoint),
+            reorderPoint: toOptionalDecimal(input.reorderPoint) ?? toDecimal(0),
             isActive: input.isActive,
             isNarcotic: input.isNarcotic,
           },
         });
+
+        if (input.minimumStock !== undefined || input.reorderPoint !== undefined) {
+          await tx.reorderConfiguration.upsert({
+            where: { productId: id },
+            create: {
+              productId: id,
+              minimumStockLevel: toOptionalDecimal(input.minimumStock) ?? toDecimal(0),
+              reorderPoint: toOptionalDecimal(input.reorderPoint) ?? toDecimal(0),
+              leadTimeDays: 0,
+              reorderQuantity: 0,
+              useSalesVelocity: false,
+              bufferPercentage: 0,
+            },
+            update: {
+              minimumStockLevel: toOptionalDecimal(input.minimumStock) ?? toDecimal(0),
+              reorderPoint: toOptionalDecimal(input.reorderPoint) ?? toDecimal(0),
+            },
+          });
+        }
 
         if (validatedUnits) {
           const existingConfigs = await tx.productUnit.findMany({
