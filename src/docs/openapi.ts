@@ -4209,6 +4209,52 @@ SlowMovingEvaluationResponse: {
           items: { type: "array", items: { $ref: "#/components/schemas/PurchaseOrderItem" } },
           createdAt: { type: "string", format: "date-time" },
           updatedAt: { type: "string", format: "date-time" },
+          receivingSummary: {
+            type: "object",
+            description: "Aggregate receiving quantities across all PO items.",
+            properties: {
+              orderedQuantity: { type: "number", description: "Total quantity ordered" },
+              receivedQuantity: { type: "number", description: "Total quantity received" },
+              shortQuantity: { type: "number", description: "Total quantity accepted as short" },
+              remainingQuantity: { type: "number", description: "Quantity still to be received" },
+            },
+          },
+          goodsSummary: {
+            type: "object",
+            description: "Monetary summary of goods ordered, received, and invoiced.",
+            properties: {
+              orderedGoodsValue: { type: "number", description: "SUM(quantityOrdered × unitCost)" },
+              receivedGoodsValue: { type: "number", description: "SUM(quantityReceived × unitCost)" },
+              goodsInvoicedAmount: { type: "number", description: "Total goods value billed on supplier invoices" },
+              remainingGoodsToInvoice: { type: "number", description: "receivedGoodsValue − goodsInvoicedAmount (floored at 0)" },
+            },
+          },
+          paymentSummary: {
+            type: "object",
+            description: "Payment status derived from all supplier invoices linked to this PO.",
+            properties: {
+              status: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID"] },
+              invoiceCount: { type: "integer", description: "Number of supplier invoices for this PO" },
+              invoicedAmount: { type: "number", description: "Total amount billed across all invoices" },
+              paidAmount: { type: "number", description: "Amount already paid (invoicedAmount − outstandingAmount)" },
+              outstandingAmount: { type: "number", description: "Amount still owed across all invoices" },
+            },
+          },
+          supplierInvoices: {
+            type: "array",
+            description: "Supplier invoices linked to this PO (detail endpoint only).",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                invoiceNumber: { type: "string" },
+                status: { type: "string" },
+                totalAmount: { type: "number" },
+                goodsAmount: { type: "number" },
+                outstandingBalance: { type: "number" },
+              },
+            },
+          },
         },
       },
       PurchaseOrderResponse: {

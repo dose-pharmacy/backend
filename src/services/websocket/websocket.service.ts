@@ -12,19 +12,19 @@ interface AuthenticatedWebSocket extends WebSocket {
 
 interface NotificationMessage {
   type: "notification.created" | "notification.read" | "notification.all_read";
-  notification: 
-    | {
-        id: string;
-        type: string;
-        title: string;
-        message: string;
-        severity: string;
-        entityType: string;
-        entityId: string;
-        createdAt: string;
-      }
-    | { id: string }
-    | Record<string, unknown>;
+  notification:
+  | {
+    id: string;
+    type: string;
+    title: string;
+    message: string;
+    severity: string;
+    entityType: string;
+    entityId: string;
+    createdAt: string;
+  }
+  | { id: string }
+  | Record<string, unknown>;
 }
 
 const connectedClients = new Map<string, AuthenticatedWebSocket[]>();
@@ -37,13 +37,35 @@ async function validateSessionCookie(sessionCookie: string | undefined): Promise
     const cookieParts = sessionCookie.split(";");
     let sessionToken: string | null = null;
     for (const part of cookieParts) {
-      const [key, value] = part.trim().split("=");
-      if (key === "better-auth.session_token") {
-        sessionToken = value;
+      // const [key, value] = part.trim().split("=");
+      // if (key === "better-auth.session_token" || key === "__Secure-better-auth.session_token") {
+      //   sessionToken = value;
+      //   break;
+      // }
+      const separatorIndex = part.indexOf("=");
+
+      if (separatorIndex === -1) continue;
+
+      const key = part.slice(0, separatorIndex).trim();
+      const value = part.slice(separatorIndex + 1).trim();
+
+      if (
+        key === "better-auth.session_token" ||
+        key === "__Secure-better-auth.session_token"
+      ) {
+        const decodedValue = decodeURIComponent(value);
+
+        sessionToken = decodedValue.split(".")[0];
+
         break;
       }
     }
+
+    console.log("Session cookie received:", sessionCookie);
+
     if (!sessionToken) return null;
+
+    console.log("Session token extracted from cookie:", sessionToken);
 
     // Find session in database
     const session = await prisma.session.findUnique({
@@ -65,7 +87,7 @@ async function authenticateWebSocket(ws: AuthenticatedWebSocket, request: Incomi
   try {
     const sessionCookie = request.headers.cookie;
     const authResult = await validateSessionCookie(sessionCookie);
-    
+
     if (!authResult) {
       logger.warn({ ip: request.socket.remoteAddress }, "WebSocket connection attempt without valid session");
       return false;
