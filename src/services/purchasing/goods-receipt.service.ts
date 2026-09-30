@@ -11,6 +11,10 @@ import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 import type { DbClient } from "./requirement.service.js";
 import { recomputeRequirementStatus } from "./requirement.service.js";
+import {
+  calculatePurchaseOrderStatus,
+  remainingQuantityFor,
+} from "./purchase-order.service.js";
 
 export type CreateGRInput = {
   purchaseOrderId: string;
@@ -176,8 +180,26 @@ export const goodsReceiptService = {
     const db = externalTx ?? prisma;
     const po = await assertPOExistsAndValid(input.purchaseOrderId, db);
 
+    // A receipt represents an actual delivery: it must contain at least one
+    // line. (The HTTP layer already enforces the non-empty array; this keeps
+    // direct service callers honest too.)
+    if (input.items.length === 0) {
+      throw new AppError(
+        422,
+        ErrorCode.VALIDATION_ERROR,
+        "A goods receipt must contain at least one item",
+      );
+    }
+
     // Validate each item
     const validatedItems = [];
+    // Aggregate the accepted quantity per PO item so several lines (multi-batch
+    // deliveries) for the same item can never together exceed its remaining
+    // quantity.
+    const acceptedByItem = new Map<
+      string,
+      { remaining: number; accepted: number; poItemId: string }
+    >();
     for (const item of input.items) {
       // Check PO item belongs to PO
       const poItem = await assertPOItemBelongsToPO(item.purchaseOrderItemId, input.purchaseOrderId, db);
@@ -188,10 +210,7 @@ export const goodsReceiptService = {
       // Remaining quantity on the PO item. Accepted shortages reduce the
       // outstanding expectation: they are already reconciled against the order.
       // This is the hard cap for what may be received on the item.
-      const remainingQty =
-        Number(poItem.quantityOrdered) -
-        Number(poItem.quantityReceived) -
-        Number(poItem.quantityShort);
+      const remainingQty = remainingQuantityFor(poItem);
 
       // Validate quantities. A GR item may represent a fully short delivery
       // (actualQty = 0, deliveredQty = 0) so both quantities are >= 0.
@@ -231,6 +250,14 @@ export const goodsReceiptService = {
         assertExpiryValid(item.expiryDate);
       }
 
+      const agg = acceptedByItem.get(poItem.id) ?? {
+        remaining: remainingQty,
+        accepted: 0,
+        poItemId: poItem.id,
+      };
+      agg.accepted += item.actualQty;
+      acceptedByItem.set(poItem.id, agg);
+
       validatedItems.push({
         ...item,
         // The expected/documented quantity for this line. Defaults to the PO
@@ -240,6 +267,33 @@ export const goodsReceiptService = {
         expectedQty: item.expectedQty ?? remainingQty,
         poItem,
       });
+    }
+
+    // Cross-line cap: the sum of all lines (batches) for one PO item must never
+    // exceed that item's remaining quantity.
+    for (const agg of acceptedByItem.values()) {
+      if (agg.accepted > agg.remaining) {
+        throw new AppError(
+          422,
+          ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
+          "Actual quantity exceeds the remaining quantity on the purchase order item",
+          {
+            purchaseOrderItemId: agg.poItemId,
+            remainingQuantity: agg.remaining,
+            requestedQuantity: agg.accepted,
+          },
+        );
+      }
+    }
+
+    // At least one line must actually receive stock; an all-zero receipt is not
+    // a delivery.
+    if (!validatedItems.some((item) => item.actualQty > 0)) {
+      throw new AppError(
+        422,
+        ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
+        "A goods receipt must receive at least one item with a quantity greater than zero",
+      );
     }
 
     // Compute status
@@ -495,6 +549,50 @@ export const goodsReceiptService = {
 
         const supplierId = receipt.purchaseOrder.supplierId;
 
+        // Lock every PO item this receipt touches (sorted to avoid deadlocks) so
+        // two receipts — or a receipt and a shortage accept — cannot both
+        // consume the same remaining quantity.
+        const poItemIds = [...new Set(receipt.items.map((i) => i.purchaseOrderItemId))].sort();
+        if (poItemIds.length > 0) {
+          await tx.$queryRaw`SELECT id FROM "purchase_order_item" WHERE id IN (${Prisma.join(poItemIds)}) ORDER BY id FOR UPDATE`;
+        }
+
+        // Re-validate against the CURRENT (now locked) remaining quantity. The
+        // create step validated a snapshot; another receipt may have been
+        // confirmed in between, so the database is the authority here.
+        const currentItems = poItemIds.length
+          ? await tx.purchaseOrderItem.findMany({
+              where: { id: { in: poItemIds } },
+              select: { id: true, quantityOrdered: true, quantityReceived: true, quantityShort: true },
+            })
+          : [];
+        const remainingById = new Map(
+          currentItems.map((i) => [i.id, remainingQuantityFor(i)]),
+        );
+        const requestedByItem = new Map<string, number>();
+        for (const item of receipt.items) {
+          if (item.actualQty.lte(0)) continue;
+          requestedByItem.set(
+            item.purchaseOrderItemId,
+            (requestedByItem.get(item.purchaseOrderItemId) ?? 0) + item.actualQty.toNumber(),
+          );
+        }
+        for (const [poItemId, requested] of requestedByItem) {
+          const remaining = remainingById.get(poItemId) ?? 0;
+          if (requested > remaining) {
+            throw new AppError(
+              422,
+              ErrorCode.GR_ITEM_QUANTITY_MISMATCH,
+              "Receipt quantity exceeds the remaining quantity on the purchase order item",
+              {
+                purchaseOrderItemId: poItemId,
+                remainingQuantity: remaining,
+                requestedQuantity: requested,
+              },
+            );
+          }
+        }
+
         // Track requirement lines that receive goods so we can recompute
         // requirement status after the items loop (below).
         const affectedRequirementIds = new Set<string>();
@@ -585,21 +683,10 @@ export const goodsReceiptService = {
           }
         }
 
-        // PO status: RECEIVED once every item is fully accounted for
-        // (received + accepted short >= ordered); otherwise AWAITING_DELIVERY.
-        const poItems = await tx.purchaseOrderItem.findMany({
-          where: { purchaseOrderId: receipt.purchaseOrderId },
-          select: { id: true, quantityOrdered: true, quantityReceived: true, quantityShort: true },
-        });
-        const allAccountedFor = poItems.every(
-          (i) => i.quantityReceived.plus(i.quantityShort).gte(i.quantityOrdered),
-        );
-        await tx.purchaseOrder.update({
-          where: { id: receipt.purchaseOrderId },
-          data: {
-            status: allAccountedFor ? PurchaseOrderStatus.RECEIVED : PurchaseOrderStatus.AWAITING_DELIVERY,
-          },
-        });
+        // Recalculate the PO status from ALL items through the single shared
+        // helper: RECEIVED only when nothing remains on any item, otherwise
+        // PARTIALLY_RECEIVED / AWAITING_DELIVERY.
+        await calculatePurchaseOrderStatus(receipt.purchaseOrderId, tx);
 
         // Recompute requirement status for every line that received goods.
         // This is the trigger that turns a requirement from OPEN/PARTIALLY_FULFILLED

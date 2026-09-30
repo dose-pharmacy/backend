@@ -123,7 +123,12 @@ enum PurchaseRequirementReason {
 }
 
 enum PurchaseOrderStatus {
+  // Nothing received yet (or nothing ordered has been touched).
   AWAITING_DELIVERY
+  // At least one item has receiving/shortage progress but something is still
+  // outstanding. Derived from item quantities, never set by a single receipt.
+  PARTIALLY_RECEIVED
+  // Every item is fully received or formally resolved as accepted shortage.
   RECEIVED
   CLOSED
   CANCELLED

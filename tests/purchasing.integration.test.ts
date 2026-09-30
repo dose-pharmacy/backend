@@ -30,7 +30,7 @@ describe("purchasing: requirement -> purchase order allocation", () => {
   let supplierA: string;
   let supplierB: string;
   let supplierC: string;
-  const requirementIds: string[] = [];
+  let requirementIds: string[] = [];
 
   beforeAll(async () => {
     const suffix = uniqueSuffix();

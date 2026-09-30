@@ -143,7 +143,7 @@ describe("invoice-assisted receiving", () => {
     expect(await prisma.goodsReceipt.count({ where: { purchaseOrderId: po.id } })).toBe(0);
   });
 
-  itDb("receives a partial delivery and keeps the PO awaiting delivery", async () => {
+  itDb("receives a partial delivery and marks the PO partially received", async () => {
     const po = await createPO(100);
     const poItemId = po.items[0]!.id;
 
@@ -156,7 +156,7 @@ describe("invoice-assisted receiving", () => {
     expect(result.goodsReceipt!.status).toBe("MATCHED");
     expect(Number(result.supplierInvoice.totalAmount)).toBe(600);
     expect(Number(result.supplierInvoice.invoiceAmount)).toBe(600);
-    expect(result.purchaseOrder.status).toBe("AWAITING_DELIVERY");
+    expect(result.purchaseOrder.status).toBe("PARTIALLY_RECEIVED");
 
     const item = await prisma.purchaseOrderItem.findUnique({ where: { id: poItemId } });
     expect(Number(item!.quantityReceived)).toBe(60);
@@ -273,7 +273,8 @@ describe("invoice-assisted receiving", () => {
 
     expect(Number(result.supplierInvoice.totalAmount)).toBe(1000);
     expect(Number(result.supplierInvoice.goodsAmount)).toBe(900);
-    expect(result.purchaseOrder.status).toBe("AWAITING_DELIVERY");
+    // 90 of 100 received, 10 still outstanding -> partially received (not a shortage).
+    expect(result.purchaseOrder.status).toBe("PARTIALLY_RECEIVED");
   });
 
   itDb("rejects a duplicate supplier invoice number", async () => {

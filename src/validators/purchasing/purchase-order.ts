@@ -1,8 +1,20 @@
 import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema, decimalNumber } from "../inventory/common.js";
 
-const poStatusEnum = z.enum(["AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"]);
+const poStatusEnum = z.enum([
+  "AWAITING_DELIVERY",
+  "PARTIALLY_RECEIVED",
+  "RECEIVED",
+  "CLOSED",
+  "CANCELLED",
+]);
 const poPaymentStatusEnum = z.enum(["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID", "ALL"]);
+
+/** `true`/`false` query flag parsed to a real boolean (not JS truthiness). */
+const booleanQueryParam = z
+  .enum(["true", "false"])
+  .optional()
+  .transform((value) => (value === undefined ? undefined : value === "true"));
 
 const positiveMoneySchema = decimalNumber({
   minInclusive: 0.01,
@@ -63,11 +75,22 @@ export const purchaseOrderListQuerySchema = z
     status: poStatusEnum.optional(),
     paymentStatus: poPaymentStatusEnum.optional(),
     search: z.string().trim().max(200).optional(),
+    // Only orders that still have at least one item with remaining quantity.
+    receivable: booleanQueryParam,
+    // Include item detail (product/unit/quantities) on list rows. Implied by
+    // `receivable=true`.
+    includeItems: booleanQueryParam,
   })
   .merge(paginationQuerySchema);
 
 export const purchaseOrderParamsSchema = z.object({
   id: uuidSchema,
+});
+
+// Detail endpoint options: `receivableItems=true` returns only items that
+// still have quantity to receive (the receiving workspace view).
+export const purchaseOrderDetailQuerySchema = z.object({
+  receivableItems: booleanQueryParam,
 });
 
 export const purchaseOrderItemParamsSchema = z.object({

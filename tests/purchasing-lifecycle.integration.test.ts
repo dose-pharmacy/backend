@@ -281,14 +281,14 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
     });
   });
 
-  it("Test 2: partial delivery -> AWAITING_DELIVERY with remaining", async () => {
+  it("Test 2: partial delivery -> PARTIALLY_RECEIVED with remaining", async () => {
     const { poId, itemId } = await createPo(supplierA, 50);
     const receipt = await createReceipt(poId, itemId, 30).expect(201);
     await resolveReceipt(receipt.body.data.id);
     await confirmReceipt(receipt.body.data.id).expect(200);
 
     const po = await getPo(poId);
-    expect(po.status).toBe("AWAITING_DELIVERY");
+    expect(po.status).toBe("PARTIALLY_RECEIVED");
     expect(po.receivingSummary).toMatchObject({
       orderedQuantity: 50,
       receivedQuantity: 30,
@@ -605,7 +605,8 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
     expect((await stockForProduct()) - before).toBe(40);
 
     const po = await getPo(poId);
-    expect(po.status).toBe("AWAITING_DELIVERY");
+    // Partial delivery (40 of 100) leaves the order receivable.
+    expect(po.status).toBe("PARTIALLY_RECEIVED");
   });
 
   it("Test 16: concurrent payments can never exceed the invoice amount", async () => {

@@ -1694,11 +1694,20 @@ export const openApiDocument = {
     "/purchasing/purchase-orders": {
       get: {
         tags: ["Purchasing"],
-        summary: "List purchase orders",
+        summary: "List purchase orders (supplier -> receivable PO selection)",
+        description:
+          "Filter by supplier to list the purchase orders a supplier can still deliver against. " +
+          "`receivable=true` returns only orders that have at least one item with `quantityRemaining > 0` " +
+          "(ordered - received - accepted short), which includes both AWAITING_DELIVERY and PARTIALLY_RECEIVED " +
+          "orders and excludes fully received ones. The item-quantity condition is the source of truth, not the " +
+          "summary status. `receivable=true` also implies `includeItems=true` so each row carries product names, " +
+          "ordered/received/remaining quantities. Pagination and the other filters apply as usual.",
         parameters: [
           { name: "supplierId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by supplier" },
-          { name: "status", in: "query", schema: { type: "string", enum: ["AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"] }, description: "Filter by order status" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["AWAITING_DELIVERY", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"] }, description: "Filter by order status" },
           { name: "paymentStatus", in: "query", schema: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID", "ALL"] }, description: "Filter by payment status" },
+          { name: "receivable", in: "query", schema: { type: "boolean" }, description: "Only orders with at least one item still to receive (includes PARTIALLY_RECEIVED, excludes fully received)" },
+          { name: "includeItems", in: "query", schema: { type: "boolean" }, description: "Include item detail (product, unit, ordered/received/remaining quantities) on each order. Implied by receivable=true" },
           searchQueryParam,
           pageQueryParam,
           limitQueryParam,
@@ -1739,8 +1748,16 @@ export const openApiDocument = {
     "/purchasing/purchase-orders/{id}": {
       get: {
         tags: ["Purchasing"],
-        summary: "Get purchase order",
-        parameters: [idPathParam],
+        summary: "Get purchase order (optionally only its receivable items)",
+        description:
+          "Returns the PO with all items (each carrying quantityOrdered, quantityReceived, " +
+          "quantityPreviouslyReceived and quantityRemaining). With `receivableItems=true` the response is the " +
+          "receiving workspace: `items` contains ONLY items with `quantityRemaining > 0`, so already-complete " +
+          "items are never offered for receiving. The backend still revalidates every submitted quantity.",
+        parameters: [
+          idPathParam,
+          { name: "receivableItems", in: "query", schema: { type: "boolean" }, description: "Return only items that still have quantity to receive" },
+        ],
         responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       },
       patch: {
@@ -1793,7 +1810,17 @@ export const openApiDocument = {
     "/purchasing/purchase-orders/{id}/goods-receipts": {
       post: {
         tags: ["Purchasing"],
-        summary: "Create goods receipt for purchase order",
+        summary: "Create goods receipt for purchase order (manual receiving)",
+        description:
+          "Records one physical delivery against a purchase order. `items` must contain between 1 and N lines " +
+          "(non-empty). Each line has `purchaseOrderItemId`, `locationId`, `deliveredQty` (documented) and " +
+          "`actualQty` (physically received); both must be > 0. For each PO item, the SUM of `actualQty` across " +
+          "all lines (batches) must be <= that item's remaining quantity " +
+          "(quantityOrdered - quantityReceived - quantityShort) — over-receiving is rejected, never silently " +
+          "capped, and an already-complete item (remaining = 0) cannot be received. `batchNumber` and `expiryDate` " +
+          "are required whenever `actualQty > 0`; several lines may target the same PO item with different batches. " +
+          "Creating a receipt validates and persists the draft; confirming it atomically writes the batches, stock " +
+          "transactions, cumulative PO item quantities, requirement fulfillment and the recalculated PO status.",
         parameters: [idPathParam],
         requestBody: jsonBody("GoodsReceiptCreateInput"),
         responses: { "201": okRef("GoodsReceiptResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
@@ -4236,9 +4263,31 @@ SlowMovingEvaluationResponse: {
           id: { type: "string", format: "uuid" },
           purchaseOrderId: { type: "string", format: "uuid" },
           productId: { type: "string", format: "uuid" },
-          quantityOrdered: { type: "number" },
-          quantityReceived: { type: "number" },
-          quantityShort: { type: "number" },
+          product: {
+            type: "object",
+            description: "Product the item was ordered for (present on list/detail responses).",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              name: { type: "string", example: "Paracetamol 500mg" },
+              sku: { type: "string", example: "PARA-500" },
+            },
+          },
+          unit: {
+            type: "object",
+            nullable: true,
+            description: "Unit the quantities are expressed in (null = legacy base-unit item).",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              name: { type: "string" },
+              symbol: { type: "string", nullable: true },
+            },
+          },
+          quantityOrdered: { type: "number", description: "Ordered quantity (in the item's unit)" },
+          quantityReceived: { type: "number", description: "Physical quantity received so far (historical, never rewritten by a shortage)" },
+          quantityPreviouslyReceived: { type: "number", description: "Alias of quantityReceived for the receiving UI" },
+          quantityRemaining: { type: "number", description: "quantityOrdered - quantityReceived - quantityShort (never negative)" },
+          quantityShort: { type: "number", description: "Quantity formally accepted as short and no longer expected" },
+          shortReason: { type: "string", nullable: true },
           unitCost: { type: "number" },
           requirementLineId: { type: "string", format: "uuid", nullable: true },
         },
@@ -4248,7 +4297,7 @@ SlowMovingEvaluationResponse: {
         properties: {
           id: { type: "string", format: "uuid" },
           supplierId: { type: "string", format: "uuid" },
-          status: { type: "string", enum: ["AWAITING_DELIVERY", "RECEIVED", "CLOSED", "CANCELLED"] },
+          status: { type: "string", enum: ["AWAITING_DELIVERY", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"] },
           paymentStatus: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID"] },
           expectedDeliveryDate: { type: "string", format: "date-time", nullable: true },
           notes: { type: "string", nullable: true },
@@ -4316,23 +4365,38 @@ SlowMovingEvaluationResponse: {
           success: { type: "boolean", example: true },
           data: { type: "array", items: { $ref: "#/components/schemas/PurchaseOrder" } },
           meta: { $ref: "#/components/schemas/PaginationMeta" },
+          summary: {
+            type: "object",
+            description: "Order counts over the filtered dataset (not just the current page).",
+            properties: {
+              awaitingDelivery: { type: "integer" },
+              partiallyReceived: { type: "integer" },
+              received: { type: "integer" },
+              closed: { type: "integer" },
+              cancelled: { type: "integer" },
+            },
+          },
         },
       },
       GoodsReceiptItemInput: {
         type: "object",
+        description:
+          "One delivery line. Several lines may reference the same purchaseOrderItemId with different " +
+          "batches (multi-batch delivery); their actualQty values are summed for the remaining-quantity check.",
         required: ["purchaseOrderItemId", "locationId", "deliveredQty", "actualQty"],
         properties: {
           purchaseOrderItemId: { type: "string", format: "uuid" },
           locationId: { type: "string", format: "uuid" },
-          deliveredQty: { type: "number", minimum: 0, description: "Quantity delivered per the supplier" },
-          actualQty: { type: "number", minimum: 0, description: "Quantity physically counted" },
-          batchNumber: { type: "string", maxLength: 100 },
+          deliveredQty: { type: "number", minimum: 0.001, description: "Quantity delivered per the supplier (must be > 0)" },
+          actualQty: { type: "number", minimum: 0.001, description: "Quantity physically counted; must be > 0 and, summed per PO item, must not exceed that item's remaining quantity" },
+          batchNumber: { type: "string", maxLength: 100, description: "Required when actualQty > 0" },
           manufacturingDate: { type: "string", format: "date-time" },
-          expiryDate: { type: "string", format: "date-time" },
+          expiryDate: { type: "string", format: "date-time", description: "Required when actualQty > 0; must be at least tomorrow" },
         },
       },
       GoodsReceiptCreateInput: {
         type: "object",
+        description: "A receipt must contain at least one item; an empty receipt is rejected.",
         required: ["items"],
         properties: {
           receivedDate: { type: "string", format: "date-time" },

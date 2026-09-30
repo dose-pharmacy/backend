@@ -64,6 +64,10 @@ export type POListQuery = PageQuery & {
   status?: PurchaseOrderStatus;
   paymentStatus?: PurchaseOrderPaymentStatus | "ALL";
   search?: string;
+  /** Only purchase orders that still have at least one item to receive. */
+  receivable?: boolean;
+  /** Include item detail (product, unit and quantities) in list rows. */
+  includeItems?: boolean;
 };
 
 export type PopaymentSummary = {
@@ -210,6 +214,148 @@ export function isItemFullyAccountedFor(item: {
   return item.quantityReceived.plus(item.quantityShort).gte(item.quantityOrdered);
 }
 
+/** Numeric view of an optional Decimal-ish value. */
+export function decimalToNumber(value: Prisma.Decimal | number | null | undefined): number {
+  if (value === null || value === undefined) return 0;
+  return value instanceof Prisma.Decimal ? value.toNumber() : value;
+}
+
+/**
+ * Canonical remaining receivable quantity of a PO item:
+ *
+ *   quantityRemaining = quantityOrdered - quantityReceived - quantityShort
+ *
+ * `quantityReceived` is the physical quantity that actually arrived and is never
+ * rewritten (an accepted shortage does not fake a receipt). `quantityShort` only
+ * reduces the expectation once the business formally accepts the shortfall, so an
+ * item that merely was not delivered today keeps its full remaining quantity.
+ */
+export function remainingQuantityFor(item: {
+  quantityOrdered: Prisma.Decimal | number;
+  quantityReceived: Prisma.Decimal | number;
+  quantityShort: Prisma.Decimal | number;
+}): number {
+  return Math.max(
+    0,
+    decimalToNumber(item.quantityOrdered) -
+      decimalToNumber(item.quantityReceived) -
+      decimalToNumber(item.quantityShort),
+  );
+}
+
+/**
+ * Derives the PO-level status from the state of ALL of its items. This is the
+ * single source of truth for the receiving lifecycle:
+ *
+ *  - RECEIVED            every item is fully received or formally resolved as
+ *                        accepted shortage (nothing left to receive)
+ *  - PARTIALLY_RECEIVED  at least one item has progress (received or accepted
+ *                        short) but something is still outstanding
+ *  - AWAITING_DELIVERY   nothing has been touched yet
+ *
+ * The PO status is a SUMMARY only — individual items are received independently
+ * and eligibility is derived from item quantities, never from this status.
+ */
+export function derivePurchaseOrderStatus(items: Array<{
+  quantityOrdered: Prisma.Decimal;
+  quantityReceived: Prisma.Decimal;
+  quantityShort: Prisma.Decimal;
+}>): PurchaseOrderStatus {
+  if (items.length === 0) return PurchaseOrderStatus.AWAITING_DELIVERY;
+  if (items.every(isItemFullyAccountedFor)) return PurchaseOrderStatus.RECEIVED;
+  const hasProgress = items.some(
+    (item) => item.quantityReceived.gt(0) || item.quantityShort.gt(0),
+  );
+  return hasProgress
+    ? PurchaseOrderStatus.PARTIALLY_RECEIVED
+    : PurchaseOrderStatus.AWAITING_DELIVERY;
+}
+
+/**
+ * Recalculates and persists a PO's receiving status from ALL of its items.
+ *
+ * Centralised so every receiving/shortage path produces the same status. Call it
+ * inside the same transaction as the quantity change so quantities and status
+ * commit (or roll back) together. CLOSED / CANCELLED are terminal and preserved.
+ */
+export async function calculatePurchaseOrderStatus(
+  poId: string,
+  db: DbClient = prisma,
+): Promise<PurchaseOrderStatus> {
+  const po = await db.purchaseOrder.findUnique({
+    where: { id: poId },
+    select: { status: true },
+  });
+  if (!po) {
+    throw new AppError(404, ErrorCode.PURCHASE_ORDER_NOT_FOUND, "Purchase order not found");
+  }
+  if (
+    po.status === PurchaseOrderStatus.CANCELLED ||
+    po.status === PurchaseOrderStatus.CLOSED
+  ) {
+    return po.status;
+  }
+  const items = await db.purchaseOrderItem.findMany({
+    where: { purchaseOrderId: poId },
+    select: { quantityOrdered: true, quantityReceived: true, quantityShort: true },
+  });
+  const status = derivePurchaseOrderStatus(items);
+  if (status !== po.status) {
+    await db.purchaseOrder.update({ where: { id: poId }, data: { status } });
+  }
+  return status;
+}
+
+/**
+ * Adds the derived receiving quantities to PO items without leaking extra
+ * relations. Kept generic so both the list and the detail endpoints use the
+ * exact same canonical math.
+ */
+export function withReceivingQuantities<
+  T extends {
+    quantityOrdered: Prisma.Decimal;
+    quantityReceived: Prisma.Decimal;
+    quantityShort: Prisma.Decimal;
+  },
+>(items: T[]): Array<T & { quantityRemaining: number; quantityPreviouslyReceived: Prisma.Decimal }> {
+  return items.map((item) => ({
+    ...item,
+    quantityRemaining: remainingQuantityFor(item),
+    // Explicit alias for the receiving UI ("previously received" before this
+    // delivery). Physical history stays in quantityReceived.
+    quantityPreviouslyReceived: item.quantityReceived,
+  }));
+}
+
+/**
+ * IDs of POs that still have something to receive: at least one item with
+ * `quantityOrdered - quantityReceived - quantityShort > 0`, excluding orders
+ * that can no longer receive (cancelled/closed). The item condition — not the
+ * summary status — is the source of truth, so a partially received order stays
+ * selectable and a fully received one is naturally excluded.
+ */
+async function purchaseOrderIdsWithRemaining(supplierId?: string): Promise<string[]> {
+  const rows = supplierId
+    ? await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT po.id FROM "purchase_order" po
+        WHERE po."supplierId" = ${supplierId}
+          AND po."status" NOT IN ('CANCELLED', 'CLOSED')
+          AND EXISTS (
+            SELECT 1 FROM "purchase_order_item" poi
+            WHERE poi."purchaseOrderId" = po.id
+              AND poi."quantityOrdered" - poi."quantityReceived" - poi."quantityShort" > 0
+          )`
+    : await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT po.id FROM "purchase_order" po
+        WHERE po."status" NOT IN ('CANCELLED', 'CLOSED')
+          AND EXISTS (
+            SELECT 1 FROM "purchase_order_item" poi
+            WHERE poi."purchaseOrderId" = po.id
+              AND poi."quantityOrdered" - poi."quantityReceived" - poi."quantityShort" > 0
+          )`;
+  return rows.map((row) => row.id);
+}
+
 /** Internal shape where a requirement-linked item may omit (and derive) its product. */
 type ResolvedItemInput = {
   productId?: string;
@@ -225,6 +371,13 @@ type ResolvedCreateInput = Omit<CreatePOInput, "items"> & { items: ResolvedItemI
 // create, recompute) inside one transaction. Allow a generous budget so it does not time
 // out under load or on higher-latency database connections.
 const TX_OPTIONS = { timeout: 30_000, maxWait: 15_000 } as const;
+
+/** Subset of a PO item needed for canonical receiving math. */
+type ReceivingQtyItem = {
+  quantityOrdered: Prisma.Decimal;
+  quantityReceived: Prisma.Decimal;
+  quantityShort: Prisma.Decimal;
+};
 
 const PO_DETAIL_INCLUDE = {
   supplier: { select: { id: true, name: true, contactPerson: true, email: true, phone: true } },
@@ -611,6 +764,21 @@ export const purchaseOrderService = {
       }
     }
 
+    // Receivable filtering uses the item-quantity condition as the source of
+    // truth (never the summary status alone), so PARTIALLY_RECEIVED orders stay
+    // selectable while fully received ones are naturally excluded.
+    if (query.receivable) {
+      const receivableIds = await purchaseOrderIdsWithRemaining(query.supplierId);
+      const existing = where.id as { in: string[] } | undefined;
+      where.id = {
+        in: existing ? existing.in.filter((id) => receivableIds.includes(id)) : receivableIds,
+      };
+    }
+
+    // The supplier -> PO selection screen needs product names and remaining
+    // quantities, so `receivable` implies item detail unless explicitly off.
+    const includeItems = query.includeItems ?? query.receivable ?? false;
+
     const [rawItems, total, statusGroups] = await prisma.$transaction([
       prisma.purchaseOrder.findMany({
         where,
@@ -618,6 +786,17 @@ export const purchaseOrderService = {
           supplier: { select: { id: true, name: true } },
           createdBy: { select: { id: true, name: true } },
           _count: { select: { items: true } },
+          ...(includeItems
+            ? {
+                items: {
+                  include: {
+                    product: { select: { id: true, name: true, sku: true } },
+                    unit: { select: { id: true, name: true, symbol: true } },
+                  },
+                  orderBy: { createdAt: "asc" as const },
+                },
+              }
+            : {}),
         },
         orderBy: { createdAt: "desc" },
         skip,
@@ -636,13 +815,20 @@ export const purchaseOrderService = {
     const countByStatus = new Map(statusGroups.map((g) => [g.status, g._count]));
     const summary = {
       awaitingDelivery: countByStatus.get("AWAITING_DELIVERY") ?? 0,
+      partiallyReceived: countByStatus.get("PARTIALLY_RECEIVED") ?? 0,
       received: countByStatus.get("RECEIVED") ?? 0,
       closed: countByStatus.get("CLOSED") ?? 0,
       cancelled: countByStatus.get("CANCELLED") ?? 0,
     };
 
     const items = await attachPaymentSummaries(rawItems);
-    return { items, meta: buildPaginationMeta(total, page, limit), summary };
+    const itemsWithDetail = includeItems
+      ? items.map((po) => {
+          const row = po as { items?: ReceivingQtyItem[] };
+          return row.items ? { ...po, items: withReceivingQuantities(row.items) } : po;
+        })
+      : items;
+    return { items: itemsWithDetail, meta: buildPaginationMeta(total, page, limit), summary };
   },
 
   async create(input: CreatePOInput, actor: Pick<AuthenticatedUser, "id">) {
@@ -677,7 +863,13 @@ export const purchaseOrderService = {
     );
   },
 
-  async getById(id: string) {
+  /**
+   * Purchase order detail. With `receivableItems` it becomes the receiving
+   * workspace: only items that still have a remaining quantity are returned, so
+   * the frontend can never offer an already-complete item for receiving (and the
+   * backend revalidates anyway on submission).
+   */
+  async getById(id: string, options: { receivableItems?: boolean } = {}) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id },
       include: PO_DETAIL_INCLUDE,
@@ -687,7 +879,15 @@ export const purchaseOrderService = {
       throw new AppError(404, ErrorCode.PURCHASE_ORDER_NOT_FOUND, "Purchase order not found");
     }
 
-    return this.attachDetailSummaries(po);
+    const detail = await this.attachDetailSummaries(po);
+    if (!options.receivableItems) return detail;
+
+    return {
+      ...detail,
+      items: detail.items.filter(
+        (item) => remainingQuantityFor(item as ReceivingQtyItem) > 0,
+      ),
+    };
   },
 
   /**
@@ -807,7 +1007,8 @@ export const purchaseOrderService = {
       receivingSummary,
       goodsSummary,
       paymentSummary,
-      items,
+      // Every detail response exposes the canonical remaining quantity per item.
+      items: withReceivingQuantities(items as ReceivingQtyItem[]) as unknown as T["items"],
       ...(supplierInvoices !== undefined ? { supplierInvoices } : {}),
     } as Omit<T, "items" | "supplierInvoices"> & {
       receivingSummary: POReceivingSummary;
@@ -830,6 +1031,8 @@ export const purchaseOrderService = {
     input: { quantityShort?: number; shortReason?: string | null },
   ) {
     return prisma.$transaction(async (tx) => {
+      // Serialize concurrent shortage accepts / receipts on the same PO item.
+      await tx.$queryRaw`SELECT id FROM "purchase_order_item" WHERE id = ${itemId} FOR UPDATE`;
       const item = await tx.purchaseOrderItem.findUnique({
         where: { id: itemId },
         include: { purchaseOrder: { select: { id: true, status: true } } },
@@ -894,17 +1097,10 @@ export const purchaseOrderService = {
         },
       });
 
-      // Move the PO to RECEIVED when every item is fully accounted for.
-      const poItems = await tx.purchaseOrderItem.findMany({
-        where: { purchaseOrderId: item.purchaseOrderId },
-        select: { id: true, quantityOrdered: true, quantityReceived: true, quantityShort: true },
-      });
-      if (poItems.every(isItemFullyAccountedFor)) {
-        await tx.purchaseOrder.update({
-          where: { id: item.purchaseOrderId },
-          data: { status: PurchaseOrderStatus.RECEIVED },
-        });
-      }
+      // Recalculate the PO status from ALL items through the single shared
+      // helper so shortage-driven completion can never disagree with the
+      // receipt-driven path.
+      await calculatePurchaseOrderStatus(item.purchaseOrderId, tx);
 
       const updated = await tx.purchaseOrderItem.findUnique({
         where: { id: itemId },
@@ -1115,6 +1311,9 @@ export const purchaseOrderService = {
       if (requirementId) {
         await recomputeRequirementStatus(requirementId, tx);
       }
+
+      // Editing the ordered quantity can complete (or un-complete) the order.
+      await calculatePurchaseOrderStatus(existing.purchaseOrderId, tx);
 
       return tx.purchaseOrderItem.findUnique({
         where: { id: itemId },

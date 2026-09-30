@@ -33,6 +33,7 @@ import {
   updatePurchaseOrderItemSchema,
   purchaseOrderListQuerySchema,
   purchaseOrderParamsSchema,
+  purchaseOrderDetailQuerySchema,
   purchaseOrderItemParamsSchema,
   acceptShortageSchema,
 } from "../validators/purchasing/purchase-order.js";
@@ -251,7 +252,7 @@ purchasingRouter.delete(
 purchasingRouter.get(
   "/purchase-orders/:id",
   ...admin,
-  validate({ params: purchaseOrderParamsSchema }),
+  validate({ params: purchaseOrderParamsSchema, query: purchaseOrderDetailQuerySchema }),
   purchaseOrderController.getById,
 );
 purchasingRouter.patch(

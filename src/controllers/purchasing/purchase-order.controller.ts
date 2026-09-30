@@ -12,14 +12,16 @@ import { sendSuccess } from "../../utils/http.js";
 
 export const purchaseOrderController = {
   list: asyncHandler(async (req: Request, res: Response) => {
-    const query = req.query as Record<string, string | undefined>;
+    const query = req.query as Record<string, unknown>;
     const input: POListQuery = {
       page: query.page ? Number(query.page) : undefined,
       limit: query.limit ? Number(query.limit) : undefined,
-      supplierId: query.supplierId,
+      supplierId: query.supplierId as string | undefined,
       status: query.status as POListQuery["status"],
       paymentStatus: query.paymentStatus as POListQuery["paymentStatus"],
-      search: query.search,
+      search: query.search as string | undefined,
+      receivable: typeof query.receivable === "boolean" ? query.receivable : undefined,
+      includeItems: typeof query.includeItems === "boolean" ? query.includeItems : undefined,
     };
     const { items, meta, summary } = await purchaseOrderService.list(input);
     sendSuccess(res, items, { meta, summary });
@@ -41,7 +43,10 @@ export const purchaseOrderController = {
   }),
 
   getById: asyncHandler(async (req: Request, res: Response) => {
-    const data = await purchaseOrderService.getById(req.params.id as string);
+    const query = req.query as { receivableItems?: boolean };
+    const data = await purchaseOrderService.getById(req.params.id as string, {
+      receivableItems: query.receivableItems === true,
+    });
     sendSuccess(res, data);
   }),
 
