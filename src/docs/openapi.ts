@@ -1694,7 +1694,7 @@ export const openApiDocument = {
     "/purchasing/purchase-orders": {
       get: {
         tags: ["Purchasing"],
-        summary: "List purchase orders (supplier -> receivable PO selection)",
+        summary: "List purchase orders (supplier -> receivable/invoiceable PO selection)",
         description:
           "Filter by supplier to list the purchase orders a supplier can still deliver against. " +
           "`receivable=true` returns only orders that have at least one item with `quantityRemaining > 0` " +
@@ -1707,7 +1707,8 @@ export const openApiDocument = {
           { name: "status", in: "query", schema: { type: "string", enum: ["AWAITING_DELIVERY", "PARTIALLY_RECEIVED", "RECEIVED", "CLOSED", "CANCELLED"] }, description: "Filter by order status" },
           { name: "paymentStatus", in: "query", schema: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID", "ALL"] }, description: "Filter by payment status" },
           { name: "receivable", in: "query", schema: { type: "boolean" }, description: "Only orders with at least one item still to receive (includes PARTIALLY_RECEIVED, excludes fully received)" },
-          { name: "includeItems", in: "query", schema: { type: "boolean" }, description: "Include item detail (product, unit, ordered/received/remaining quantities) on each order. Implied by receivable=true" },
+          { name: "invoiceable", in: "query", schema: { type: "boolean" }, description: "Supplier -> invoice-eligible PO list: only orders with at least one item where quantityReceived > quantityInvoiced. PO status does NOT gate eligibility (AWAITING_DELIVERY/PARTIALLY_RECEIVED/RECEIVED orders all appear if billable goods exist); fully invoiced orders are excluded. Implies includeItems=true" },
+          { name: "includeItems", in: "query", schema: { type: "boolean" }, description: "Include item detail (product, unit, ordered/received/invoiced/remaining quantities, quantityRemainingToInvoice) on each order. Implied by receivable=true or invoiceable=true" },
           searchQueryParam,
           pageQueryParam,
           limitQueryParam,
@@ -1748,15 +1749,19 @@ export const openApiDocument = {
     "/purchasing/purchase-orders/{id}": {
       get: {
         tags: ["Purchasing"],
-        summary: "Get purchase order (optionally only its receivable items)",
+        summary: "Get purchase order (optionally only its receivable or invoiceable items)",
         description:
           "Returns the PO with all items (each carrying quantityOrdered, quantityReceived, " +
-          "quantityPreviouslyReceived and quantityRemaining). With `receivableItems=true` the response is the " +
-          "receiving workspace: `items` contains ONLY items with `quantityRemaining > 0`, so already-complete " +
-          "items are never offered for receiving. The backend still revalidates every submitted quantity.",
+          "quantityPreviouslyReceived, quantityRemaining, quantityInvoiced and " +
+          "quantityRemainingToInvoice = quantityReceived - quantityInvoiced). With `receivableItems=true` the " +
+          "response is the receiving workspace: `items` contains ONLY items with `quantityRemaining > 0`. With " +
+          "`invoiceableItems=true` it is the invoicing workspace: only items with " +
+          "`quantityRemainingToInvoice > 0` (received-but-not-yet-invoiced) are returned, regardless of PO " +
+          "status. The backend still revalidates every submitted quantity inside the invoice transaction.",
         parameters: [
           idPathParam,
           { name: "receivableItems", in: "query", schema: { type: "boolean" }, description: "Return only items that still have quantity to receive" },
+          { name: "invoiceableItems", in: "query", schema: { type: "boolean" }, description: "Return only items with received-but-not-invoiced quantity (invoicing workspace)" },
         ],
         responses: { "200": okRef("PurchaseOrderResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       },
@@ -1893,6 +1898,18 @@ export const openApiDocument = {
       post: {
         tags: ["Purchasing"],
         summary: "Create supplier invoice",
+        description:
+          "Creates a supplier invoice atomically. PO-linked invoices MUST allocate goods to PO items via `items`; " +
+          "the goods amount is derived as SUM(quantity × unitCost) and every allocation is validated inside the " +
+          "transaction against the received-but-not-yet-invoiced quantity of its PO item (invoiced ≤ received, " +
+          "across ALL invoices of the PO). PO status does NOT gate invoicing — a PARTIALLY_RECEIVED order can be " +
+          "invoiced for the items that physically arrived. Purchase order item rows are locked FOR UPDATE during " +
+          "validation, so concurrent invoices for the same received goods serialize: the loser fails with 422 " +
+          "SUPPLIER_INVOICE_EXCEEDS_RECEIVED and nothing is persisted (full rollback). Errors: 422 " +
+          "SUPPLIER_INVOICE_EXCEEDS_RECEIVED (invoicing more than received-not-invoiced / unreceived item), 422 " +
+          "VALIDATION_ERROR (empty/invalid items, negative amounts, payment-terms mismatch, PO/supplier " +
+          "mismatch, invalid PO item), 409 DUPLICATE_INVOICE_NUMBER (same supplier), 404 PURCHASE_ORDER_NOT_FOUND / " +
+          "SUPPLIER_NOT_FOUND, 409 INACTIVE_SUPPLIER.",
         requestBody: jsonBody("SupplierInvoiceCreateInput"),
         responses: { "201": okRef("SupplierInvoiceResponse"), ...authErrorResponses }
       }
@@ -4286,6 +4303,8 @@ SlowMovingEvaluationResponse: {
           quantityReceived: { type: "number", description: "Physical quantity received so far (historical, never rewritten by a shortage)" },
           quantityPreviouslyReceived: { type: "number", description: "Alias of quantityReceived for the receiving UI" },
           quantityRemaining: { type: "number", description: "quantityOrdered - quantityReceived - quantityShort (never negative)" },
+          quantityInvoiced: { type: "number", description: "SUM of quantities billed for this PO item across ALL of the PO's supplier invoices (derived, never stored)" },
+          quantityRemainingToInvoice: { type: "number", description: "quantityReceived - quantityInvoiced (never negative). Items with a positive value are invoice-eligible regardless of PO status" },
           quantityShort: { type: "number", description: "Quantity formally accepted as short and no longer expected" },
           shortReason: { type: "string", nullable: true },
           unitCost: { type: "number" },
@@ -4504,10 +4523,11 @@ SlowMovingEvaluationResponse: {
       },
       SupplierInvoiceItem: {
         type: "object",
+        required: ["purchaseOrderItemId", "quantity"],
         properties: {
-          purchaseOrderItemId: { type: "string", format: "uuid" },
-          quantity: { type: "number", description: "Quantity invoiced, in the PO item's ordered unit" },
-          unitCost: { type: "number" },
+          purchaseOrderItemId: { type: "string", format: "uuid", description: "PO item being billed. Must belong to purchaseOrderId and have received-but-not-invoiced quantity" },
+          quantity: { type: "number", description: "Quantity invoiced, in the PO item's ordered unit. Must be > 0 and cannot exceed quantityReceived - quantityInvoiced for that PO item (validated server-side inside the invoice transaction; a client-supplied quantityRemainingToInvoice is never trusted)" },
+          unitCost: { type: "number", description: "Optional unit-cost override; defaults to the PO item's unitCost" },
         },
       },
       SupplierInvoiceCreateInput: {

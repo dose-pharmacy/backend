@@ -21,6 +21,7 @@ export const purchaseOrderController = {
       paymentStatus: query.paymentStatus as POListQuery["paymentStatus"],
       search: query.search as string | undefined,
       receivable: typeof query.receivable === "boolean" ? query.receivable : undefined,
+      invoiceable: typeof query.invoiceable === "boolean" ? query.invoiceable : undefined,
       includeItems: typeof query.includeItems === "boolean" ? query.includeItems : undefined,
     };
     const { items, meta, summary } = await purchaseOrderService.list(input);
@@ -43,9 +44,10 @@ export const purchaseOrderController = {
   }),
 
   getById: asyncHandler(async (req: Request, res: Response) => {
-    const query = req.query as { receivableItems?: boolean };
+    const query = req.query as { receivableItems?: boolean; invoiceableItems?: boolean };
     const data = await purchaseOrderService.getById(req.params.id as string, {
       receivableItems: query.receivableItems === true,
+      invoiceableItems: query.invoiceableItems === true,
     });
     sendSuccess(res, data);
   }),

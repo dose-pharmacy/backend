@@ -77,6 +77,9 @@ export const purchaseOrderListQuerySchema = z
     search: z.string().trim().max(200).optional(),
     // Only orders that still have at least one item with remaining quantity.
     receivable: booleanQueryParam,
+    // Only orders with at least one item that has received-but-not-invoiced
+    // quantity (the supplier -> invoice-eligible PO selection view).
+    invoiceable: booleanQueryParam,
     // Include item detail (product/unit/quantities) on list rows. Implied by
     // `receivable=true`.
     includeItems: booleanQueryParam,
@@ -91,6 +94,9 @@ export const purchaseOrderParamsSchema = z.object({
 // still have quantity to receive (the receiving workspace view).
 export const purchaseOrderDetailQuerySchema = z.object({
   receivableItems: booleanQueryParam,
+  // `invoiceableItems=true` returns only items with received-but-not-invoiced
+  // quantity (the invoicing workspace view).
+  invoiceableItems: booleanQueryParam,
 });
 
 export const purchaseOrderItemParamsSchema = z.object({

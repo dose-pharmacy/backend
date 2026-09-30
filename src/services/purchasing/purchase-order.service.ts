@@ -66,6 +66,8 @@ export type POListQuery = PageQuery & {
   search?: string;
   /** Only purchase orders that still have at least one item to receive. */
   receivable?: boolean;
+  /** Only purchase orders with at least one item that has received-but-not-invoiced quantity. */
+  invoiceable?: boolean;
   /** Include item detail (product, unit and quantities) in list rows. */
   includeItems?: boolean;
 };
@@ -352,6 +354,113 @@ async function purchaseOrderIdsWithRemaining(supplierId?: string): Promise<strin
             SELECT 1 FROM "purchase_order_item" poi
             WHERE poi."purchaseOrderId" = po.id
               AND poi."quantityOrdered" - poi."quantityReceived" - poi."quantityShort" > 0
+          )`;
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Canonical remaining invoiceable quantity of a PO item:
+ *
+ *   quantityRemainingToInvoice = quantityReceived - quantityInvoiced
+ *
+ * Invoicing is based on RECEIVED quantities, never ordered quantities and
+ * never the PO status: an item that physically arrived can be billed even
+ * while other items of the same order are still outstanding.
+ */
+export function remainingQuantityToInvoiceFor(item: {
+  quantityReceived: Prisma.Decimal | number;
+  quantityInvoiced: Prisma.Decimal | number;
+}): number {
+  return Math.max(
+    0,
+    decimalToNumber(item.quantityReceived) - decimalToNumber(item.quantityInvoiced),
+  );
+}
+
+/** Per-PO-item invoiced quantity sums across ALL invoices of the given POs. */
+async function invoicedQuantitiesByItem(
+  poIds: string[],
+  db: DbClient = prisma,
+): Promise<Map<string, Prisma.Decimal>> {
+  if (poIds.length === 0) return new Map();
+  const rows = await db.supplierInvoiceItem.groupBy({
+    by: ["purchaseOrderItemId"],
+    where: { invoice: { purchaseOrderId: { in: poIds } } },
+    _sum: { quantity: true },
+  });
+  return new Map(
+    rows.map((row) => [
+      row.purchaseOrderItemId,
+      row._sum.quantity ?? new Prisma.Decimal(0),
+    ]),
+  );
+}
+
+/**
+ * Adds the derived invoicing quantities (quantityInvoiced,
+ * quantityRemainingToInvoice) to receiving-annotated PO items. Derived, never
+ * persisted: always recomputed from SupplierInvoiceItem rows so it can never
+ * go stale.
+ */
+export function withInvoiceQuantities<
+  T extends { id: string; quantityReceived: Prisma.Decimal },
+>(
+  items: T[],
+  invoicedByItem: Map<string, Prisma.Decimal>,
+): Array<T & { quantityInvoiced: number; quantityRemainingToInvoice: number }> {
+  return items.map((item) => {
+    const quantityInvoiced = invoicedByItem.get(item.id) ?? new Prisma.Decimal(0);
+    return {
+      ...item,
+      quantityInvoiced: quantityInvoiced.toNumber(),
+      quantityRemainingToInvoice: remainingQuantityToInvoiceFor({
+        quantityReceived: item.quantityReceived,
+        quantityInvoiced,
+      }),
+    };
+  });
+}
+
+/**
+ * IDs of POs that are invoice-eligible: at least one item has
+ * `quantityReceived > SUM(invoiced quantities for that item)`. This is the
+ * item-quantity condition — NOT the PO status — so AWAITING_DELIVERY,
+ * PARTIALLY_RECEIVED and RECEIVED orders are all selectable as long as some
+ * received goods have not been billed yet. Orders with every item fully
+ * invoiced (and cancelled/closed orders) are naturally excluded.
+ */
+async function purchaseOrderIdsWithRemainingInvoicing(supplierId?: string): Promise<string[]> {
+  const rows = supplierId
+    ? await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT po.id FROM "purchase_order" po
+        WHERE po."supplierId" = ${supplierId}
+          AND po."status" NOT IN ('CANCELLED', 'CLOSED')
+          AND EXISTS (
+            SELECT 1 FROM "purchase_order_item" poi
+            WHERE poi."purchaseOrderId" = po.id
+              AND poi."quantityReceived" > 0
+              AND (
+                SELECT COALESCE(SUM(sii."quantity"), 0)
+                FROM "supplier_invoice_item" sii
+                JOIN "supplier_invoice" si ON si.id = sii."invoiceId"
+                WHERE sii."purchaseOrderItemId" = poi.id
+                  AND si."purchaseOrderId" = po.id
+              ) < poi."quantityReceived"
+          )`
+    : await prisma.$queryRaw<Array<{ id: string }>>`
+        SELECT po.id FROM "purchase_order" po
+        WHERE po."status" NOT IN ('CANCELLED', 'CLOSED')
+          AND EXISTS (
+            SELECT 1 FROM "purchase_order_item" poi
+            WHERE poi."purchaseOrderId" = po.id
+              AND poi."quantityReceived" > 0
+              AND (
+                SELECT COALESCE(SUM(sii."quantity"), 0)
+                FROM "supplier_invoice_item" sii
+                JOIN "supplier_invoice" si ON si.id = sii."invoiceId"
+                WHERE sii."purchaseOrderItemId" = poi.id
+                  AND si."purchaseOrderId" = po.id
+              ) < poi."quantityReceived"
           )`;
   return rows.map((row) => row.id);
 }
@@ -775,9 +884,23 @@ export const purchaseOrderService = {
       };
     }
 
-    // The supplier -> PO selection screen needs product names and remaining
-    // quantities, so `receivable` implies item detail unless explicitly off.
-    const includeItems = query.includeItems ?? query.receivable ?? false;
+    // Invoice-eligibility filtering uses the same principle: the per-item
+    // received-vs-invoiced quantity condition is the source of truth, never
+    // the PO status. A partially received order with billable goods is
+    // selectable; a fully invoiced one is excluded.
+    if (query.invoiceable) {
+      const invoiceableIds = await purchaseOrderIdsWithRemainingInvoicing(query.supplierId);
+      const existing = where.id as { in: string[] } | undefined;
+      where.id = {
+        in: existing ? existing.in.filter((id) => invoiceableIds.includes(id)) : invoiceableIds,
+      };
+    }
+
+    // The supplier -> PO selection screens need product names and derived
+    // quantities, so `receivable`/`invoiceable` imply item detail unless
+    // explicitly off.
+    const includeItems =
+      query.includeItems ?? (query.receivable || query.invoiceable) ?? false;
 
     const [rawItems, total, statusGroups] = await prisma.$transaction([
       prisma.purchaseOrder.findMany({
@@ -822,11 +945,22 @@ export const purchaseOrderService = {
     };
 
     const items = await attachPaymentSummaries(rawItems);
+    // One aggregate for the whole page: invoiced quantities per PO item
+    // across ALL invoices of the page's orders.
+    const invoicedByItem = await invoicedQuantitiesByItem(items.map((po) => po.id));
     const itemsWithDetail = includeItems
-      ? items.map((po) => {
-          const row = po as { items?: ReceivingQtyItem[] };
-          return row.items ? { ...po, items: withReceivingQuantities(row.items) } : po;
-        })
+      ? (items.map((po) => {
+          const row = po as unknown as {
+            items?: Array<ReceivingQtyItem & { id: string }>;
+          };
+          if (!row.items) return po;
+          return {
+            ...po,
+            items: withReceivingQuantities(
+              withInvoiceQuantities(row.items, invoicedByItem) as unknown as ReceivingQtyItem[],
+            ),
+          };
+        }) as typeof items)
       : items;
     return { items: itemsWithDetail, meta: buildPaginationMeta(total, page, limit), summary };
   },
@@ -869,7 +1003,10 @@ export const purchaseOrderService = {
    * the frontend can never offer an already-complete item for receiving (and the
    * backend revalidates anyway on submission).
    */
-  async getById(id: string, options: { receivableItems?: boolean } = {}) {
+  async getById(
+    id: string,
+    options: { receivableItems?: boolean; invoiceableItems?: boolean } = {},
+  ) {
     const po = await prisma.purchaseOrder.findUnique({
       where: { id },
       include: PO_DETAIL_INCLUDE,
@@ -880,14 +1017,27 @@ export const purchaseOrderService = {
     }
 
     const detail = await this.attachDetailSummaries(po);
-    if (!options.receivableItems) return detail;
-
-    return {
-      ...detail,
-      items: detail.items.filter(
-        (item) => remainingQuantityFor(item as ReceivingQtyItem) > 0,
-      ),
-    };
+    if (options.receivableItems) {
+      return {
+        ...detail,
+        items: detail.items.filter(
+          (item) => remainingQuantityFor(item as ReceivingQtyItem) > 0,
+        ),
+      };
+    }
+    // With `invoiceableItems` the response becomes the invoicing workspace:
+    // only items with received-but-not-yet-invoiced quantity are returned.
+    // The backend revalidates the same condition when the invoice is created.
+    if (options.invoiceableItems) {
+      return {
+        ...detail,
+        items: detail.items.filter(
+          (item) =>
+            (item as { quantityRemainingToInvoice?: number }).quantityRemainingToInvoice! > 0,
+        ),
+      };
+    }
+    return detail;
   },
 
   /**
@@ -1007,8 +1157,14 @@ export const purchaseOrderService = {
       receivingSummary,
       goodsSummary,
       paymentSummary,
-      // Every detail response exposes the canonical remaining quantity per item.
-      items: withReceivingQuantities(items as ReceivingQtyItem[]) as unknown as T["items"],
+      // Every detail response exposes the canonical remaining quantity per
+      // item, plus the derived invoicing quantities (received - invoiced).
+      items: withReceivingQuantities(
+        withInvoiceQuantities(
+          items as unknown as Array<{ id: string; quantityReceived: Prisma.Decimal }>,
+          await invoicedQuantitiesByItem([po.id]),
+        ) as unknown as ReceivingQtyItem[],
+      ) as unknown as T["items"],
       ...(supplierInvoices !== undefined ? { supplierInvoices } : {}),
     } as Omit<T, "items" | "supplierInvoices"> & {
       receivingSummary: POReceivingSummary;
