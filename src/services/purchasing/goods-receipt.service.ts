@@ -10,6 +10,7 @@ import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js"
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 import type { DbClient } from "./requirement.service.js";
+import { recomputeRequirementStatus } from "./requirement.service.js";
 
 export type CreateGRInput = {
   purchaseOrderId: string;
@@ -494,6 +495,10 @@ export const goodsReceiptService = {
 
         const supplierId = receipt.purchaseOrder.supplierId;
 
+        // Track requirement lines that receive goods so we can recompute
+        // requirement status after the items loop (below).
+        const affectedRequirementIds = new Set<string>();
+
         for (const item of receipt.items) {
           if (item.actualQty.lte(0)) continue;
 
@@ -576,6 +581,7 @@ export const goodsReceiptService = {
                 quantityDelivered: { increment: item.actualQty },
               },
             });
+            affectedRequirementIds.add(item.purchaseOrderItem.requirementLineId);
           }
         }
 
@@ -594,6 +600,19 @@ export const goodsReceiptService = {
             status: allAccountedFor ? PurchaseOrderStatus.RECEIVED : PurchaseOrderStatus.AWAITING_DELIVERY,
           },
         });
+
+        // Recompute requirement status for every line that received goods.
+        // This is the trigger that turns a requirement from OPEN/PARTIALLY_FULFILLED
+        // to FULFILLED once actual delivered quantity meets the required quantity.
+        if (affectedRequirementIds.size > 0) {
+          const reqLines = await tx.purchaseRequirementLine.findMany({
+            where: { id: { in: [...affectedRequirementIds] } },
+            select: { requirementId: true },
+          });
+          for (const requirementId of new Set(reqLines.map((l) => l.requirementId))) {
+            await recomputeRequirementStatus(requirementId, tx);
+          }
+        }
 
         // Audit in the SAME transaction: the confirmed receipt, its stock
         // movements, PO quantity updates and this event commit or roll back

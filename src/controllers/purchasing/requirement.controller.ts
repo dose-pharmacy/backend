@@ -30,6 +30,11 @@ export const requirementController = {
     sendSuccess(res, data, { status: 201 });
   }),
 
+  preview: asyncHandler(async (req: Request, res: Response) => {
+    const data = await requirementService.preview(req.body as CreateRequirementInput);
+    sendSuccess(res, data, { status: 200 });
+  }),
+
   getById: asyncHandler(async (req: Request, res: Response) => {
     const data = await requirementService.getById(req.params.id as string);
     sendSuccess(res, data);

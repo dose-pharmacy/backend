@@ -144,6 +144,12 @@ purchasingRouter.post(
   requirementController.create,
 );
 purchasingRouter.post(
+  "/requirements/preview",
+  ...admin,
+  validate({ body: createRequirementSchema }),
+  requirementController.preview,
+);
+purchasingRouter.post(
   "/requirements/generate-from-reorder",
   ...admin,
   requirementController.generateFromReorder,

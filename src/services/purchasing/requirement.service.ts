@@ -10,6 +10,17 @@ import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
+export type RequirementActionResponse = {
+  createdRequirement: RequirementWithLines | null;
+  actions: Array<{
+    productId: string;
+    unitId: string | null;
+    requestedQuantity: number;
+    action: "CREATE" | "UPDATE";
+    existingRequirement: RequirementLineView | null;
+  }>;
+};
+
 export type CreateRequirementInput = {
   requiredBy?: Date | null;
   notes?: string | null;
@@ -84,6 +95,7 @@ const ALLOCATION_INCLUDE = {
       purchaseOrderId: true,
       quantityOrdered: true,
       quantityReceived: true,
+      quantityShort: true,
       unitCost: true,
       purchaseOrder: {
         select: {
@@ -106,6 +118,7 @@ type AllocationRow = {
     purchaseOrderId: string;
     quantityOrdered: Prisma.Decimal;
     quantityReceived: Prisma.Decimal;
+    quantityShort: Prisma.Decimal;
     unitCost: Prisma.Decimal;
     purchaseOrder: {
       status: PurchaseOrderStatus;
@@ -189,21 +202,33 @@ export type RequirementWithLines = {
   lines: RequirementLineView[];
 };
 
+/**
+ * Derives the display status for a requirement line.
+ *
+ * FULFILLED  ⟺  quantityDelivered >= requiredQuantity
+ * PARTIALLY_FULFILLED  ⟺  some quantity delivered OR some active order exists
+ * OPEN  ⟺  nothing delivered, nothing actively ordered
+ *
+ * IMPORTANT: `ordered` here means the *net active ordered* quantity
+ * (active allocation minus accepted shortages). PO status, close events
+ * or historical allocation totals must NOT drive this.
+ */
 function deriveLineStatus(
   required: number,
+  delivered: number,
   ordered: number,
   storedStatus: PurchaseRequirementStatus,
 ): PurchaseRequirementStatus {
   if (storedStatus === PurchaseRequirementStatus.CLOSED) {
     return PurchaseRequirementStatus.CLOSED;
   }
-  if (ordered <= 0) {
-    return PurchaseRequirementStatus.OPEN;
+  if (delivered >= required) {
+    return PurchaseRequirementStatus.FULFILLED;
   }
-  if (ordered < required) {
+  if (delivered > 0 || ordered > 0) {
     return PurchaseRequirementStatus.PARTIALLY_FULFILLED;
   }
-  return PurchaseRequirementStatus.FULFILLED;
+  return PurchaseRequirementStatus.OPEN;
 }
 
 function mapAllocation(allocation: AllocationRow): RequirementAllocationView {
@@ -226,26 +251,49 @@ function mapAllocation(allocation: AllocationRow): RequirementAllocationView {
 }
 
 /**
- * Maps a requirement line to a client-friendly shape. `orderedQuantity` and
- * `remainingQuantity` are derived from active allocations — never from persisted
- * client-supplied values.
+ * Maps a requirement line to a client-friendly shape.
+ *
+ * Key invariants:
+ *  - quantityOrdered (= orderedActive) = net active ordered in the line's own
+ *    unit, accounting for accepted shortages. Cancelled POs are excluded.
+ *    Formula (per non-cancelled allocation, in base units):
+ *      effective = quantityReceived + max(0, quantityAllocated - quantityReceived - quantityShort)
+ *  - quantityToOrder = max(0, required - delivered - quantityOrdered)
+ *  - quantityAwaitingDelivery = quantityOrdered (the active, undelivered portion)
+ *  - status uses delivered (not ordered) for FULFILLED
  */
 function mapRequirementLine(line: LineRow): RequirementLineView {
   const required = line.quantityNeeded.toNumber();
-  const orderedBase = line.allocations
-    .filter((a) => a.purchaseOrderItem.purchaseOrder.status !== PurchaseOrderStatus.CANCELLED)
-    .reduce((sum, a) => sum + a.quantityAllocated.toNumber(), 0);
   const delivered = line.quantityDelivered.toNumber();
-  // Allocation sums are stored in BASE units; require them in the line's own
-  // unit for display by scaling through the stored quantityNeededBase snapshot.
-  const lineToBaseFactor = line.quantityNeededBase.gt(0) && required > 0
-    ? line.quantityNeededBase.toNumber() / required
-    : null;
-  const ordered =
+
+  // Compute net active ordered in BASE units, accounting for shortages.
+  // An accepted shortage frees that quantity back to the requirement.
+  const orderedActiveBase = line.allocations
+    .filter((a) => a.purchaseOrderItem.purchaseOrder.status !== PurchaseOrderStatus.CANCELLED)
+    .reduce((sum, a) => {
+      const allocated = a.quantityAllocated.toNumber();
+      const received = a.purchaseOrderItem.quantityReceived.toNumber();
+      const short = a.purchaseOrderItem.quantityShort.toNumber();
+      // Already delivered doesn't count as "still ordered"; neither does shortage.
+      const remaining = Math.max(0, allocated - received - short);
+      return sum + received + remaining;
+    }, 0);
+
+  // Convert active ordered from BASE units to the line's display unit.
+  const lineToBaseFactor =
+    line.quantityNeededBase.gt(0) && required > 0
+      ? line.quantityNeededBase.toNumber() / required
+      : null;
+  const orderedActive =
     lineToBaseFactor && lineToBaseFactor > 0
-      ? toDecimal(orderedBase).div(toDecimal(lineToBaseFactor)).toDecimalPlaces(3).toNumber()
-      : orderedBase;
-  const remainingQuantity = Math.max(0, required - ordered);
+      ? toDecimal(orderedActiveBase).div(toDecimal(lineToBaseFactor)).toDecimalPlaces(3).toNumber()
+      : orderedActiveBase;
+
+  // How much of the requirement is still unmet and not covered by an active order.
+  const quantityToOrder = Math.max(0, required - delivered - orderedActive);
+  // How much is ordered and still expected to arrive (the "awaiting delivery" portion).
+  const quantityAwaitingDelivery = Math.max(0, orderedActive - delivered);
+
   const activeOrderCount = line.allocations.filter(
     (a) => a.purchaseOrderItem.purchaseOrder.status !== PurchaseOrderStatus.CANCELLED,
   ).length;
@@ -258,17 +306,20 @@ function mapRequirementLine(line: LineRow): RequirementLineView {
     unitId: line.unitId,
     unit: line.unit,
     requiredQuantity: required,
+    // Backwards-compat aliases kept for existing frontend consumers.
     quantityNeeded: required,
-    quantityOrdered: ordered,
-    orderedQuantity: ordered,
-    quantityRemaining: remainingQuantity,
-    remainingQuantity,
-    remainingToOrder: remainingQuantity,
+    quantityOrdered: orderedActive,
+    orderedQuantity: orderedActive,
+    // quantityRemaining = not delivered and not covered by an active order.
+    quantityRemaining: quantityToOrder,
+    remainingQuantity: Math.max(0, required - delivered),
+    remainingToOrder: quantityToOrder,
     quantityDelivered: delivered,
-    remainingToReceive: Math.max(0, ordered - delivered),
+    // remainingToReceive = quantity ordered but not yet physically received.
+    remainingToReceive: quantityAwaitingDelivery,
     activeOrderCount,
     reasonCode: line.reasonCode,
-    status: deriveLineStatus(required, ordered, line.status),
+    status: deriveLineStatus(required, delivered, orderedActive, line.status),
     notes: line.notes,
     createdAt: line.createdAt,
     updatedAt: line.updatedAt,
@@ -277,11 +328,15 @@ function mapRequirementLine(line: LineRow): RequirementLineView {
 }
 
 /** Resolves a line's unit: explicit unitId, or the product's base unit. */
-async function resolveLineUnitId(productId: string, unitId?: string | null): Promise<string> {
+async function resolveLineUnitId(
+  productId: string,
+  unitId?: string | null,
+  client: DbClient | typeof prisma = prisma,
+): Promise<string> {
   if (unitId) {
     return unitId;
   }
-  const base = await prisma.productUnit.findFirst({
+  const base = await client.productUnit.findFirst({
     where: { productId, isBaseUnit: true },
     select: { unitId: true },
   });
@@ -318,6 +373,185 @@ async function assertProductExists(productId: string): Promise<void> {
   if (!product.isActive) {
     throw new AppError(409, ErrorCode.PRODUCT_NOT_FOUND, "Product is not active");
   }
+}
+
+async function processRequirementLinesTx(
+  tx: DbClient,
+  linesInput: Array<{
+    productId: string;
+    quantityNeeded: number;
+    unitId?: string | null;
+    reasonCode?: "LOW_STOCK" | "REORDER_ALERT" | "MANUAL";
+    notes?: string | null;
+  }>,
+  actorId: string,
+  generateReference: () => string,
+  requiredBy?: Date | null,
+  headerNotes?: string | null,
+): Promise<RequirementActionResponse> {
+  // 1. Resolve units and validate products and duplicates
+  const resolvedLines = [];
+  const seen = new Set<string>();
+  for (const line of linesInput) {
+    await assertProductExists(line.productId);
+    const unitId = await resolveLineUnitId(line.productId, line.unitId, tx);
+    const key = `${line.productId}:${unitId}`;
+    if (seen.has(key)) {
+      throw new AppError(
+        422,
+        ErrorCode.DUPLICATE_PRODUCT_IN_REQUIREMENT,
+        "Duplicate Product + Unit in request",
+      );
+    }
+    seen.add(key);
+    resolvedLines.push({ ...line, resolvedUnitId: unitId });
+  }
+
+  const actions: RequirementActionResponse["actions"] = [];
+  const toCreate = [];
+  const affectedRequirementIds = new Set<string>();
+
+  for (const line of resolvedLines) {
+    // 2. Obtain an advisory lock for this Product + Unit to serialize writers
+    const lockKey = `req_line:${line.productId}:${line.resolvedUnitId}`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+    // 3. Find the single active requirement line (OPEN or PARTIALLY_FULFILLED)
+    const activeLines = await tx.purchaseRequirementLine.findMany({
+      where: {
+        productId: line.productId,
+        unitId: line.resolvedUnitId,
+        status: {
+          in: [PurchaseRequirementStatus.OPEN, PurchaseRequirementStatus.PARTIALLY_FULFILLED],
+        },
+        requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+      },
+      select: { id: true, requirementId: true, quantityNeeded: true, quantityDelivered: true, status: true },
+    });
+
+    if (activeLines.length > 1) {
+      throw new AppError(
+        409,
+        ErrorCode.DUPLICATE_PRODUCT_IN_REQUIREMENT,
+        "Multiple active requirement lines exist for this product and unit. Cannot proceed.",
+      );
+    }
+
+    const activeLine = activeLines.length === 1 ? activeLines[0] : null;
+
+    if (activeLine) {
+      // 4. Update existing
+      const { baseQuantity } = await productUnitService.toBaseQuantity(
+        line.productId,
+        line.resolvedUnitId,
+        line.quantityNeeded,
+        tx,
+      );
+
+      // Do not allow shrinking required quantity below what is already delivered.
+      // (The prompt doesn't strictly define exact rules for active allocations, but says "Use the minimum safe quantity").
+      if (toDecimal(line.quantityNeeded).lt(activeLine.quantityDelivered)) {
+         throw new AppError(
+           422,
+           ErrorCode.BAD_REQUEST,
+           `Cannot reduce required quantity below the already delivered quantity (${activeLine.quantityDelivered.toString()}).`
+         );
+      }
+
+      await tx.purchaseRequirementLine.update({
+        where: { id: activeLine.id },
+        data: {
+          quantityNeeded: line.quantityNeeded,
+          quantityNeededBase: baseQuantity.toNumber(),
+        },
+      });
+      affectedRequirementIds.add(activeLine.requirementId);
+      actions.push({
+        productId: line.productId,
+        unitId: line.resolvedUnitId,
+        requestedQuantity: line.quantityNeeded,
+        action: "UPDATE",
+        existingRequirement: null, // will populate below
+      });
+    } else {
+      // 5. Enqueue creation
+      const { baseQuantity } = await productUnitService.toBaseQuantity(
+        line.productId,
+        line.resolvedUnitId,
+        line.quantityNeeded,
+        tx,
+      );
+      toCreate.push({
+        productId: line.productId,
+        quantityNeeded: line.quantityNeeded,
+        unitId: line.resolvedUnitId,
+        quantityNeededBase: baseQuantity.toNumber(),
+        reasonCode: line.reasonCode,
+        notes: line.notes,
+        status: PurchaseRequirementStatus.OPEN,
+      });
+      actions.push({
+        productId: line.productId,
+        unitId: line.resolvedUnitId,
+        requestedQuantity: line.quantityNeeded,
+        action: "CREATE",
+        existingRequirement: null, // will populate below
+      });
+    }
+  }
+
+  let createdRequirement = null;
+  if (toCreate.length > 0) {
+    createdRequirement = await tx.purchaseRequirement.create({
+      data: {
+        reference: generateReference(),
+        requiredBy,
+        notes: headerNotes,
+        createdById: actorId,
+        lines: { create: toCreate },
+      },
+      include: {
+        lines: { include: LINE_INCLUDE_ACTIVE },
+        createdBy: { select: { id: true, name: true } },
+      },
+    });
+    affectedRequirementIds.add(createdRequirement.id);
+  }
+
+  // Recompute statuses for updated lines
+  for (const reqId of affectedRequirementIds) {
+    await recomputeRequirementStatus(reqId, tx);
+  }
+
+  // Fetch full line views for the response
+  const activeLineViews = await tx.purchaseRequirementLine.findMany({
+    where: {
+      productId: { in: resolvedLines.map((l) => l.productId) },
+      unitId: { in: resolvedLines.map((l) => l.resolvedUnitId) },
+      status: { in: [PurchaseRequirementStatus.OPEN, PurchaseRequirementStatus.PARTIALLY_FULFILLED, PurchaseRequirementStatus.FULFILLED] },
+      requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+    },
+    include: LINE_INCLUDE_ALL,
+  });
+
+  const mappedLines = activeLineViews.map((l) => mapRequirementLine(l as unknown as LineRow));
+
+  // Populate existingRequirement in actions
+  for (const action of actions) {
+    const lineView = mappedLines.find(
+      (l) => l.product.id === action.productId && l.unit?.id === action.unitId,
+    );
+    action.existingRequirement = lineView || null;
+  }
+
+  const resultCreated = createdRequirement
+    ? {
+        ...createdRequirement,
+        lines: (createdRequirement.lines as unknown as LineRow[]).map(mapRequirementLine),
+      }
+    : null;
+
+  return { actions, createdRequirement: resultCreated };
 }
 
 async function assertRequirementOpen(
@@ -380,9 +614,12 @@ export async function recomputeRequirementStatus(
   requirementId: string,
   db: DbClient = prisma,
 ): Promise<void> {
+  // Load lines with their persisted delivered quantity — this is the source of
+  // truth for FULFILLED. It is incremented by goods-receipt confirmation and
+  // is never affected by shortage/cancellation events (shortages are not deliveries).
   const lines = await db.purchaseRequirementLine.findMany({
     where: { requirementId },
-    select: { id: true, status: true, quantityNeeded: true },
+    select: { id: true, status: true, quantityNeeded: true, quantityDelivered: true },
   });
 
   if (lines.length === 0) {
@@ -393,7 +630,11 @@ export async function recomputeRequirementStatus(
     return;
   }
 
-  // Compute effective allocation per line (subtracting shortages)
+  // Compute net active ordered quantity per line (in base units).
+  // "net active" = received + remaining_to_receive, where:
+  //   remaining_to_receive = max(0, allocated - received - short)
+  // This correctly removes shortage quantities from the active commitment,
+  // so a fully-shorted allocation contributes only its received portion.
   const lineIds = lines.map((l) => l.id);
   const rows = await db.$queryRaw<
     Array<{
@@ -413,27 +654,30 @@ export async function recomputeRequirementStatus(
     WHERE pa."requirementLineId" IN (${Prisma.join(lineIds)})
       AND po.status::text <> ${PurchaseOrderStatus.CANCELLED}`;
 
-  const allocatedByLine = new Map<string, number>();
+  const netOrderedByLine = new Map<string, number>();
   for (const row of rows) {
-    const existing = allocatedByLine.get(row.requirementLineId) ?? 0;
+    const existing = netOrderedByLine.get(row.requirementLineId) ?? 0;
     const allocated = row.quantityAllocated.toNumber();
     const received = row.quantityReceived.toNumber();
-    // quantityShort defaults to 0 if not set (NULL in DB)
     const short = row.quantityShort ? row.quantityShort.toNumber() : 0;
     const remainingToReceive = Math.max(0, allocated - received - short);
-    allocatedByLine.set(row.requirementLineId, existing + received + remainingToReceive);
+    netOrderedByLine.set(row.requirementLineId, existing + received + remainingToReceive);
   }
 
   const evaluated = lines.map((line) => {
     const required = line.quantityNeeded.toNumber();
-    const allocated = allocatedByLine.get(line.id) ?? 0;
+    // Use the persisted quantityDelivered for FULFILLED determination —
+    // NOT the allocation sum, which is an ordering metric, not a delivery metric.
+    const delivered = line.quantityDelivered.toNumber();
+    const netOrdered = netOrderedByLine.get(line.id) ?? 0;
     return {
       id: line.id,
       closed: line.status === PurchaseRequirementStatus.CLOSED,
       storedStatus: line.status,
       required,
-      allocated,
-      derived: deriveLineStatus(required, allocated, line.status),
+      delivered,
+      netOrdered,
+      derived: deriveLineStatus(required, delivered, netOrdered, line.status),
     };
   });
 
@@ -451,11 +695,11 @@ export async function recomputeRequirementStatus(
   if (nonClosed.length === 0) {
     headerStatus = PurchaseRequirementStatus.CLOSED;
   } else {
-    const anyShort = nonClosed.some((l) => l.allocated < l.required);
-    const anyOrdered = nonClosed.some((l) => l.allocated > 0);
-    headerStatus = !anyShort
+    const allFulfilled = nonClosed.every((l) => l.delivered >= l.required);
+    const anyProgress = nonClosed.some((l) => l.delivered > 0 || l.netOrdered > 0);
+    headerStatus = allFulfilled
       ? PurchaseRequirementStatus.FULFILLED
-      : anyOrdered
+      : anyProgress
         ? PurchaseRequirementStatus.PARTIALLY_FULFILLED
         : PurchaseRequirementStatus.OPEN;
   }
@@ -569,67 +813,66 @@ export const requirementService = {
     return { items: mappedItems, meta: buildPaginationMeta(total, page, limit), summary };
   },
 
-  async create(input: CreateRequirementInput, actor: Pick<AuthenticatedUser, "id">) {
-    const productIds = input.lines.map((l) => l.productId);
-    if (new Set(productIds).size !== productIds.length) {
-      throw new AppError(
-        422,
-        ErrorCode.DUPLICATE_PRODUCT_IN_REQUIREMENT,
-        "Duplicate products in requirement",
+  async create(
+    input: CreateRequirementInput,
+    actor: Pick<AuthenticatedUser, "id">,
+  ): Promise<RequirementActionResponse> {
+    return prisma.$transaction(async (tx) => {
+      const result = await processRequirementLinesTx(
+        tx,
+        input.lines,
+        actor.id,
+        generatePRNumber,
+        input.requiredBy,
+        input.notes,
       );
-    }
 
-    for (const pid of productIds) {
-      await assertProductExists(pid);
-    }
+      if (result.createdRequirement) {
+        await recordAuditEvent(
+          {
+            event: AuditEvent.PURCHASE_REQUIREMENT_CREATED,
+            entityId: result.createdRequirement.id,
+            actorId: actor.id,
+            metadata: {
+              reference: result.createdRequirement.reference,
+              lineCount: result.createdRequirement.lines.length,
+            },
+          },
+          tx,
+        );
+      }
 
-    const requirement = await prisma.purchaseRequirement.create({
-      data: {
-        reference: generatePRNumber(),
-        requiredBy: input.requiredBy,
-        notes: input.notes,
-        createdById: actor.id,
-        lines: {
-          create: await Promise.all(
-            input.lines.map(async (line) => ({
-              productId: line.productId,
-              quantityNeeded: line.quantityNeeded,
-              // Unit + base-quantity snapshot; fulfillment math uses base.
-              unitId: await resolveLineUnitId(line.productId, line.unitId),
-              quantityNeededBase: (
-                await productUnitService.toBaseQuantity(
-                  line.productId,
-                  await resolveLineUnitId(line.productId, line.unitId),
-                  line.quantityNeeded,
-                )
-              ).baseQuantity.toNumber(),
-              reasonCode: line.reasonCode,
-              notes: line.notes,
-              status: PurchaseRequirementStatus.OPEN,
-            })),
-          ),
-        },
-      },
-      include: {
-        lines: { include: LINE_INCLUDE_ACTIVE },
-        createdBy: { select: { id: true, name: true } },
-      },
+      return result;
     });
+  },
 
-    await recordAuditEvent({
-      event: AuditEvent.PURCHASE_REQUIREMENT_CREATED,
-      entityId: requirement.id,
-      actorId: actor.id,
-      metadata: {
-        reference: requirement.reference,
-        lineCount: requirement.lines.length,
-      },
-    });
-
-    return {
-      ...requirement,
-      lines: (requirement.lines as unknown as LineRow[]).map(mapRequirementLine),
-    };
+  async preview(input: CreateRequirementInput): Promise<RequirementActionResponse> {
+    // Run in a transaction that always rolls back, so we can reuse the logic
+    // without actually modifying the database.
+    try {
+      await prisma.$transaction(async (tx) => {
+        const result = await processRequirementLinesTx(
+          tx,
+          input.lines,
+          "preview",
+          () => "PR-PREVIEW",
+          input.requiredBy,
+          input.notes,
+        );
+        throw { isPreviewRollback: true, result };
+      });
+      throw new Error("Preview transaction failed to roll back");
+    } catch (error: any) {
+      if (error.isPreviewRollback) {
+        // Strip out the createdRequirement so it doesn't look like we created one,
+        // since this is just a preview.
+        return {
+          actions: error.result.actions,
+          createdRequirement: null,
+        };
+      }
+      throw error;
+    }
   },
 
   async getById(id: string): Promise<RequirementWithLines> {
@@ -671,8 +914,10 @@ export const requirementService = {
     }
 
     const required = line.quantityNeeded.toNumber();
+    const delivered = line.quantityDelivered.toNumber();
+    // activeAllocatedForLine accounts for shortage (received + remaining-to-receive).
     const ordered = await activeAllocatedForLine(lineId);
-    const remaining = Math.max(0, required - ordered);
+    const remaining = Math.max(0, required - delivered - ordered);
     const activeOrderCount = await prisma.purchaseRequirementAllocation.count({
       where: { requirementLineId: lineId, ...ACTIVE_ALLOCATION_WHERE },
     });
@@ -689,9 +934,10 @@ export const requirementService = {
       remainingQuantity: remaining,
       suggestedOrderQuantity: remaining,
       activeOrderCount,
-      lineStatus: deriveLineStatus(required, ordered, line.status),
+      lineStatus: deriveLineStatus(required, delivered, ordered, line.status),
     };
   },
+
 
   /**
    * Requirement lines for a single product across all requirements. Each line
@@ -704,7 +950,22 @@ export const requirementService = {
     const where: Prisma.PurchaseRequirementLineWhereInput = {
       productId,
       ...(query.requirementId ? { requirementId: query.requirementId } : {}),
-      ...(query.status ? { status: query.status } : {}),
+      // If an explicit status filter is given, honour it (e.g. debugging);
+      // otherwise default to active-only: exclude FULFILLED and CLOSED lines
+      // and lines belonging to CLOSED requirements.
+      ...(query.status
+        ? { status: query.status }
+        : {
+            status: {
+              notIn: [
+                PurchaseRequirementStatus.FULFILLED,
+                PurchaseRequirementStatus.CLOSED,
+              ],
+            },
+            requirement: {
+              status: { not: PurchaseRequirementStatus.CLOSED },
+            },
+          }),
     };
 
     const [items, total] = await prisma.$transaction([
@@ -1089,49 +1350,49 @@ export const requirementService = {
     await prisma.purchaseRequirement.delete({ where: { id } });
   },
 
-  async generateFromReorder(actor: Pick<AuthenticatedUser, "id">) {
+  async generateFromReorder(actor: Pick<AuthenticatedUser, "id">): Promise<RequirementActionResponse> {
     const { items } = await reorderService.getSuggestions({ page: 1, limit: 100 });
 
     if (items.length === 0) {
       throw new AppError(409, ErrorCode.BAD_REQUEST, "No reorder suggestions available");
     }
 
-    const requirement = await prisma.purchaseRequirement.create({
-      data: {
-        reference: generatePRNumber(),
-        notes: "Auto-generated from reorder suggestions",
-        createdById: actor.id,
-        lines: {
-          create: items.map((item) => ({
-            productId: item.product.id,
-            quantityNeeded: item.suggestedQuantity,
-            reasonCode: "REORDER_ALERT" as const,
-            notes: `Suggested by reorder (${item.calculationMethod})`,
-            status: PurchaseRequirementStatus.OPEN,
-          })),
-        },
-      },
-      include: {
-        lines: { include: LINE_INCLUDE_ACTIVE },
-        createdBy: { select: { id: true, name: true } },
-      },
-    });
+    return prisma.$transaction(async (tx) => {
+      const linesInput = items.map((item) => ({
+        productId: item.product.id,
+        quantityNeeded: item.suggestedQuantity,
+        unitId: null,
+        reasonCode: "REORDER_ALERT" as const,
+        notes: `Suggested by reorder (${item.calculationMethod})`,
+      }));
 
-    await recordAuditEvent({
-      event: AuditEvent.PURCHASE_REQUIREMENT_CREATED,
-      entityId: requirement.id,
-      actorId: actor.id,
-      metadata: {
-        reference: requirement.reference,
-        lineCount: requirement.lines.length,
-        source: "REORDER_SUGGESTIONS",
-      },
-    });
+      const result = await processRequirementLinesTx(
+        tx,
+        linesInput,
+        actor.id,
+        generatePRNumber,
+        null,
+        "Auto-generated from reorder suggestions",
+      );
 
-    return {
-      ...requirement,
-      lines: (requirement.lines as unknown as LineRow[]).map(mapRequirementLine),
-    };
+      if (result.createdRequirement) {
+        await recordAuditEvent(
+          {
+            event: AuditEvent.PURCHASE_REQUIREMENT_CREATED,
+            entityId: result.createdRequirement.id,
+            actorId: actor.id,
+            metadata: {
+              reference: result.createdRequirement.reference,
+              lineCount: result.createdRequirement.lines.length,
+              source: "REORDER_SUGGESTIONS",
+            },
+          },
+          tx,
+        );
+      }
+
+      return result;
+    });
   },
 };
 

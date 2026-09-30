@@ -85,7 +85,7 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     supplierC = c.id;
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     await prisma.purchaseRequirementAllocation.deleteMany({
       where: { requirementLine: { requirementId: { in: requirementIds } } },
     });
@@ -98,6 +98,10 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     await prisma.purchaseRequirement.deleteMany({ where: { id: { in: requirementIds } } });
     await prisma.stockTransaction.deleteMany({ where: { productId } });
     await prisma.inventoryStock.deleteMany({ where: { productId } });
+    requirementIds = [];
+  });
+
+  afterAll(async () => {
     await prisma.batch.deleteMany({ where: { productId } });
     await prisma.productUnit.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
@@ -119,9 +123,9 @@ describe("purchasing: requirement -> purchase order allocation", () => {
       .set("Cookie", cookie)
       .send({ lines: [{ productId, quantityNeeded }] })
       .expect(201);
-    const requirementId = res.body.data.id as string;
+    const requirementId = res.body.data.createdRequirement.id as string;
     requirementIds.push(requirementId);
-    return { requirementId, lineId: res.body.data.lines[0].id as string };
+    return { requirementId, lineId: res.body.data.createdRequirement.lines[0].id as string };
   }
 
   function orderFromRequirement(supplierId: string, lineId: string, quantityOrdered: number) {
@@ -170,7 +174,10 @@ describe("purchasing: requirement -> purchase order allocation", () => {
 
     const line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(50);
-    expect(line.remainingQuantity).toBe(50);
+    // remainingQuantity = max(required - delivered, 0); no delivery yet so still 100 needed.
+    expect(line.remainingQuantity).toBe(100);
+    // quantityRemaining (= still to order) = max(100 - 0 - 50, 0) = 50
+    expect(line.quantityRemaining).toBe(50);
     expect(line.status).toBe("PARTIALLY_FULFILLED");
     expect(line.activeOrderCount).toBe(1);
   });
@@ -197,8 +204,10 @@ describe("purchasing: requirement -> purchase order allocation", () => {
 
     const line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(100);
-    expect(line.remainingQuantity).toBe(0);
-    expect(line.status).toBe("FULFILLED");
+    // remainingQuantity = max(required - delivered, 0); no delivery yet so still 100 needed.
+    expect(line.remainingQuantity).toBe(100);
+    // ORDERED: all required quantity is covered by active POs but none has been received yet.
+    expect(line.status).toBe("ORDERED");
     expect(line.activeOrderCount).toBe(3);
 
     // Nothing left to order.
@@ -213,7 +222,10 @@ describe("purchasing: requirement -> purchase order allocation", () => {
 
     let line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(70);
-    expect(line.remainingQuantity).toBe(30);
+    // remainingQuantity = max(required - delivered, 0) = 100; still need all 100.
+    expect(line.remainingQuantity).toBe(100);
+    // quantityRemaining = still to order = max(100 - 0 - 70, 0) = 30.
+    expect(line.quantityRemaining).toBe(30);
     expect(line.status).toBe("PARTIALLY_FULFILLED");
 
     await request(app)
@@ -223,7 +235,9 @@ describe("purchasing: requirement -> purchase order allocation", () => {
 
     line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(30);
-    expect(line.remainingQuantity).toBe(70);
+    // Still 100 needed because nothing has been delivered.
+    expect(line.remainingQuantity).toBe(100);
+    expect(line.quantityRemaining).toBe(70);
     expect(line.status).toBe("PARTIALLY_FULFILLED");
 
     await request(app)
@@ -250,7 +264,10 @@ describe("purchasing: requirement -> purchase order allocation", () => {
 
     const line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(70);
-    expect(line.remainingQuantity).toBe(30);
+    // remainingQuantity = max(required - delivered, 0) = 100; still need all 100.
+    expect(line.remainingQuantity).toBe(100);
+    // quantityRemaining = still to order = max(100 - 0 - 70, 0) = 30.
+    expect(line.quantityRemaining).toBe(30);
     expect(line.status).toBe("PARTIALLY_FULFILLED");
   });
 
@@ -264,7 +281,11 @@ describe("purchasing: requirement -> purchase order allocation", () => {
       .set("Cookie", cookie)
       .send({ quantityNeeded: 80 })
       .expect(200);
-    expect((await getLine(requirementId, lineId)).remainingQuantity).toBe(10);
+    const lineAfter = await getLine(requirementId, lineId);
+    // remainingQuantity = max(required - delivered, 0); no delivery yet so 80.
+    expect(lineAfter.remainingQuantity).toBe(80);
+    // quantityRemaining (= still to order) = max(80 - 0 - 70, 0) = 10.
+    expect(lineAfter.quantityRemaining).toBe(10);
 
     // Reducing below ordered is rejected.
     const res = await request(app)
@@ -288,7 +309,9 @@ describe("purchasing: requirement -> purchase order allocation", () => {
       .expect(200);
     let line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(50);
-    expect(line.remainingQuantity).toBe(50);
+    // remainingQuantity = max(required - delivered, 0) = 100; still need all 100.
+    expect(line.remainingQuantity).toBe(100);
+    expect(line.quantityRemaining).toBe(50); // still to order = 100 - 50 = 50
 
     // 80 is allowed (100 - 20 other), 90 is not.
     await request(app)
@@ -304,7 +327,8 @@ describe("purchasing: requirement -> purchase order allocation", () => {
 
     line = await getLine(requirementId, lineId);
     expect(line.orderedQuantity).toBe(100);
-    expect(line.status).toBe("FULFILLED");
+    // ORDERED: fully covered by active POs but no delivery yet.
+    expect(line.status).toBe("ORDERED");
   });
 
   it("blocks deleting a requirement item with active orders but allows clean ones", async () => {
@@ -355,7 +379,8 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     const poId = po.body.data.id as string;
     const itemId = po.body.data.items[0].id as string;
 
-    expect((await getLine(requirementId, lineId)).status).toBe("FULFILLED");
+    // ORDERED: fully covered by active POs but no delivery yet.
+    expect((await getLine(requirementId, lineId)).status).toBe("ORDERED");
 
     const receipt = await request(app)
       .post(`${BASE}/purchase-orders/${poId}/goods-receipts`)
@@ -387,10 +412,10 @@ describe("purchasing: requirement -> purchase order allocation", () => {
       .expect(200);
 
     const line = await getLine(requirementId, lineId);
-    // Receiving is downstream of ordering: ordered stays 100, status stays FULFILLED.
+    // Partial delivery (60 of 100). 60 delivered, 40 still in the pipeline.
     expect(line.orderedQuantity).toBe(100);
-    expect(line.remainingQuantity).toBe(0);
-    expect(line.status).toBe("FULFILLED");
+    expect(line.remainingQuantity).toBe(40); // max(100 - 60, 0)
+    expect(line.status).toBe("PARTIALLY_FULFILLED");
     expect(line.quantityDelivered).toBe(60);
   });
 });

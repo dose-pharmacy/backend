@@ -70,8 +70,8 @@ export type PopaymentSummary = {
   status: PurchaseOrderPaymentStatus;
   invoiceCount: number;
   invoicedAmount: number;
-  paidAmount: number;
-  outstandingAmount: number;
+  amountPaid: number;
+  remainingToPay: number;
 };
 
 export type POReceivingSummary = {
@@ -149,8 +149,8 @@ async function paymentAggregatesByPo(): Promise<Map<string, PopaymentSummary>> {
       }),
       invoiceCount: row._count._all,
       invoicedAmount: roundMoney(invoiced),
-      paidAmount: roundMoney(paid),
-      outstandingAmount: roundMoney(outstanding),
+      amountPaid: roundMoney(paid),
+      remainingToPay: roundMoney(outstanding),
     });
   }
   return map;
@@ -770,8 +770,8 @@ export const purchaseOrderService = {
         }),
         invoiceCount: invoices.length,
         invoicedAmount: roundMoney(invoicedTotal),
-        paidAmount: roundMoney(invoicedTotal.minus(outstanding)),
-        outstandingAmount: roundMoney(outstanding),
+        amountPaid: roundMoney(invoicedTotal.minus(outstanding)),
+        remainingToPay: roundMoney(outstanding),
       };
     } else {
       const [goodsAgg, aggregates] = await Promise.all([
@@ -796,8 +796,8 @@ export const purchaseOrderService = {
           status: PurchaseOrderPaymentStatus.NOT_INVOICED,
           invoiceCount: 0,
           invoicedAmount: 0,
-          paidAmount: 0,
-          outstandingAmount: 0,
+          amountPaid: 0,
+          remainingToPay: 0,
         } satisfies PopaymentSummary);
     }
 
@@ -833,6 +833,12 @@ export const purchaseOrderService = {
       const item = await tx.purchaseOrderItem.findUnique({
         where: { id: itemId },
         include: { purchaseOrder: { select: { id: true, status: true } } },
+        // Also select requirementLineId so we can recompute requirement status.
+      });
+      // Re-fetch with requirementLineId included separately (include + select can't be combined).
+      const itemFull = await tx.purchaseOrderItem.findUnique({
+        where: { id: itemId },
+        select: { requirementLineId: true },
       });
       if (!item) {
         throw new AppError(
@@ -906,6 +912,19 @@ export const purchaseOrderService = {
           product: { select: { id: true, name: true, sku: true } },
         },
       });
+
+      // Recompute requirement status so shortage is reflected immediately.
+      // Without this the requirement stays at its pre-shortage state.
+      if (itemFull?.requirementLineId) {
+        const reqLine = await tx.purchaseRequirementLine.findUnique({
+          where: { id: itemFull.requirementLineId },
+          select: { requirementId: true },
+        });
+        if (reqLine) {
+          await recomputeRequirementStatus(reqLine.requirementId, tx);
+        }
+      }
+
       return updated;
     }, TX_OPTIONS);
   },

@@ -153,6 +153,7 @@ describe("units: purchasing + stock + pos mixed-unit lifecycle", () => {
 
     await prisma.batch.deleteMany({ where: { productId } });
     await prisma.productUnit.deleteMany({ where: { productId } });
+    await prisma.reorderConfiguration.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.productGroup.deleteMany({ where: { id: groupId } });
     await prisma.inventoryLocation.deleteMany({ where: { id: locationId } });
@@ -187,7 +188,7 @@ describe("units: purchasing + stock + pos mixed-unit lifecycle", () => {
         lines: [{ productId, quantityNeeded: 5, unitId: box }],
       })
       .expect(201);
-    const requirementId = req.body.data.id as string;
+    const requirementId = req.body.data.createdRequirement.id as string;
     requirementIds.push(requirementId);
 
     const view = await request(app)

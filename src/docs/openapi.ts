@@ -1594,16 +1594,24 @@ export const openApiDocument = {
       },
       post: {
         tags: ["Purchasing"],
-        summary: "Create purchase requirement",
+        summary: "Create or update purchase requirements",
         requestBody: jsonBody("RequirementCreateInput"),
-        responses: { "201": okRef("RequirementResponse"), ...authErrorResponses }
+        responses: { "201": okRef("RequirementActionResponse"), ...authErrorResponses }
+      }
+    },
+    "/purchasing/requirements/preview": {
+      post: {
+        tags: ["Purchasing"],
+        summary: "Preview requirement creation/updates without saving",
+        requestBody: jsonBody("RequirementCreateInput"),
+        responses: { "200": okRef("RequirementActionResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/requirements/generate-from-reorder": {
       post: {
         tags: ["Purchasing"],
         summary: "Generate purchase requirements from reorder suggestions",
-        responses: { "200": okRef("RequirementListResponse"), ...authErrorResponses }
+        responses: { "200": okRef("RequirementActionResponse"), ...authErrorResponses }
       }
     },
     "/purchasing/requirements/lines": {
@@ -4051,11 +4059,24 @@ SlowMovingEvaluationResponse: {
           id: { type: "string", format: "uuid" },
           requirementId: { type: "string", format: "uuid" },
           productId: { type: "string", format: "uuid" },
-          quantityNeeded: { type: "number" },
-          quantityNeededBase: { type: "number", description: "Quantity converted to the product's base unit" },
+          product: { $ref: "#/components/schemas/Product", nullable: true },
           unitId: { type: "string", format: "uuid", nullable: true },
+          unit: { $ref: "#/components/schemas/Unit", nullable: true },
+          requiredQuantity: { type: "number" },
+          quantityNeeded: { type: "number" },
+          quantityOrdered: { type: "number" },
+          orderedQuantity: { type: "number" },
+          quantityRemaining: { type: "number", description: "still to order" },
+          remainingQuantity: { type: "number", description: "still physically needed (required - delivered)" },
+          remainingToOrder: { type: "number", description: "still to order" },
+          quantityDelivered: { type: "number" },
+          remainingToReceive: { type: "number", description: "quantity ordered but not yet physically received" },
+          activeOrderCount: { type: "integer" },
           reasonCode: { type: "string", enum: ["LOW_STOCK", "REORDER_ALERT", "MANUAL"], nullable: true },
+          status: { type: "string", enum: ["OPEN", "ORDERED", "PARTIALLY_FULFILLED", "FULFILLED", "CLOSED"] },
           notes: { type: "string", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
         },
       },
       Requirement: {
@@ -4075,6 +4096,31 @@ SlowMovingEvaluationResponse: {
         properties: {
           success: { type: "boolean", example: true },
           data: { $ref: "#/components/schemas/Requirement" },
+        },
+      },
+      RequirementActionResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              createdRequirement: { $ref: "#/components/schemas/Requirement", nullable: true },
+              actions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    productId: { type: "string", format: "uuid" },
+                    unitId: { type: "string", format: "uuid", nullable: true },
+                    requestedQuantity: { type: "number" },
+                    action: { type: "string", enum: ["CREATE", "UPDATE"] },
+                    existingRequirement: { $ref: "#/components/schemas/RequirementLine", nullable: true },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       RequirementListResponse: {
@@ -4236,8 +4282,8 @@ SlowMovingEvaluationResponse: {
               status: { type: "string", enum: ["NOT_INVOICED", "UNPAID", "PARTIALLY_PAID", "PAID"] },
               invoiceCount: { type: "integer", description: "Number of supplier invoices for this PO" },
               invoicedAmount: { type: "number", description: "Total amount billed across all invoices" },
-              paidAmount: { type: "number", description: "Amount already paid (invoicedAmount − outstandingAmount)" },
-              outstandingAmount: { type: "number", description: "Amount still owed across all invoices" },
+              amountPaid: { type: "number", description: "Amount already paid (invoicedAmount − remainingToPay)" },
+              remainingToPay: { type: "number", description: "Amount still owed across all invoices" },
             },
           },
           supplierInvoices: {
