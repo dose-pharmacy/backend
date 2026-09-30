@@ -1862,11 +1862,35 @@ export const openApiDocument = {
         responses: { "200": okRef("GoodsReceiptResponse"), "404": { description: "Goods receipt not found" }, ...authErrorResponses }
       }
     },
+    "/purchasing/purchase-orders/{id}/invoice-upload/extract": {
+      post: {
+        tags: ["Purchasing"],
+        summary: "Extract/normalize a supplier invoice document",
+        description:
+          "Turns a raw supplier invoice document into the normalized, user-reviewable payload consumed by the " +
+          "invoice-upload preview. Accepts `text` (raw document text), `lines` (pre-split document lines, e.g. " +
+          "from an external OCR adapter), or `document` (an already-parsed draft to normalize). Pure " +
+          "transformation: reads nothing from the database, writes nothing, and never mutates inventory, PO " +
+          "quantities, receipts or invoices. Extracted values are proposals — unrecognized lines are reported " +
+          "in `warnings`/`skippedLineCount` and every value is editable before the preview/confirm steps, which " +
+          "re-match and re-validate everything against the live database. No paid external OCR dependency: an " +
+          "OCR adapter runs outside the backend and POSTs its text/lines here for normalization.",
+        parameters: [idPathParam],
+        requestBody: jsonBody("InvoiceExtractionInput"),
+        responses: { "200": okRef("InvoiceExtractionResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
+      }
+    },
     "/purchasing/purchase-orders/{id}/invoice-upload": {
       post: {
         tags: ["Purchasing"],
         summary: "Upload supplier invoice for receiving preview",
-        description: "Read-only receiving preview built from the extracted invoice. Confirm via the confirm endpoint.",
+        description:
+          "Read-only receiving preview built from the extracted (and user-corrected) invoice. Matches each line " +
+          "against the PO's items (explicit purchaseOrderItemId, then SKU, then normalized name/generic/brand — " +
+          "never creating products), validates quantities against the PO's CURRENT received/invoiced state, and " +
+          "returns per-line quantities (ordered/received/short/remaining, already invoiced, " +
+          "remainingToInvoice) plus blocking and non-blocking discrepancies. Mutates nothing. Confirm via the " +
+          "confirm endpoint, which re-reads and re-locks the PO items and re-validates from scratch.",
         parameters: [idPathParam],
         requestBody: jsonBody("InvoiceUploadInput"),
         responses: { "200": okRef("InvoiceReceivingPreviewResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
@@ -4510,7 +4534,78 @@ SlowMovingEvaluationResponse: {
         description: "Read-only receiving preview built from the uploaded invoice.",
         properties: {
           success: { type: "boolean", example: true },
-          data: { type: "object", description: "Preview of goods receipt lines and discrepancies" },
+          data: {
+            type: "object",
+            description: "Preview of goods receipt lines and discrepancies. Each item carries poOrdered/poReceived/poShort/poRemaining (receiving state), poInvoiced and poRemainingToInvoice (invoicing state derived as quantityReceived - quantityInvoiced across ALL invoices of the PO), remainingAfterReceipt, and the proposed batch/expiry/location.",
+          },
+        },
+      },
+      InvoiceExtractionInput: {
+        type: "object",
+        description: "Raw supplier document input. Provide exactly one of text, lines or document.",
+        properties: {
+          text: { type: "string", description: "Raw document text (lines separated by newlines)" },
+          lines: {
+            type: "array",
+            description: "Pre-split document lines (strings, or structured line objects from an OCR adapter)",
+            items: { type: "object" },
+          },
+          document: {
+            type: "object",
+            description: "Already-parsed draft to normalize/passthrough",
+            properties: {
+              supplierName: { type: "string", nullable: true },
+              invoiceNumber: { type: "string", nullable: true },
+              invoiceDate: { type: "string", nullable: true },
+              items: { type: "array", items: { type: "object" } },
+              subtotal: { type: "number", nullable: true },
+              discount: { type: "number", nullable: true },
+              tax: { type: "number", nullable: true },
+              fees: { type: "number", nullable: true },
+              grandTotal: { type: "number", nullable: true },
+              paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
+            },
+          },
+        },
+      },
+      InvoiceExtractionResponse: {
+        type: "object",
+        description: "Normalized, user-reviewable invoice extraction. Proposals only — never persisted, never applied.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              source: { type: "string", enum: ["text", "lines", "document"] },
+              supplierName: { type: "string", nullable: true },
+              invoiceNumber: { type: "string", nullable: true },
+              invoiceDate: { type: "string", format: "date-time", nullable: true },
+              items: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    productCode: { type: "string", nullable: true },
+                    productName: { type: "string", nullable: true },
+                    quantity: { type: "number" },
+                    unit: { type: "string", nullable: true },
+                    unitPrice: { type: "number", nullable: true },
+                    lineTotal: { type: "number", nullable: true },
+                    batchNumber: { type: "string", nullable: true },
+                    expiryDate: { type: "string", format: "date-time", nullable: true },
+                  },
+                },
+              },
+              skippedLineCount: { type: "integer", description: "Document lines that could not be interpreted" },
+              warnings: { type: "array", items: { type: "string" } },
+              subtotal: { type: "number", nullable: true },
+              discount: { type: "number", nullable: true },
+              tax: { type: "number", nullable: true },
+              fees: { type: "number", nullable: true },
+              grandTotal: { type: "number", nullable: true },
+              paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
+            },
+          },
         },
       },
       InvoiceReceivingConfirmResponse: {

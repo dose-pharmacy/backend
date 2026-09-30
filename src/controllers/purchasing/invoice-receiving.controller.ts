@@ -1,9 +1,22 @@
 import type { Request, Response } from "express";
 import { invoiceReceivingService, type InvoiceUploadInput } from "../../services/purchasing/invoice-receiving.service.js";
+import { invoiceExtractionService } from "../../services/purchasing/invoice-extraction.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
 export const invoiceReceivingController = {
+  /**
+   * Normalizes a raw supplier invoice document (text, pre-split lines from an
+   * OCR adapter, or an already-parsed draft) into the review payload used by
+   * the upload preview. Pure transformation: reads nothing, writes nothing.
+   * Extracted values are proposals for user review — the confirm endpoint
+   * revalidates everything against the live database.
+   */
+  extract: asyncHandler(async (req: Request, res: Response) => {
+    const data = await invoiceExtractionService.extract(req.body);
+    sendSuccess(res, data);
+  }),
+
   /**
    * Read-only preview of an invoice-assisted receiving operation. Extracts
    * nothing and mutates nothing — it matches the invoice against the selected

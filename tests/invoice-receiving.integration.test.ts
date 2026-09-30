@@ -359,6 +359,42 @@ describe("invoice-assisted receiving", () => {
     expect(Number((await prisma.purchaseOrderItem.findUnique({ where: { id: poItemId } }))!.quantityReceived)).toBe(0);
   });
 
+  itDb("preview exposes previously-invoiced and remainingToInvoice quantities", async () => {
+    const po = await createPO(100);
+
+    // First upload: receive 60, invoice 60.
+    await invoiceReceivingService.confirm(
+      po.id,
+      baseInput({ items: [{ productCode: productSku, quantity: 60, batchNumber: "INVD-1", expiryDate: FUTURE_EXPIRY }] }),
+      actor(),
+    );
+
+    // Preview of the next delivery: 40 remain to receive; 0 remain to invoice
+    // (all 60 received were already billed).
+    const before = await invoiceReceivingService.preview(
+      po.id,
+      baseInput({ items: [{ productCode: productSku, quantity: 40, batchNumber: "INVD-2", expiryDate: FUTURE_EXPIRY }] }),
+    );
+    expect(before.items[0]!.poInvoiced).toBe(60);
+    expect(before.items[0]!.poRemainingToInvoice).toBe(0);
+
+    // Confirm the final delivery: received = 100 and the confirm flow also
+    // invoices the accepted 40, so invoiced = 100 and nothing remains to invoice.
+    await invoiceReceivingService.confirm(
+      po.id,
+      baseInput({ items: [{ productCode: productSku, quantity: 40, batchNumber: "INVD-2", expiryDate: FUTURE_EXPIRY }] }),
+      actor(),
+    );
+
+    const after = await invoiceReceivingService.preview(
+      po.id,
+      baseInput({ items: [{ productCode: productSku, quantity: 0, batchNumber: "INVD-3", expiryDate: FUTURE_EXPIRY }] }),
+    );
+    expect(after.items[0]!.poReceived).toBe(100);
+    expect(after.items[0]!.poInvoiced).toBe(100);
+    expect(after.items[0]!.poRemainingToInvoice).toBe(0);
+  });
+
   itDb("serializes concurrent confirmations so the PO is never over-received", async () => {
     const po = await createPO(50);
 

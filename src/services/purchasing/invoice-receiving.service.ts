@@ -115,6 +115,29 @@ const PO_ITEM_SELECT = {
   unit: { select: { id: true, name: true, symbol: true } },
 } satisfies Prisma.PurchaseOrderItemSelect;
 
+/**
+ * Already-invoiced quantity per PO item across ALL invoices of the PO.
+ * Invoicing is based on RECEIVED quantities: the reconciliation screen needs
+ * `quantityRemainingToInvoice = quantityReceived - quantityInvoiced` so the
+ * user can see which lines are still billable after this delivery.
+ */
+async function invoicedQuantitiesByItem(
+  db: DbClient,
+  poId: string,
+): Promise<Map<string, number>> {
+  const rows = await db.supplierInvoiceItem.groupBy({
+    by: ["purchaseOrderItemId"],
+    where: { invoice: { purchaseOrderId: poId } },
+    _sum: { quantity: true },
+  });
+  return new Map(
+    rows.map((row) => [
+      row.purchaseOrderItemId,
+      num(row._sum.quantity ?? new Prisma.Decimal(0)),
+    ]),
+  );
+}
+
 type POItemForMatching = Prisma.PurchaseOrderItemGetPayload<{ select: typeof PO_ITEM_SELECT }>;
 
 type PlannedLine = {
@@ -129,6 +152,10 @@ type PlannedLine = {
   poReceived: number;
   poShort: number;
   poRemaining: number;
+  /** SUM of quantities already invoiced for this PO item (derived). */
+  poInvoiced: number;
+  /** quantityReceived - quantityInvoiced (floored at 0), BEFORE this delivery. */
+  poRemainingToInvoice: number;
   remainingAfterReceipt: number;
   batchNumber: string | null;
   expiryDate: Date | null;
@@ -260,6 +287,7 @@ async function buildPlan(
 ): Promise<ReceivingPlan> {
   const po = await loadPOForReceiving(db, poId);
   await assertLocation(db, input.locationId);
+  const invoicedByItem = await invoicedQuantitiesByItem(db, poId);
 
   const discrepancies: InvoiceDiscrepancy[] = [];
 
@@ -312,6 +340,8 @@ async function buildPlan(
         poReceived: 0,
         poShort: 0,
         poRemaining: 0,
+        poInvoiced: 0,
+        poRemainingToInvoice: 0,
         remainingAfterReceipt: 0,
         batchNumber: line.batchNumber ?? null,
         expiryDate: line.expiryDate ?? null,
@@ -400,6 +430,11 @@ async function buildPlan(
       poReceived: num(poItem.quantityReceived),
       poShort: num(poItem.quantityShort),
       poRemaining: remaining,
+      poInvoiced: invoicedByItem.get(poItem.id) ?? 0,
+      poRemainingToInvoice: Math.max(
+        0,
+        num(poItem.quantityReceived) - (invoicedByItem.get(poItem.id) ?? 0),
+      ),
       remainingAfterReceipt: remaining - acceptedQuantity,
       batchNumber: line.batchNumber ?? null,
       expiryDate: line.expiryDate ?? null,

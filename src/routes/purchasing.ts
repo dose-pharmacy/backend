@@ -66,6 +66,7 @@ import {
   invoiceUploadSchema,
   invoiceReceivingParamsSchema,
 } from "../validators/purchasing/invoice-receiving.js";
+import { invoiceExtractionSchema } from "../validators/purchasing/invoice-extraction.js";
 
 export const purchasingRouter = Router();
 
@@ -327,6 +328,12 @@ purchasingRouter.delete(
 // confirm to atomically create + confirm a Goods Receipt and create the linked
 // Supplier Invoice through the canonical receiving services.
 // ---------------------------------------------------------------------------
+purchasingRouter.post(
+  "/purchase-orders/:id/invoice-upload/extract",
+  ...admin,
+  validate({ params: invoiceReceivingParamsSchema, body: invoiceExtractionSchema }),
+  invoiceReceivingController.extract,
+);
 purchasingRouter.post(
   "/purchase-orders/:id/invoice-upload",
   ...admin,
