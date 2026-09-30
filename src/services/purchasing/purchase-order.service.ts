@@ -173,8 +173,8 @@ async function attachPaymentSummaries<
           status: PurchaseOrderPaymentStatus.NOT_INVOICED,
           invoiceCount: 0,
           invoicedAmount: 0,
-          paidAmount: 0,
-          outstandingAmount: 0,
+          amountPaid: 0,
+          remainingToPay: 0,
         } satisfies PopaymentSummary),
     };
   });

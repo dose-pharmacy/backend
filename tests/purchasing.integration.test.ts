@@ -1,6 +1,6 @@
 import request from "supertest";
 import type { Response } from "supertest";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import app from "../src/app.js";
 import { prisma } from "../src/database/prisma.js";
 

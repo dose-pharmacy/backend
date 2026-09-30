@@ -447,8 +447,8 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
       status: "UNPAID",
       invoiceCount: 2,
       invoicedAmount: 500,
-      paidAmount: 0,
-      outstandingAmount: 500,
+      amountPaid: 0,
+      remainingToPay: 500,
     });
   });
 
@@ -485,8 +485,8 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
       status: "PARTIALLY_PAID",
       invoiceCount: 2,
       invoicedAmount: 500,
-      paidAmount: 350,
-      outstandingAmount: 150,
+      amountPaid: 350,
+      remainingToPay: 150,
     });
   });
 
@@ -720,8 +720,8 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
     expect(Number(po.goodsSummary.goodsInvoicedAmount)).toBe(500);
     expect(Number(po.goodsSummary.remainingGoodsToInvoice)).toBe(0);
     expect(Number(po.paymentSummary.invoicedAmount)).toBe(500);
-    expect(Number(po.paymentSummary.paidAmount)).toBe(400);
-    expect(Number(po.paymentSummary.outstandingAmount)).toBe(100);
+    expect(Number(po.paymentSummary.amountPaid)).toBe(400);
+    expect(Number(po.paymentSummary.remainingToPay)).toBe(100);
     expect(po.paymentSummary.status).toBe("PARTIALLY_PAID");
     expect(po.paymentSummary.invoiceCount).toBe(2);
   });
@@ -760,7 +760,7 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
 
     const po = await getPo(poId);
     expect(po.paymentSummary.status).toBe("PAID");
-    expect(Number(po.paymentSummary.paidAmount)).toBe(300);
+    expect(Number(po.paymentSummary.amountPaid)).toBe(300);
     expect(Number(po.goodsSummary.remainingGoodsToInvoice)).toBe(200);
   });
 
@@ -770,7 +770,7 @@ describe("purchasing: deliveries, shortages, invoices and payments", () => {
       .set("Cookie", cookie)
       .expect(200);
     expect(poRes.body.summary).toBeDefined();
-    expect(typeof poRes.body.summary.registered).toBe("number");
+    expect(typeof poRes.body.summary.awaitingDelivery).toBe("number");
     expect(typeof poRes.body.summary.closed).toBe("number");
 
     const grRes = await request(app)
