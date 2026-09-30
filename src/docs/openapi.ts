@@ -653,9 +653,26 @@ export const openApiDocument = {
           { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" } },
           { name: "brand", in: "query", schema: { type: "string" } },
           { name: "isActive", in: "query", schema: { type: "string", enum: ["true", "false"] } },
+          {
+            name: "pricingStatus",
+            in: "query",
+            schema: {
+              type: "string",
+              enum: ["ALL", "OK", "BELOW_TARGET", "BELOW_COST", "NO_MARGIN_CONFIG", "NO_PURCHASE_COST"],
+              default: "ALL",
+            },
+            description:
+              "Filters products by their pricing / target-margin warning. The status is evaluated and filtered IN THE DATABASE before pagination, so paging stays correct. `ALL` (or omitting the parameter) applies no pricing filter.\n\n" +
+              "* `OK` — selling price reaches the target price implied by the product group margin.\n" +
+              "* `BELOW_TARGET` — above cost but under the target price.\n" +
+              "* `BELOW_COST` — selling price is at or below the highest received purchase cost.\n" +
+              "* `NO_MARGIN_CONFIG` — the product group has no usable target margin (missing, 0, or >= 100%).\n" +
+              "* `NO_PURCHASE_COST` — no confirmed received purchase cost to compare against.",
+          },
         ],
         responses: {
-          "200": { description: "Paginated product list", content: { "application/json": { schema: { $ref: "#/components/schemas/ProductListResponse" } } } },
+          "200": { description: "Paginated product list (each item carries its pricing warning)", content: { "application/json": { schema: { $ref: "#/components/schemas/ProductListResponse" } } } },
+          "422": { description: "Validation error (e.g. unknown pricingStatus)", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           ...authErrorResponses,
         },
       },
@@ -2561,14 +2578,89 @@ export const openApiDocument = {
           isActive: { type: "boolean" },
         },
       },
+      ProductPricing: {
+        type: "object",
+        description:
+          "Read-only pricing / target-margin warning. The backend NEVER reprices a product: this only reports the comparison between the current selling price and the target price implied by the product group's configured margin and the cost actually paid.\n\n" +
+          "`targetMargin` uses the project percentage convention (10 means 10%) and is a margin ON SELLING PRICE, so `targetSellingPrice = costBasis / (1 - targetMargin / 100)` — deliberately NOT `cost x (1 + margin)`.\n\n" +
+          "Status precedence: `NO_MARGIN_CONFIG` then `NO_PURCHASE_COST`, then `BELOW_COST` (selling <= cost, which also covers an unpriced product), then `OK` (selling >= target), else `BELOW_TARGET`.",
+        properties: {
+          sellingPrice: { type: "number", nullable: true, example: 130, description: "Current base-unit selling price (ProductUnit.sellPrice of the base unit). Null when the product has no priced base unit." },
+          targetMargin: { type: "number", nullable: true, example: 10, description: "Product group target profit margin as a PERCENTAGE (10 = 10%). Null when there is no usable margin." },
+          costBasis: { type: "number", nullable: true, example: 120, description: "Highest received purchase cost converted to the base unit, from CONFIRMED goods receipts of non-cancelled purchase orders. Null when the product has no such history." },
+          targetSellingPrice: { type: "number", nullable: true, example: 133.33, description: "Selling price that would achieve the target margin: costBasis / (1 - targetMargin/100), rounded to 2 dp. Null when not computable. NOT the actual selling price." },
+          pricingStatus: { type: "string", enum: ["OK", "BELOW_TARGET", "BELOW_COST", "NO_MARGIN_CONFIG", "NO_PURCHASE_COST"], example: "BELOW_TARGET" },
+        },
+        example: {
+          sellingPrice: 130,
+          targetMargin: 10,
+          costBasis: 120,
+          targetSellingPrice: 133.33,
+          pricingStatus: "BELOW_TARGET",
+        },
+      },
+      ProductListItem: {
+        type: "object",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          name: { type: "string" },
+          genericName: { type: "string", nullable: true },
+          brand: { type: "string", nullable: true },
+          sku: { type: "string" },
+          isActive: { type: "boolean" },
+          isNarcotic: { type: "boolean" },
+          productGroup: { type: "object", properties: { id: { type: "string", format: "uuid" }, name: { type: "string" } } },
+          pricing: { $ref: "#/components/schemas/ProductPricing" },
+        },
+      },
       ProductListResponse: {
         type: "object",
         properties: {
           success: { type: "boolean", example: true },
-          data: { type: "array", items: { $ref: "#/components/schemas/ProductSummary" } },
+          data: { type: "array", items: { $ref: "#/components/schemas/ProductListItem" } },
           meta: { $ref: "#/components/schemas/PaginationMeta" },
+          summary: {
+            type: "object",
+            description: "Aggregate counts over the whole filtered dataset (not just the current page).",
+            properties: {
+              byStatus: { type: "object", properties: { active: { type: "integer" }, inactive: { type: "integer" } } },
+              byProductGroup: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    productGroupId: { type: "string", format: "uuid" },
+                    productGroupName: { type: "string" },
+                    count: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
         },
-        example: { success: true, data: [{ id: "product-uuid", name: "Paracetamol 500mg", genericName: "Paracetamol", brand: "Example", sku: "PCM-500", isActive: true }], meta: { page: 1, limit: 20, total: 1, totalPages: 1 } },
+        example: {
+          success: true,
+          data: [
+            {
+              id: "product-uuid",
+              name: "Paracetamol 500mg",
+              genericName: "Paracetamol",
+              brand: "Example",
+              sku: "PCM-500",
+              isActive: true,
+              isNarcotic: false,
+              productGroup: { id: "group-uuid", name: "Painkillers" },
+              pricing: {
+                sellingPrice: 130,
+                targetMargin: 10,
+                costBasis: 120,
+                targetSellingPrice: 133.33,
+                pricingStatus: "BELOW_TARGET",
+              },
+            },
+          ],
+          meta: { page: 1, limit: 20, total: 1, totalPages: 1 },
+        },
       },
       TransferItemCreateInput: {
         type: "object",
@@ -2922,6 +3014,7 @@ export const openApiDocument = {
               batchCount: { type: "integer" },
               transactionCount: { type: "integer" },
               locationCount: { type: "integer" },
+              pricing: { $ref: "#/components/schemas/ProductPricing" },
               createdAt: { type: "string", format: "date-time" },
               updatedAt: { type: "string", format: "date-time" },
             },
@@ -2941,6 +3034,13 @@ export const openApiDocument = {
             baseUnit: { id: "unit-uuid", name: "Tablet", symbol: "TAB" },
             units: [{ unitId: "tablet-unit-uuid", conversionFactor: 1, sellPrice: 2, isBaseUnit: true }],
             stockSummary: { totalQuantity: 1250, baseUnit: { id: "unit-uuid", name: "Tablet" }, byLocation: [{ locationName: "Main Store", quantity: 1250 }] },
+            pricing: {
+              sellingPrice: 130,
+              targetMargin: 10,
+              costBasis: 120,
+              targetSellingPrice: 133.33,
+              pricingStatus: "BELOW_TARGET",
+            },
             batchCount: 5,
             transactionCount: 23,
             locationCount: 2,

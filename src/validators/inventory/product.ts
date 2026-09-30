@@ -10,6 +10,7 @@ import {
   thresholdSchema,
   uuidSchema,
 } from "./common.js";
+import { PRICING_STATUS_FILTER_VALUES } from "../../services/inventory/pricing.service.js";
 
 const optionalShortText = (max: number) => z.string().trim().max(max).optional();
 
@@ -77,6 +78,9 @@ export const productListQuerySchema = z
     productGroupId: uuidSchema.optional(),
     brand: optionalQueryString(100),
     isActive: z.enum(["true", "false"]).optional(),
+    // Pricing / target-margin warning filter. Filtered in the database before
+    // pagination (see services/inventory/pricing.service.ts); `ALL` = no filter.
+    pricingStatus: z.enum(PRICING_STATUS_FILTER_VALUES).optional(),
   })
   .merge(paginationQuerySchema);
 

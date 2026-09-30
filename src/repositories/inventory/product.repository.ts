@@ -20,6 +20,12 @@ const productSummarySelect = {
   isNarcotic: true,
 } satisfies Prisma.ProductSelect;
 
+/** Exactly what the product-list endpoint returns per item. */
+const productListSelect = {
+  ...productSummarySelect,
+  productGroup: { select: { id: true, name: true } },
+} satisfies Prisma.ProductSelect;
+
 export const productRepository = {
   findById(id: string) {
     return prisma.product.findUnique({ where: { id } });
@@ -79,10 +85,7 @@ export const productRepository = {
     const [items, total] = await prisma.$transaction([
       prisma.product.findMany({
         where,
-        select: {
-          ...productSummarySelect,
-          productGroup: { select: { id: true, name: true } },
-        },
+        select: productListSelect,
         orderBy: { createdAt: "desc" },
         skip: query.skip,
         take: query.take,
@@ -90,6 +93,21 @@ export const productRepository = {
       prisma.product.count({ where }),
     ]);
     return { items, total, where };
+  },
+
+  /**
+   * Loads list-shaped products for an explicit id set (used by the
+   * pricing-status filtered list, where the ids come back already filtered and
+   * paginated from the database).
+   */
+  findByIds(ids: string[]) {
+    if (ids.length === 0) {
+      return Promise.resolve([]);
+    }
+    return prisma.product.findMany({
+      where: { id: { in: ids } },
+      select: productListSelect,
+    });
   },
 
   create(data: {

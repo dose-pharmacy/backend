@@ -11,6 +11,8 @@ import { toDecimal } from "../../utils/decimal.js";
 import { prisma } from "../../database/prisma.js";
 import type { PageQuery } from "../../utils/pagination.js";
 import { calculateStockStatus } from "./inventory-product.service.js";
+import { pricingService } from "./pricing.service.js";
+import type { PricingStatusFilter } from "./pricing.service.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { AuthenticatedUser } from "../../types/auth.js";
 
@@ -56,7 +58,30 @@ export type ListProductsQuery = PageQuery & {
   productGroupId?: string;
   brand?: string;
   isActive?: boolean;
+  /** Filter by the pricing/margin warning status (`ALL` = no filter). */
+  pricingStatus?: PricingStatusFilter;
 };
+
+type ProductGroupCount = { productGroupId: string; count: number };
+
+/** Resolves product-group names for the list summary counts. */
+async function withProductGroupNames(rows: ProductGroupCount[]) {
+  const groupIds = rows.map((row) => row.productGroupId);
+  const groups = groupIds.length
+    ? await prisma.productGroup.findMany({
+        where: { id: { in: groupIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const nameById = new Map(groups.map((group) => [group.id, group.name]));
+  return rows
+    .map((row) => ({
+      productGroupId: row.productGroupId,
+      productGroupName: nameById.get(row.productGroupId) ?? "Unknown",
+      count: row.count,
+    }))
+    .sort((a, b) => b.count - a.count);
+}
 
 function toOptionalDecimal(value: number | null | undefined): Prisma.Decimal | null | undefined {
   if (value === undefined) {
@@ -152,6 +177,49 @@ async function validateUnitConfigs(
 export const productService = {
   async list(query: ListProductsQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
+    const pricingStatus =
+      query.pricingStatus && query.pricingStatus !== "ALL" ? query.pricingStatus : undefined;
+
+    // Pricing-status filtered list: the filter, the count and the pagination all
+    // happen in the DATABASE (see pricing.service.ts), then only the requested
+    // page is hydrated. Never fetch-then-filter-then-paginate in JavaScript.
+    if (pricingStatus) {
+      const filters = {
+        search: query.search,
+        productGroupId: query.productGroupId,
+        brand: query.brand,
+        isActive: query.isActive,
+      };
+      const [{ ids, total }, summarySource] = await Promise.all([
+        pricingService.listProductIdsByPricingStatus({
+          status: pricingStatus,
+          filters,
+          skip,
+          take,
+        }),
+        pricingService.summarizeByPricingStatus({ status: pricingStatus, filters }),
+      ]);
+
+      const [rows, pricing] = await Promise.all([
+        productRepository.findByIds(ids),
+        pricingService.pricingForProductIds(ids),
+      ]);
+      const rowById = new Map(rows.map((row) => [row.id, row]));
+      const items = ids.flatMap((id) => {
+        const row = rowById.get(id);
+        return row ? [{ ...row, pricing: pricing.get(id) ?? null }] : [];
+      });
+
+      return {
+        items,
+        meta: buildPaginationMeta(total, page, limit),
+        summary: {
+          byStatus: summarySource.byStatus,
+          byProductGroup: await withProductGroupNames(summarySource.byProductGroup),
+        },
+      };
+    }
+
     const { items, total, where } = await productRepository.list({
       search: query.search,
       productGroupId: query.productGroupId,
@@ -165,7 +233,7 @@ export const productService = {
     // NOTE: productGroupId is a NON-nullable column, so no "not null" filter
     // is needed here — `equals: null` inside `not` is rejected by Prisma and
     // made every product-list request fail validation.
-    const [statusGroups, groupGroups] = await Promise.all([
+    const [statusGroups, groupGroups, pricing] = await Promise.all([
       prisma.product.groupBy({ by: ["isActive"], where, orderBy: [], _count: true }),
       prisma.product.groupBy({
         by: ["productGroupId"],
@@ -173,6 +241,7 @@ export const productService = {
         orderBy: [],
         _count: true,
       }),
+      pricingService.pricingForProductIds(items.map((item) => item.id)),
     ] as const);
 
     const byStatus: { active: number; inactive: number } = { active: 0, inactive: 0 };
@@ -180,20 +249,18 @@ export const productService = {
       byStatus[g.isActive ? "active" : "inactive"] = g._count;
     }
 
-    const groupIds = groupGroups.map((g) => g.productGroupId).filter((id): id is string => id !== null);
-    const groups = groupIds.length
-      ? await prisma.productGroup.findMany({ where: { id: { in: groupIds } }, select: { id: true, name: true } })
-      : [];
-    const groupNameById = new Map(groups.map((g) => [g.id, g.name]));
-    const byProductGroup = groupGroups
-      .map((g) => ({
+    const byProductGroup = await withProductGroupNames(
+      groupGroups.map((g) => ({
         productGroupId: g.productGroupId as string,
-        productGroupName: groupNameById.get(g.productGroupId as string) ?? "Unknown",
         count: g._count as number,
-      }))
-      .sort((a, b) => (b.count as number) - (a.count as number));
+      })),
+    );
 
-    return { items, meta: buildPaginationMeta(total, page, limit), summary: { byStatus, byProductGroup } };
+    return {
+      items: items.map((item) => ({ ...item, pricing: pricing.get(item.id) ?? null })),
+      meta: buildPaginationMeta(total, page, limit),
+      summary: { byStatus, byProductGroup },
+    };
   },
 
   async getById(id: string) {
@@ -227,6 +294,9 @@ export const productService = {
 
     const baseUnit = units.find((u) => u.isBaseUnit)?.unit ?? null;
 
+    // Pricing / target-margin warning (read-only; never reprices the product).
+    const pricing = (await pricingService.pricingForProductIds([id])).get(id) ?? null;
+
     return {
       ...product,
       baseUnit,
@@ -240,6 +310,7 @@ export const productService = {
       batchCount: usages.batches,
       transactionCount: usages.transactions,
       locationCount: byLocation.length,
+      pricing,
     };
   },
 

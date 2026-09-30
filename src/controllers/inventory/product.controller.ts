@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { productService } from "../../services/inventory/product.service.js";
 import type { CreateProductInput, ListProductsQuery, UpdateProductInput } from "../../services/inventory/product.service.js";
+import type { PricingStatusFilter } from "../../services/inventory/pricing.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
@@ -11,6 +12,7 @@ type ListQuery = {
   productGroupId?: string;
   brand?: string;
   isActive?: "true" | "false";
+  pricingStatus?: PricingStatusFilter;
 };
 
 export const productController = {
@@ -23,6 +25,7 @@ export const productController = {
       productGroupId: query.productGroupId,
       brand: query.brand,
       isActive: query.isActive !== undefined ? query.isActive === "true" : undefined,
+      pricingStatus: query.pricingStatus,
     };
     const { items, meta, summary } = await productService.list(input);
     sendSuccess(res, items, { meta, summary });
