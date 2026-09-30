@@ -172,6 +172,7 @@ export const openApiDocument = {
     { name: "Stock", description: "Stock movements and current stock" },
     { name: "POS Products", description: "Sellable products for the point of sale" },
     { name: "Sales", description: "Retail point of sale (POS) sales" },
+    { name: "Product Returns", description: "Customer product returns against completed POS sales (immediate refund)" },
     { name: "Financial Reports", description: "Sales, profitability, margin and slow-moving reporting (ADMIN only)" },
   ],
   paths: {
@@ -1090,6 +1091,80 @@ export const openApiDocument = {
           "404": { description: "Sale not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           "409": { description: "Sale is not completed or has no outstanding balance", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           "422": { description: "Payment amount exceeds outstanding balance", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/pos/sales/{id}/returns": {
+      get: {
+        tags: ["Product Returns"],
+        summary: "Get return information for a sale",
+        description:
+          "Everything the POS needs on the return screen: for every original sale line, the product/unit, the ORIGINAL quantity sold and prices, how much has already been returned, how much is still returnable, the line's net (post-discount) value, and the batches the line was sold from with how much of each has already been restocked.\n\n" +
+          "Refunds are always derived from these ORIGINAL sale values — a later product price change never affects an existing sale's return value. `amountRefunded` / `amountReturnable` are the per-line money amounts. Read-only: nothing here authorises a return, the create endpoint recomputes everything inside its own transaction.",
+        parameters: [idPathParam],
+        responses: {
+          "200": { description: "Return information for the sale", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleReturnInfoResponse" } } } },
+          "404": { description: "Sale not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+      post: {
+        tags: ["Product Returns"],
+        summary: "Return product against a completed sale (immediate refund)",
+        description:
+          "Creates a customer return in ONE database transaction: validates the sale (must be COMPLETED), locks the requested sale items, recomputes already-returned quantities, validates the requested quantities, computes refunds from the ORIGINAL sale values, creates the return + return items, records the immediate refund, and restores inventory — all or nothing.\n\n" +
+          "**The original sale is never modified.** Return history is recorded separately and points at the exact original sale item, so the same product sold at different prices in different sales stays distinguishable. `totalReturnedQuantity <= originalSoldQuantity` is enforced server-side.\n\n" +
+          "**Pricing:** each refund is the line's original NET (post-discount) value for the quantity actually returned. The POS applies discounts at bill level, so a line's share of the bill discount is allocated proportionally — today's product price is never used and the undiscounted list price is never paid out.\n\n" +
+          "**Location:** stock is always restored to the ORIGINAL sale location; the client cannot choose another one.\n\n" +
+          "**Idempotency:** send `idempotencyKey` to make a double click or client retry safe — re-sending the same key returns the original return instead of creating a second refund and stock movement.",
+        parameters: [idPathParam],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/SaleReturnCreateInput" } } },
+        },
+        responses: {
+          "201": { description: "Return created and refund issued", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleReturnResponse" } } } },
+          "404": { description: "Sale or sale item not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "409": { description: "Sale is not COMPLETED/returnable, or a concurrent return conflicts", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "422": { description: "Quantity exceeds the remaining returnable quantity, sale item belongs to another sale, or the batch cannot be restocked", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/pos/returns": {
+      get: {
+        tags: ["Product Returns"],
+        summary: "List customer returns",
+        description:
+          "Paginated return history with the refunded total, for the return register and finance reporting. Supports filtering by sale, location, product, refund method, whether stock was restocked, and a created-at range.",
+        parameters: [
+          { name: "page", in: "query", schema: { type: "integer", minimum: 1 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "saleId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "productId", in: "query", schema: { type: "string", format: "uuid" }, description: "Only returns containing this product" },
+          { name: "refundMethod", in: "query", schema: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] } },
+          { name: "restock", in: "query", schema: { type: "string", enum: ["true", "false"] }, description: "Only restockable or non-restockable returns" },
+          { name: "dateFrom", in: "query", schema: { type: "string", format: "date-time" } },
+          { name: "dateTo", in: "query", schema: { type: "string", format: "date-time" } },
+        ],
+        responses: {
+          "200": { description: "Paginated return list", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleReturnListResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/pos/returns/{id}": {
+      get: {
+        tags: ["Product Returns"],
+        summary: "Get a customer return",
+        description:
+          "A single return with its items, the original sale reference, the refund (amount, method, reference) and the batch allocations that were restocked.",
+        parameters: [idPathParam],
+        responses: {
+          "200": { description: "Return detail", content: { "application/json": { schema: { $ref: "#/components/schemas/SaleReturnResponse" } } } },
+          "404": { description: "Return not found", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
           ...authErrorResponses,
         },
       },
@@ -3596,6 +3671,208 @@ export const openApiDocument = {
                 batchId: { type: "string", format: "uuid" },
                 baseQuantity: { type: "number", description: "Base-unit quantity taken from this batch (FEFO)" },
                 batch: { type: "object", properties: { id: { type: "string" }, batchNumber: { type: "string" }, expiryDate: { type: "string", format: "date-time" } } },
+              },
+            },
+          },
+        },
+      },
+      SaleReturnCreateInput: {
+        type: "object",
+        required: ["items", "refundMethod"],
+        description:
+          "No refund amount is accepted: the backend always derives the refund from the original sale's financial values. Stock is always restored to the original sale's location, so no location is accepted either.",
+        properties: {
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: 200,
+            items: { $ref: "#/components/schemas/SaleReturnItemInput" },
+          },
+          refundMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
+          refundReference: { type: "string", maxLength: 200, description: "Refund reference (receipt no., transfer ID, etc.)" },
+          reason: { type: "string", maxLength: 500 },
+          notes: { type: "string", maxLength: 500 },
+          idempotencyKey: {
+            type: "string",
+            minLength: 8,
+            maxLength: 200,
+            description: "Optional de-duplication key. Re-sending the same key returns the original return instead of creating a second refund and stock movement.",
+          },
+        },
+        example: {
+          items: [
+            { saleItemId: "sale-item-uuid-1", quantity: 2, restock: true },
+            { saleItemId: "sale-item-uuid-2", quantity: 1, restock: false, reason: "Opened pack" },
+          ],
+          refundMethod: "CASH",
+          reason: "Customer return",
+        },
+      },
+      SaleReturnItemInput: {
+        type: "object",
+        required: ["saleItemId", "quantity"],
+        properties: {
+          saleItemId: {
+            type: "string",
+            format: "uuid",
+            description: "The EXACT original sale item being returned (never a productId — the same product can be sold at different prices in different sales).",
+          },
+          quantity: {
+            type: "number",
+            exclusiveMinimum: 0,
+            example: 2,
+            description: "Returned quantity in the unit the customer received the item in (max 3 decimal places). Must not exceed the remaining returnable quantity.",
+          },
+          restock: {
+            type: "boolean",
+            default: true,
+            description: "true restores the units to sellable inventory in the original batch; false still records the return and issues the refund but does not increase sellable stock.",
+          },
+          reason: { type: "string", maxLength: 500 },
+        },
+      },
+      SaleReturnResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/SaleReturn" },
+        },
+      },
+      SaleReturnListResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { type: "array", items: { $ref: "#/components/schemas/SaleReturn" } },
+          meta: { $ref: "#/components/schemas/PaginationMeta" },
+          summary: {
+            type: "object",
+            properties: { refundAmount: { type: "number", description: "Total refunded across the filtered returns" } },
+          },
+        },
+      },
+      SaleReturn: {
+        type: "object",
+        description: "A customer return. Created in the same transaction as its refund and inventory movements; the original sale is never modified.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          returnNumber: { type: "string", example: "RTN-20260930-3F2A9B" },
+          saleId: { type: "string", format: "uuid" },
+          sale: {
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              saleNumber: { type: "string" },
+              status: { type: "string", enum: ["DRAFT", "COMPLETED", "CANCELLED"] },
+              totalAmount: { type: "number", description: "ORIGINAL sale total, unchanged by the return" },
+            },
+          },
+          locationId: { type: "string", format: "uuid" },
+          location: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } }, description: "Always the ORIGINAL sale location" },
+          refundAmount: { type: "number", description: "Total immediate refund for this return" },
+          refundMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"] },
+          refundReference: { type: "string", nullable: true },
+          reason: { type: "string", nullable: true },
+          notes: { type: "string", nullable: true },
+          createdById: { type: "string", format: "uuid" },
+          createdBy: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, email: { type: "string" } } },
+          createdAt: { type: "string", format: "date-time" },
+          items: { type: "array", items: { $ref: "#/components/schemas/SaleReturnItem" } },
+        },
+      },
+      SaleReturnItem: {
+        type: "object",
+        description: "One returned line, referencing the exact original sale item it came from.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          saleItemId: { type: "string", format: "uuid", description: "The original sale item — the original line's quantity and price are never modified" },
+          productId: { type: "string", format: "uuid" },
+          product: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, sku: { type: "string" } } },
+          unitId: { type: "string", format: "uuid" },
+          unit: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, symbol: { type: "string", nullable: true } } },
+          quantity: { type: "number", description: "Returned quantity in the unit sold" },
+          baseQuantity: { type: "number", description: "Returned quantity normalized to the product base unit using the sale-time conversion factor" },
+          unitPrice: { type: "number", description: "Original selling price of the line (SaleItem.actualUnitPrice snapshot)" },
+          netUnitPrice: { type: "number", description: "Original net unit price after the line's share of the bill discount" },
+          refundAmount: { type: "number", description: "Refund for THIS line's returned quantity only" },
+          restock: { type: "boolean", description: "false = returned but not put back into sellable inventory" },
+          reason: { type: "string", nullable: true },
+          createdAt: { type: "string", format: "date-time" },
+          batchAllocations: {
+            type: "array",
+            description: "Which ORIGINAL batches the returned units came from. Only present for restockable returns.",
+            items: {
+              type: "object",
+              properties: {
+                batchId: { type: "string", format: "uuid" },
+                baseQuantity: { type: "number" },
+                batch: { type: "object", properties: { id: { type: "string" }, batchNumber: { type: "string" }, expiryDate: { type: "string", format: "date-time" } } },
+              },
+            },
+          },
+        },
+      },
+      SaleReturnInfoResponse: {
+        type: "object",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: { $ref: "#/components/schemas/SaleReturnInfo" },
+        },
+      },
+      SaleReturnInfo: {
+        type: "object",
+        description: "Per-line returnable state for one sale.",
+        properties: {
+          sale: {
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              saleNumber: { type: "string" },
+              status: { type: "string", enum: ["DRAFT", "COMPLETED", "CANCELLED"] },
+              returnable: { type: "boolean", description: "true only for COMPLETED sales" },
+              location: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, isActive: { type: "boolean" } } },
+              subtotal: { type: "number" },
+              totalDiscount: { type: "number" },
+              totalAmount: { type: "number" },
+              completedAt: { type: "string", format: "date-time" },
+            },
+          },
+          items: { type: "array", items: { $ref: "#/components/schemas/SaleReturnInfoItem" } },
+          returns: { type: "array", items: { $ref: "#/components/schemas/SaleReturn" }, description: "Existing return history for this sale" },
+          totalRefunded: { type: "number", description: "Total refunded against this sale so far" },
+        },
+      },
+      SaleReturnInfoItem: {
+        type: "object",
+        properties: {
+          saleItemId: { type: "string", format: "uuid" },
+          product: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, sku: { type: "string" }, isNarcotic: { type: "boolean" } } },
+          unit: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, symbol: { type: "string", nullable: true } } },
+          quantitySold: { type: "number" },
+          baseQuantitySold: { type: "number" },
+          quantityReturned: { type: "number", description: "Already returned across all previous returns" },
+          quantityReturnable: { type: "number", description: "quantitySold - quantityReturned" },
+          baseQuantityReturned: { type: "number" },
+          baseQuantityReturnable: { type: "number" },
+          originalUnitPrice: { type: "number" },
+          actualUnitPrice: { type: "number" },
+          lineTotal: { type: "number" },
+          billDiscountShare: { type: "number", description: "This line's proportional share of the bill discount" },
+          netLineTotal: { type: "number", description: "lineTotal - billDiscountShare: what the customer actually paid for this line" },
+          netUnitPrice: { type: "number", description: "netLineTotal / quantitySold" },
+          amountRefunded: { type: "number" },
+          amountReturnable: { type: "number", description: "netLineTotal - amountRefunded" },
+          batchAllocations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                batchId: { type: "string", format: "uuid" },
+                batchNumber: { type: "string" },
+                expiryDate: { type: "string", format: "date-time" },
+                expired: { type: "boolean", description: "An expired batch cannot be restocked; return it with restock=false" },
+                baseQuantity: { type: "number" },
+                baseQuantityReturned: { type: "number" },
+                baseQuantityReturnable: { type: "number" },
               },
             },
           },
