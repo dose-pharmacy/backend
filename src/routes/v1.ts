@@ -12,6 +12,7 @@ import { posRouter } from "./pos.js";
 import { financialsRouter } from "./financials.js";
 import { auditTrailRouter } from "./audit.js";
 import { notificationRouter } from "./notification.js";
+import { financeReportingRouter } from "./finance-reporting.js";
 
 export const v1Router = Router();
 
@@ -29,3 +30,4 @@ v1Router.use("/pos", posRouter);
 v1Router.use("/financials", financialsRouter);
 v1Router.use("/audit", auditTrailRouter);
 v1Router.use("/notifications", notificationRouter);
+v1Router.use("/finance-reporting", financeReportingRouter);
