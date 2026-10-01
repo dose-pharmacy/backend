@@ -128,6 +128,12 @@ export const ErrorCode = {
   DUPLICATE_RETURN_NUMBER: "DUPLICATE_RETURN_NUMBER",
   PURCHASE_RETURN_INSUFFICIENT_STOCK: "PURCHASE_RETURN_INSUFFICIENT_STOCK",
   PURCHASE_RETURN_IMMUTABLE: "PURCHASE_RETURN_IMMUTABLE",
+  // The requested return quantity exceeds the received quantity minus all
+  // previous returns of the purchase order item.
+  PURCHASE_RETURN_EXCEEDS_RETURNABLE: "PURCHASE_RETURN_EXCEEDS_RETURNABLE",
+  // A client-supplied cost / debit-note amount disagrees with the value derived
+  // from the authoritative purchase data.
+  PURCHASE_RETURN_VALUE_MISMATCH: "PURCHASE_RETURN_VALUE_MISMATCH",
   // The batch was received from a different supplier than the return targets.
   SUPPLIER_BATCH_MISMATCH: "SUPPLIER_BATCH_MISMATCH",
   // The product has never been ordered from the given supplier.

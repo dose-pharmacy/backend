@@ -2055,6 +2055,8 @@ export const openApiDocument = {
       post: {
         tags: ["Purchasing"],
         summary: "Record payment for supplier invoice",
+        description:
+          "Records a payment against the invoice's CURRENT outstanding balance (totalAmount minus payments minus returns applied). The payment must not exceed the outstanding balance; the decrement is atomic so concurrent payments/returns can never overpay. Invoice status becomes PAID when the outstanding reaches zero. Original payments and invoices are never rewritten by purchase returns - a return after full payment becomes a supplier refund/credit effect on the return record.",
         parameters: [idPathParam],
         requestBody: jsonBody("SupplierInvoicePaymentInput"),
         responses: { "200": okRef("SupplierInvoiceResponse"), "404": { description: "Supplier invoice not found" }, ...authErrorResponses }
@@ -2076,8 +2078,15 @@ export const openApiDocument = {
       post: {
         tags: ["Purchasing"],
         summary: "Create purchase return",
+        description:
+          "Atomic: creates the return, decrements stock via a RETURN_TO_SUPPLIER movement, applies the derived return value against the purchase order's outstanding invoices and audits, all in one transaction (rollback on any failure). Returns the original record when a previously used `idempotencyKey` is replayed. Errors: 409 insufficient stock, 422 exceeds returnable / value mismatch / supplier mismatch.",
         requestBody: jsonBody("PurchaseReturnCreateInput"),
-        responses: { "201": okRef("PurchaseReturnResponse"), ...authErrorResponses }
+        responses: {
+          "201": okRef("PurchaseReturnResponse"),
+          "409": { description: "Insufficient stock", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          "422": { description: "Exceeds returnable / value mismatch / supplier, product or batch mismatch", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses
+        }
       }
     },
     "/purchasing/purchase-returns/{id}": {
@@ -2086,6 +2095,19 @@ export const openApiDocument = {
         summary: "Get purchase return",
         parameters: [idPathParam],
         responses: { "200": okRef("PurchaseReturnResponse"), "404": { description: "Purchase return not found" }, ...authErrorResponses }
+      },
+    },
+    "/purchasing/purchase-order-items/{purchaseOrderItemId}/returnable": {
+      get: {
+        tags: ["Purchasing"],
+        summary: "Returnable quantity for a purchase order item",
+        description:
+          "How much of the item's received quantity can still be returned (received minus previous returns, in base units) plus the per-base-unit cost used to derive the return value.",
+        parameters: [
+          { name: "purchaseOrderItemId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          { name: "supplierId", in: "query", required: true, schema: { type: "string", format: "uuid" } },
+        ],
+        responses: { "200": { description: "Returnable quantity", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Purchase order item not found" }, ...authErrorResponses }
       },
       delete: {
         tags: ["Purchasing"],
@@ -5052,7 +5074,7 @@ SlowMovingEvaluationResponse: {
           additionalChargesAmount: { type: "number" },
           discountAmount: { type: "number" },
           totalAmount: { type: "number" },
-          paidAmount: { type: "number" },
+          outstandingBalance: { type: "number", description: "totalAmount minus payments minus returns applied to this invoice. Never negative; Finance reads payables from this column." },
           paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
           paymentMethod: { type: "string", enum: ["CASH", "MOBILE_TRANSFER", "CHECK"], nullable: true },
           createdAt: { type: "string", format: "date-time" },
@@ -5076,32 +5098,49 @@ SlowMovingEvaluationResponse: {
       },
       PurchaseReturnCreateInput: {
         type: "object",
-        required: ["supplierId", "productId", "locationId", "reason", "quantity", "unitCost"],
+        required: ["supplierId", "productId", "purchaseOrderItemId", "locationId", "reason", "quantity"],
+        description:
+          "The return VALUE is derived server-side from the purchase order item's unit cost (quantity x cost, in base units) and is NOT accepted from the client; a supplied `unitCost`/`debitNoteAmount` must match the derived value. The returnable quantity is capped by the PO item's received quantity minus all previous returns. The derived value is applied against outstanding payables of the purchase order's invoices (oldest first, never below zero); the unapplied remainder is a supplier refund/credit effect (`appliedToPayable` vs `debitNoteAmount` on the response). Supply `idempotencyKey` so a retried submission returns the original return instead of double-processing.",
         properties: {
           supplierId: { type: "string", format: "uuid" },
           productId: { type: "string", format: "uuid" },
-          batchId: { type: "string", format: "uuid" },
+          purchaseOrderItemId: { type: "string", format: "uuid", description: "The purchase order item whose received goods are being returned." },
+          batchId: { type: "string", format: "uuid", description: "Optional; auto-selected from this supplier's stock at the location when omitted." },
           locationId: { type: "string", format: "uuid" },
           reason: { type: "string", enum: ["EXPIRED", "DAMAGED", "INCORRECT_DELIVERY"], example: "EXPIRED" },
-          quantity: { type: "number", minimum: 0, example: 10 },
+          quantity: { type: "number", minimum: 0.001, example: 10, description: "In `unitId` (or base units when unitId is omitted)." },
           unitId: { type: "string", format: "uuid" },
-          unitCost: { type: "number", minimum: 0.01, example: 12.5 },
-          debitNoteAmount: { type: "number" },
+          unitCost: { type: "number", minimum: 0.01, example: 12.5, description: "Optional echo; must match the PO item's derived cost." },
+          debitNoteAmount: { type: "number", description: "Optional echo; must match the derived return value." },
           notes: { type: "string", maxLength: 1000 },
+          idempotencyKey: { type: "string", minLength: 8, maxLength: 200, description: "De-duplication key; the same key returns the original return." },
         },
       },
       PurchaseReturn: {
         type: "object",
         properties: {
           id: { type: "string", format: "uuid" },
+          returnNumber: { type: "string" },
           supplierId: { type: "string", format: "uuid" },
           productId: { type: "string", format: "uuid" },
+          purchaseOrderItemId: { type: "string", format: "uuid", nullable: true, description: "Null only on legacy rows created before PO-item linkage." },
+          purchaseOrderItem: {
+            type: "object",
+            nullable: true,
+            properties: {
+              id: { type: "string", format: "uuid" },
+              unitCost: { type: "number" },
+              quantityReceived: { type: "number" },
+              purchaseOrder: { type: "object", properties: { id: { type: "string", format: "uuid" }, poNumber: { type: "string" } } },
+            },
+          },
           batchId: { type: "string", format: "uuid", nullable: true },
           locationId: { type: "string", format: "uuid" },
           reason: { type: "string", enum: ["EXPIRED", "DAMAGED", "INCORRECT_DELIVERY"] },
-          quantity: { type: "number" },
-          unitCost: { type: "number" },
-          debitNoteAmount: { type: "number", nullable: true },
+          quantity: { type: "number", description: "Base units" },
+          unitCost: { type: "number", description: "Derived cost per BASE unit from the PO item." },
+          debitNoteAmount: { type: "number", description: "Total return value (quantity x derived base-unit cost)." },
+          appliedToPayable: { type: "number", description: "Portion of debitNoteAmount applied against outstanding invoices." },
           notes: { type: "string", nullable: true },
           createdAt: { type: "string", format: "date-time" },
         },

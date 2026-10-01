@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PrismaClient } from "@prisma/client";
 import { supplierCatalogService } from "../src/services/purchasing/supplier-catalog.service.js";
 import { purchaseReturnService } from "../src/services/purchasing/purchase-return.service.js";
@@ -11,6 +11,9 @@ import { stockService } from "../src/services/inventory/stock.service.js";
 import { AuditEvent } from "../src/services/audit/audit-events.js";
 
 const prisma = new PrismaClient();
+
+// Remote Neon round-trips are slow; give hooks and tests room.
+vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 
 const suffix = Math.random().toString(36).slice(2, 10);
 const TODAY = new Date();
@@ -144,13 +147,19 @@ beforeAll(async () => {
       createdById: userId,
       items: {
         create: [
-          { productId: p1Id, quantityOrdered: 100, unitId, unitCost: 6 },
-          { productId: p2Id, quantityOrdered: 50, unitId, unitCost: 3 },
+          // Received snapshot set below: purchase returns derive their cap
+          // (returnable = received - prior returns) and value from this item.
+          { productId: p1Id, quantityOrdered: 100, quantityOrderedBase: 100, unitId, unitCost: 6 },
+          { productId: p2Id, quantityOrdered: 50, quantityOrderedBase: 50, unitId, unitCost: 3 },
         ],
       },
     },
     include: { items: true },
   });
+  const poItemP1 = poA.items.find((i) => i.productId === p1Id);
+  if (poItemP1) {
+    await prisma.purchaseOrderItem.update({ where: { id: poItemP1.id }, data: { quantityReceived: 100 } });
+  }
   await prisma.purchaseOrder.create({
     data: {
       poNumber: `PO-B-${suffix}`,
@@ -322,6 +331,17 @@ describe.skipIf(!process.env.DATABASE_URL)("supplier catalog lookup (integration
 });
 
 describe.skipIf(!process.env.DATABASE_URL)("purchase return validation (integration)", () => {
+  // The return value and cap are derived from the PO item, so every case
+  // targets a real PO item of supplier A (p1, 100 ordered @6).
+  const poItemP1 = async (): Promise<string> => {
+    const item = await prisma.purchaseOrderItem.findFirst({
+      where: { productId: p1Id, purchaseOrder: { supplierId: supplierAId } },
+      select: { id: true },
+    });
+    if (!item) throw new Error("fixture missing: p1 PO item for supplier A");
+    return item.id;
+  };
+
   const baseInput = () => ({
     productId: p1Id,
     locationId: location1Id,
@@ -333,7 +353,7 @@ describe.skipIf(!process.env.DATABASE_URL)("purchase return validation (integrat
   it("rejects a product never ordered from the supplier", async () => {
     await expect(
       purchaseReturnService.create(
-        { ...baseInput(), supplierId: supplierAId, productId: p3Id, batchId: undefined },
+        { ...baseInput(), supplierId: supplierAId, productId: p3Id, purchaseOrderItemId: await poItemP1(), batchId: undefined },
         { id: userId },
       ),
     ).rejects.toMatchObject({ statusCode: 422 });
@@ -342,7 +362,7 @@ describe.skipIf(!process.env.DATABASE_URL)("purchase return validation (integrat
   it("rejects a batch that belongs to another supplier", async () => {
     await expect(
       purchaseReturnService.create(
-        { ...baseInput(), supplierId: supplierAId, batchId: batchB1Id },
+        { ...baseInput(), supplierId: supplierAId, purchaseOrderItemId: await poItemP1(), batchId: batchB1Id },
         { id: userId },
       ),
     ).rejects.toMatchObject({ statusCode: 422 });
@@ -352,16 +372,18 @@ describe.skipIf(!process.env.DATABASE_URL)("purchase return validation (integrat
     await expect(
       purchaseReturnService.create(
         // batchA3 belongs to P2, not P1
-        { ...baseInput(), supplierId: supplierAId, batchId: batchA3Id },
+        { ...baseInput(), supplierId: supplierAId, purchaseOrderItemId: await poItemP1(), batchId: batchA3Id },
         { id: userId },
       ),
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("rejects a quantity exceeding available stock", async () => {
+    // 50 is within the returnable cap (received = 100) but exceeds the 20
+    // units of batchA1 stock at location1 -> the STOCK check must reject it.
     await expect(
       purchaseReturnService.create(
-        { ...baseInput(), supplierId: supplierAId, batchId: batchA1Id, quantity: 999 },
+        { ...baseInput(), supplierId: supplierAId, purchaseOrderItemId: await poItemP1(), batchId: batchA1Id, quantity: 50 },
         { id: userId },
       ),
     ).rejects.toMatchObject({ statusCode: 409 });
@@ -370,7 +392,7 @@ describe.skipIf(!process.env.DATABASE_URL)("purchase return validation (integrat
   it("creates the return, the stock movement and the audit event together", async () => {
     const before = await eventCount(AuditEvent.PURCHASE_RETURN_CREATED);
     const created = await purchaseReturnService.create(
-      { ...baseInput(), supplierId: supplierAId, batchId: batchA1Id, quantity: 5 },
+      { ...baseInput(), supplierId: supplierAId, purchaseOrderItemId: await poItemP1(), batchId: batchA1Id, quantity: 5 },
       { id: userId },
     );
 
@@ -407,7 +429,7 @@ describe.skipIf(!process.env.DATABASE_URL)("purchase return validation (integrat
     const before = await eventCount(AuditEvent.PURCHASE_RETURN_CREATED);
     await expect(
       purchaseReturnService.create(
-        { ...baseInput(), supplierId: supplierAId, batchId: batchA1Id, quantity: 999 },
+        { ...baseInput(), supplierId: supplierAId, purchaseOrderItemId: await poItemP1(), batchId: batchA1Id, quantity: 50 },
         { id: userId },
       ),
     ).rejects.toMatchObject({ statusCode: 409 });
@@ -447,6 +469,7 @@ describe.skipIf(!process.env.DATABASE_URL)("audit trail (integration)", () => {
     // cleanup this test product
     await prisma.productUnit.deleteMany({ where: { productId } });
     await prisma.auditTrail.deleteMany({ where: { entityId: productId } });
+    await prisma.reorderConfiguration.deleteMany({ where: { productId } });
     await prisma.product.delete({ where: { id: productId } });
   });
 

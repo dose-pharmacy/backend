@@ -54,6 +54,8 @@ import {
   createPurchaseReturnSchema,
   purchaseReturnListQuerySchema,
   purchaseReturnParamsSchema,
+  purchaseReturnableParamsSchema,
+  purchaseReturnableQuerySchema,
 } from "../validators/purchasing/purchase-return.js";
 import {
   supplierIdParamsSchema,
@@ -407,6 +409,12 @@ purchasingRouter.get(
   ...admin,
   validate({ params: purchaseReturnParamsSchema }),
   purchaseReturnController.getById,
+);
+purchasingRouter.get(
+  "/purchase-order-items/:purchaseOrderItemId/returnable",
+  ...admin,
+  validate({ params: purchaseReturnableParamsSchema, query: purchaseReturnableQuerySchema }),
+  purchaseReturnController.returnable,
 );
 purchasingRouter.delete(
   "/purchase-returns/:id",

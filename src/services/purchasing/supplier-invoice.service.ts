@@ -394,6 +394,43 @@ export const supplierInvoiceService = {
       if (totalAmount.lt(0)) {
         throw new AppError(422, ErrorCode.BAD_REQUEST, "Invoice total cannot be negative");
       }
+      // Returns created BEFORE this invoice could not apply their value to any
+      // outstanding payable (none existed for the PO yet). Their unapplied
+      // remainder is a pending supplier credit that reduces this invoice's
+      // opening balance - otherwise a return recorded before invoicing would
+      // be silently lost from the payable.
+      let pendingCredit = new Prisma.Decimal(0);
+      if (po) {
+        const pendingReturns = await tx.purchaseReturn.findMany({
+          where: {
+            purchaseOrderItem: { purchaseOrderId: po.id },
+            appliedToPayable: { lt: tx.purchaseReturn.fields.debitNoteAmount },
+          },
+          select: { id: true, debitNoteAmount: true, appliedToPayable: true },
+          orderBy: { createdAt: "asc" },
+        });
+        for (const ret of pendingReturns) {
+          const unapplied = ret.debitNoteAmount.minus(ret.appliedToPayable);
+          if (unapplied.lte(0)) continue;
+          const applicable = pendingCredit.plus(unapplied).lt(totalAmount)
+            ? unapplied
+            : totalAmount.minus(pendingCredit);
+          if (applicable.lte(0)) break;
+          const updated = await tx.purchaseReturn.updateMany({
+            where: {
+              id: ret.id,
+              appliedToPayable: { lt: ret.debitNoteAmount },
+            },
+            data: { appliedToPayable: { increment: applicable } },
+          });
+          if (updated.count === 0) {
+            continue; // another writer applied this credit first
+          }
+          pendingCredit = pendingCredit.plus(applicable);
+        }
+      }
+      const openingOutstanding = totalAmount.minus(pendingCredit);
+
       const invoice = await tx.supplierInvoice.create({
           data: {
             invoiceNumber: input.invoiceNumber,
@@ -411,8 +448,8 @@ export const supplierInvoiceService = {
           paymentTerms: input.paymentTerms,
           paymentMethod: input.paymentMethod,
           documentUrl: input.documentUrl,
-          outstandingBalance: totalAmount,
-          status: "OPEN",
+          outstandingBalance: openingOutstanding,
+          status: openingOutstanding.lte(0) ? "PAID" : "OPEN",
           createdById: actor.id,
           items: {
             create: invoiceItems.map((item) => ({
@@ -437,12 +474,13 @@ export const supplierInvoiceService = {
             supplierId: invoice.supplierId,
             purchaseOrderId: invoice.purchaseOrderId,
             totalAmount: totalAmount.toNumber(),
+            pendingReturnCreditApplied: pendingCredit.toNumber(),
           },
         },
         tx,
       );
 
-      return invoice;
+      return { ...invoice, outstandingBalance: openingOutstanding };
     };
 
     if (externalTx) {
@@ -511,7 +549,8 @@ export const supplierInvoiceService = {
    * matches zero rows and fails with PAYMENT_EXCEEDS_BALANCE.
    */
   async recordPayment(invoiceId: string, input: RecordPaymentInput, actor: Pick<AuthenticatedUser, "id">) {
-    return prisma.$transaction(async (tx) => {
+    return prisma.$transaction(
+      async (tx) => {
       const invoice = await tx.supplierInvoice.findUnique({
         where: { id: invoiceId },
         select: { supplierId: true, outstandingBalance: true, totalAmount: true },
@@ -540,16 +579,15 @@ export const supplierInvoiceService = {
         include: { recordedBy: { select: { id: true, name: true } } },
       });
 
-      const newOutstanding = invoice.outstandingBalance.minus(input.amount);
-
-      // Conditional update: only succeeds if no concurrent payment has already
-      // consumed the balance. Prevents overpayment under concurrency.
+      // Conditional ATOMIC decrement: `decrement` is evaluated by the DATABASE
+      // against the current value, so a concurrent payment or purchase-return
+      // application that commits between our read above and this write can no
+      // longer cause a lost update (a plain `set` with a stale precomputed value
+      // could silently overwrite the concurrent writer's effect). The WHERE
+      // guard still rejects overpayment; the loser matches zero rows.
       const updated = await tx.supplierInvoice.updateMany({
         where: { id: invoiceId, outstandingBalance: { gte: input.amount } },
-        data: {
-          outstandingBalance: newOutstanding,
-          status: statusForOutstanding(newOutstanding, invoice.totalAmount),
-        },
+        data: { outstandingBalance: { decrement: input.amount } },
       });
       if (updated.count === 0) {
         throw new AppError(
@@ -559,6 +597,12 @@ export const supplierInvoiceService = {
           { outstanding: invoice.outstandingBalance.toNumber(), requested: input.amount }
         );
       }
+
+      const newOutstanding = invoice.outstandingBalance.minus(input.amount);
+      await tx.supplierInvoice.update({
+        where: { id: invoiceId },
+        data: { status: statusForOutstanding(newOutstanding, invoice.totalAmount) },
+      });
 
       // Audit inside the same transaction: the payment and the balance
       // decrement must commit or roll back together with this event.
@@ -579,7 +623,9 @@ export const supplierInvoiceService = {
       );
 
       return payment;
-    });
+    },
+      { timeout: 30_000, maxWait: 15_000 },
+    );
   },
 
   async remove(id: string, actor?: Pick<AuthenticatedUser, "id">) {

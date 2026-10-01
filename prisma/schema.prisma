@@ -750,6 +750,7 @@ model PurchaseOrderItem {
   goodsReceiptItems GoodsReceiptItem[]
   allocations       PurchaseRequirementAllocation[]
   invoiceItems      SupplierInvoiceItem[]
+  purchaseReturns   PurchaseReturn[]
 
   @@index([purchaseOrderId])
   @@index([productId])
@@ -953,10 +954,42 @@ model PurchaseReturn {
   recordedBy      User                 @relation("RecordedPurchaseReturns", fields: [recordedById], references: [id])
   createdAt       DateTime             @default(now())
 
+  // ---------------------------------------------------------------------------
+  // Financial linkage (added for finance-ready purchasing data).
+  // ---------------------------------------------------------------------------
+  // The PO item whose received goods are being returned. Null ONLY for legacy
+  // rows created before this column existed. New returns must link to the PO
+  // item so Finance can attribute the return to a purchase, and so the
+  // per-item cap (total returned <= quantityReceived) can be enforced.
+  purchaseOrderItemId String?
+  purchaseOrderItem   PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id])
+  // How much of debitNoteAmount was applied against outstanding supplier
+  // payables at return time. Return value beyond this is a supplier refund or
+  // credit effect (see the finance note below).
+  appliedToPayable    Decimal           @default(0) @db.Decimal(12, 2)
+  // Client-supplied de-duplication key so an accidental double submit (or a
+  // network retry) returns the ORIGINAL return instead of creating a second
+  // one. Unique; multiple NULLs are allowed (no key = no de-duplication).
+  // Same mechanism as SaleReturn.idempotencyKey.
+  idempotencyKey  String?              @unique
+
+  // ---------------------------------------------------------------------------
+  // FINANCE NOTE (canonical net-purchases math, no separate ledger needed):
+  //   Gross purchases   = SUM(SupplierInvoice.totalAmount)
+  //   Supplier payments = SUM(SupplierPayment.amount)        (actual cash out)
+  //   Supplier returns  = SUM(PurchaseReturn.debitNoteAmount)
+  //   Open payables     = SUM(SupplierInvoice.outstandingBalance)
+  //                       (outstandingBalance = totalAmount - payments -
+  //                        returns applied to that invoice)
+  //   Refund/credit effect of a return = debitNoteAmount - appliedToPayable
+  // Historical rows (invoice, payment, return) are never rewritten.
+  // ---------------------------------------------------------------------------
+
   @@index([supplierId])
   @@index([productId])
   @@index([batchId])
   @@index([unitId])
+  @@index([purchaseOrderItemId])
   @@map("purchase_return")
 }
 

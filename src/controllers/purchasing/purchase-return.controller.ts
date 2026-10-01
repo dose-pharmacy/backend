@@ -28,6 +28,16 @@ export const purchaseReturnController = {
     sendSuccess(res, data);
   }),
 
+  /** Remaining returnable quantity for a PO item (base units + value info). */
+  returnable: asyncHandler(async (req: Request, res: Response) => {
+    const query = req.query as { supplierId?: string };
+    const data = await purchaseReturnService.returnableQuantity(
+      req.params.purchaseOrderItemId as string,
+      query.supplierId as string,
+    );
+    sendSuccess(res, data);
+  }),
+
   remove: asyncHandler(async (req: Request, res: Response) => {
     await purchaseReturnService.remove(req.params.id as string);
     sendSuccess(res, null);
