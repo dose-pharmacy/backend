@@ -24,12 +24,23 @@ POST /purchase-orders/:id/invoice-upload/confirm  (atomic, 201)
 The uploaded invoice is a **helper input**, never the authority over inventory.
 The selected PO is the source of truth for expected products and quantities.
 
-> **OCR gap.** This repository has no OCR/file-storage service. These endpoints
-> therefore accept the **already-extracted, normalized invoice JSON** (the
-> frontend runs OCR and posts the result, optionally after the user corrected
-> values). The service never trusts the extracted values: it re-matches and
-> re-validates everything from scratch, and re-derives them again at
-> confirmation time. A real OCR adapter plugs in *in front of* this API.
+> **Document upload.** The backend now accepts the ACTUAL invoice document:
+>
+> ```
+> POST /purchasing/invoice-upload/extract        (multipart/form-data, field `file`)
+> ```
+>
+> Supports PDF (parsed from its embedded text layer), JPEG, PNG and WEBP
+> (validated by magic bytes; images carry no machine-readable text, so the
+> response includes a warning and the user reviews/enters values). Max 10 MB.
+> The endpoint is a pure transformation: nothing is persisted and no
+> SupplierInvoice is created. Scanned-image PDFs without a text layer return a
+> warning instead of a hard failure, and an external OCR adapter can still be
+> plugged in via the JSON `extract` endpoint below.
+>
+> **OCR is assistive, never authoritative.** The service never trusts the
+> extracted values: it re-matches and re-validates everything from scratch, and
+> re-derives them again at confirmation time.
 
 ---
 

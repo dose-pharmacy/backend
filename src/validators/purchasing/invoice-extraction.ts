@@ -31,8 +31,10 @@ export const invoiceExtractionSchema = z
     document: z
       .object({
         supplierName: z.string().trim().max(200).nullish(),
+        supplierTin: z.string().trim().max(30).nullish(),
         invoiceNumber: z.string().trim().max(100).nullish(),
         invoiceDate: z.string().trim().max(40).nullish(),
+        fsNumber: z.string().trim().max(30).nullish(),
         items: z
           .array(
             z.object({

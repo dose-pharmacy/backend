@@ -1972,6 +1972,45 @@ export const openApiDocument = {
         responses: { "200": okRef("InvoiceExtractionResponse"), "404": { description: "Purchase order not found" }, ...authErrorResponses }
       }
     },
+    "/purchasing/invoice-upload/extract": {
+      post: {
+        tags: ["Purchasing"],
+        summary: "Extract a supplier invoice from an uploaded document (PDF/JPEG/PNG/WEBP)",
+        description:
+          "Multipart upload of the ACTUAL supplier invoice document. The file is validated by magic bytes (never " +
+          "the client-declared MIME type or filename) against PDF, JPEG, PNG and WEBP, with a 10 MB size cap. " +
+          "PDFs are parsed from their embedded text layer and normalized with the same heuristics as the JSON " +
+          "extract endpoint; images are validated but carry no machine-readable text, so the response includes " +
+          "a warning that review/OCR entry is required. Pure transformation: nothing is persisted, no " +
+          "SupplierInvoice is created, and extracted values remain user-reviewable proposals — the confirm " +
+          "endpoint revalidates everything against the live database.",
+        requestBody: {
+          required: true,
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                required: ["file"],
+                properties: {
+                  file: {
+                    type: "string",
+                    format: "binary",
+                    description: "Supplier invoice document: PDF, JPEG, PNG or WEBP. Max 10 MB. Validated by magic bytes.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": okRef("InvoiceDocumentExtractionResponse"),
+          "413": { description: "File exceeds the 10 MB size limit" },
+          "415": { description: "Unsupported or contradictory document type" },
+          "422": { description: "Empty or unreadable (corrupt/password-protected) document" },
+          ...authErrorResponses,
+        },
+      }
+    },
     "/purchasing/purchase-orders/{id}/invoice-upload": {
       post: {
         tags: ["Purchasing"],
@@ -4977,8 +5016,10 @@ SlowMovingEvaluationResponse: {
             properties: {
               source: { type: "string", enum: ["text", "lines", "document"] },
               supplierName: { type: "string", nullable: true },
+              supplierTin: { type: "string", nullable: true, description: "Supplier TIN/VAT number printed on the document (optional)" },
               invoiceNumber: { type: "string", nullable: true },
               invoiceDate: { type: "string", format: "date-time", nullable: true },
+              fsNumber: { type: "string", nullable: true, description: "Fiscal slip (FS) number printed on the document (optional)" },
               items: {
                 type: "array",
                 items: {
@@ -5003,6 +5044,42 @@ SlowMovingEvaluationResponse: {
               fees: { type: "number", nullable: true },
               grandTotal: { type: "number", nullable: true },
               paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
+            },
+          },
+        },
+      },
+      InvoiceDocumentExtractionResponse: {
+        type: "object",
+        description: "Normalized extraction from an uploaded PDF/JPEG/PNG/WEBP invoice document.",
+        properties: {
+          success: { type: "boolean", example: true },
+          data: {
+            type: "object",
+            properties: {
+              source: { type: "string", example: "text" },
+              supplierName: { type: "string", nullable: true },
+              supplierTin: { type: "string", nullable: true },
+              invoiceNumber: { type: "string", nullable: true },
+              invoiceDate: { type: "string", format: "date-time", nullable: true },
+              fsNumber: { type: "string", nullable: true },
+              items: { type: "array", items: { type: "object" } },
+              warnings: { type: "array", items: { type: "string" } },
+              subtotal: { type: "number", nullable: true },
+              discount: { type: "number", nullable: true },
+              tax: { type: "number", nullable: true },
+              fees: { type: "number", nullable: true },
+              grandTotal: { type: "number", nullable: true },
+              paymentTerms: { type: "string", enum: ["CREDIT", "NO_CREDIT"], nullable: true },
+              document: {
+                type: "object",
+                description: "Metadata about the uploaded file itself",
+                properties: {
+                  kind: { type: "string", enum: ["pdf", "jpeg", "png", "webp"], description: "Detected via magic bytes" },
+                  fileName: { type: "string", nullable: true },
+                  sizeBytes: { type: "integer" },
+                  textExtracted: { type: "boolean", description: "True when a text layer was found and parsed (PDF)" },
+                },
+              },
             },
           },
         },

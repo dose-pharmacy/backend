@@ -326,15 +326,28 @@ purchasingRouter.delete(
 // ---------------------------------------------------------------------------
 // Invoice-assisted receiving
 //
-// Upload the extracted supplier invoice -> read-only receiving preview; then
-// confirm to atomically create + confirm a Goods Receipt and create the linked
-// Supplier Invoice through the canonical receiving services.
+// Upload the actual invoice document (multipart) OR already-extracted JSON ->
+// normalized review payload; then read-only receiving preview; then confirm to
+// atomically create + confirm a Goods Receipt and create the linked Supplier
+// Invoice through the canonical receiving services.
 // ---------------------------------------------------------------------------
 purchasingRouter.post(
   "/purchase-orders/:id/invoice-upload/extract",
   ...admin,
   validate({ params: invoiceReceivingParamsSchema, body: invoiceExtractionSchema }),
   invoiceReceivingController.extract,
+);
+
+// Same extraction pipeline but for the REAL document (PDF/JPEG/PNG/WEBP).
+// Multer runs BEFORE the auth guard so the multipart body is always drained
+// (an early 401 on an unread body resets the client's socket mid-upload).
+// Its errors are mapped onto the project's error envelope; files are validated
+// by magic bytes, never by client-declared type or filename.
+purchasingRouter.post(
+  "/invoice-upload/extract",
+  invoiceReceivingController.extractDocument[0],
+  ...admin,
+  invoiceReceivingController.extractDocument[1],
 );
 purchasingRouter.post(
   "/purchase-orders/:id/invoice-upload",

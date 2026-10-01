@@ -48,8 +48,12 @@ export type ExtractedInvoiceItem = {
 export type ExtractedInvoice = {
   source: "text" | "lines" | "document";
   supplierName: string | null;
+  /** Supplier Tax Identification Number printed on the document (optional). */
+  supplierTin: string | null;
   invoiceNumber: string | null;
   invoiceDate: string | null;
+  /** Fiscal/folio slip number printed on the document (optional). */
+  fsNumber: string | null;
   items: ExtractedInvoiceItem[];
   /** Number of document lines that were skipped (headers, totals, noise). */
   skippedLineCount: number;
@@ -81,8 +85,10 @@ const extractionRequestSchema = z
     document: z
       .object({
         supplierName: z.string().trim().max(200).nullish(),
+        supplierTin: z.string().trim().max(30).nullish(),
         invoiceNumber: z.string().trim().max(100).nullish(),
         invoiceDate: z.string().trim().max(40).nullish(),
+        fsNumber: z.string().trim().max(30).nullish(),
         items: z.array(documentLineSchema).max(5_000).optional(),
         subtotal: z.number().nullish(),
         discount: z.number().nullish(),
@@ -110,23 +116,6 @@ function toNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function toIsoDate(value: string): string | null {
-  const trimmed = value.trim();
-  // ISO already?
-  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
-    const date = new Date(trimmed);
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  // dd/mm/yyyy or dd-mm-yyyy (common on supplier invoices).
-  const dmy = trimmed.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/);
-  if (dmy) {
-    const date = new Date(Number(dmy[3]), Number(dmy[2]) - 1, Number(dmy[1]));
-    return Number.isNaN(date.getTime()) ? null : date.toISOString();
-  }
-  const date = new Date(trimmed);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
-
 type ParsedTotals = {
   subtotal: number | null;
   discount: number | null;
@@ -137,7 +126,75 @@ type ParsedTotals = {
   invoiceNumber: string | null;
   invoiceDate: string | null;
   supplierName: string | null;
+  supplierTin: string | null;
+  fsNumber: string | null;
 };
+
+/**
+ * Normalizes a printed invoice date into an ISO string. Handles the formats
+ * commonly found on pharmacy supplier invoices:
+ *   ISO (2030-06-30...), "Aug 20,2026 12:18", "20/08/2026", "08/20/2026",
+ *   "20-08-2026", "20.08.2026".
+ *
+ * Ambiguity rule: a D/M/Y vs M/D/Y conflict is resolved as DAY-FIRST unless
+ * the value is impossible as day-first (first component > 12), which is the
+ * dominant format on Ethiopian/regional supplier documents.
+ */
+const MONTH_NAMES = [
+  "jan", "feb", "mar", "apr", "may", "jun",
+  "jul", "aug", "sep", "oct", "nov", "dec",
+];
+
+export function toIsoInvoiceDate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  // ISO already?
+  const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) {
+    const date = new Date(Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])));
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
+  // "Aug 20,2026 12:18" / "Aug 20 2026" / "August 20, 2026"
+  const monthName = trimmed.match(
+    /^([A-Za-z]{3,})\.?\s+(\d{1,2}),?\s*(\d{4})/,
+  );
+  if (monthName) {
+    const monthIndex = MONTH_NAMES.indexOf(monthName[1]!.toLowerCase().slice(0, 3));
+    if (monthIndex >= 0) {
+      const date = new Date(Date.UTC(Number(monthName[3]), monthIndex, Number(monthName[2])));
+      return Number.isNaN(date.getTime()) ? null : date.toISOString();
+    }
+  }
+
+  // Numeric day/month/year with any separator (ambiguity-aware).
+  const numeric = trimmed.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/);
+  if (numeric) {
+    const first = Number(numeric[1]);
+    const second = Number(numeric[2]);
+    let day = first;
+    let month = second;
+    if (first > 12) {
+      // Must be day-first (e.g. 20/08/2026).
+      day = first;
+      month = second;
+    } else if (second > 12) {
+      // Cannot be day-first -> month-first US style (e.g. 06/30/2030).
+      day = second;
+      month = first;
+    }
+    const date = new Date(Date.UTC(Number(numeric[3]), month - 1, day));
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
+  const fallback = new Date(trimmed);
+  return Number.isNaN(fallback.getTime()) ? null : fallback.toISOString();
+}
+
+function toIsoDate(value: string): string | null {
+  return toIsoInvoiceDate(value);
+}
 
 /** Header/footer field heuristics: label → value within one line. */
 function parseHeaderLine(line: string): Partial<ParsedTotals> {
@@ -159,6 +216,14 @@ function parseHeaderLine(line: string): Partial<ParsedTotals> {
     const raw = grab(/due\s+date\s*[:-]?\s*(.+)$/i);
     const iso = raw ? toIsoDate(raw) : null;
     if (iso && /\b(credit|net)\b/.test(lower)) result.paymentTerms = "CREDIT";
+  }
+  if (/\b(t\.?i\.?n\.?|vat\s*(?:no|number|#)|tax\s*(?:no|number|#))\b/.test(lower)) {
+    const value = grab(/(?:t\.?i\.?n\.?|vat\s*(?:no|number|#)|tax\s*(?:no|number|#))\s*[:-]?\s*(\S+)/i);
+    if (value && value.length <= 30) result.supplierTin = value;
+  }
+  if (/\b(f\.?s\.?(?:\s*(?:no|number|#))?)\b/.test(lower)) {
+    const value = grab(/f\.?s\.?(?:\s*(?:no|number|#))?\s*[:-]?\s*(\S+)/i);
+    if (value && value.length <= 30 && /\d/.test(value)) result.fsNumber = value;
   }
   if (/\b(cash|no[ ]+credit|immediate)\b/.test(lower) && /payment/.test(lower)) {
     result.paymentTerms = "NO_CREDIT";
@@ -195,6 +260,53 @@ function parseHeaderLine(line: string): Partial<ParsedTotals> {
   return result;
 }
 
+/**
+ * Parses a single-space line (common in PDF text layers and plain OCR output):
+ *   "FINS-01 FINALERGE 100ML 12 x 427.50 5130.00 EXP:06/30/2030"
+ * The trailing numbers are read right-to-left [total, unitPrice, "x", qty] and
+ * everything before the quantity becomes code + description.
+ */
+function parseCompactItemLine(line: string): ExtractedInvoiceItem | null {
+  let working = line.trim();
+
+  // Trailing expiry first, so its numbers are not mistaken for money columns.
+  let expiryDate: string | null = null;
+  const expMatch = working.match(/\s(?:exp(?:iry)?|best[ ]+before)[ :.]?\s*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}-\d{2})\s*$/i);
+  if (expMatch) {
+    expiryDate = toIsoDate(expMatch[1]!);
+    working = working.slice(0, expMatch.index).trim();
+  }
+
+  // Trailing numeric tail: ... QTY x UNIT_PRICE LINE_TOTAL
+  const tail = working.match(
+    /^(.*?)[\s|]+(\d{1,6}(?:[.,]\d{1,3})?)[\s|]+x[\s|]+([\d.,]+)[\s|]+([\d.,]+)\s*$/i,
+  );
+  if (!tail) return null;
+
+  const quantity = toNumber(tail[2]!);
+  const unitPrice = toNumber(tail[3]!);
+  const lineTotal = toNumber(tail[4]!);
+  if (quantity === null || quantity <= 0) return null;
+
+  const head = tail[1]!.trim();
+  if (!head) return null;
+
+  // Leading code: short token containing a digit or dash.
+  const headTokens = head.split(/\s+/);
+  let productCode: string | null = null;
+  let productName: string;
+  const first = headTokens[0]!;
+  if (headTokens.length >= 2 && /^[\w-]{1,30}$/.test(first) && /[\d-]/.test(first)) {
+    productCode = first;
+    productName = headTokens.slice(1).join(" ");
+  } else {
+    productName = head;
+  }
+  if (!productName) return null;
+
+  return { productCode, productName, quantity, unit: null, unitPrice, lineTotal, batchNumber: null, expiryDate };
+}
+
 /** Line-item heuristics: "CODE NAME... QTY UNIT x PRICE = TOTAL" or tabular. */
 function parseItemLine(line: string): ExtractedInvoiceItem | null {
   // Skip totals/headers and obvious noise.
@@ -212,7 +324,7 @@ function parseItemLine(line: string): ExtractedInvoiceItem | null {
   if (!/\d/.test(lower)) return null;
 
   const tokens = line.trim().split(/\s{2,}|\t+|\s*\|\s*/).filter(Boolean);
-  if (tokens.length < 2) return null;
+  if (tokens.length < 2) return parseCompactItemLine(line) ?? null;
 
   // Numeric tokens (right-aligned columns) — quantity/price/total live at the end.
   const numeric = tokens
@@ -340,8 +452,10 @@ export const invoiceExtractionService = {
       return {
         source: "document",
         supplierName: doc.supplierName ?? null,
+        supplierTin: doc.supplierTin ?? null,
         invoiceNumber: doc.invoiceNumber ?? null,
         invoiceDate: doc.invoiceDate ?? null,
+        fsNumber: doc.fsNumber ?? null,
         items,
         skippedLineCount: 0,
         warnings,
@@ -396,8 +510,10 @@ export const invoiceExtractionService = {
     return {
       source: input.text !== undefined ? "text" : "lines",
       supplierName: header.supplierName ?? null,
+      supplierTin: header.supplierTin ?? null,
       invoiceNumber: header.invoiceNumber ?? null,
       invoiceDate: header.invoiceDate ?? null,
+      fsNumber: header.fsNumber ?? null,
       items,
       skippedLineCount: skipped,
       warnings,
