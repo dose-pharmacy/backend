@@ -174,6 +174,7 @@ export const openApiDocument = {
     { name: "Sales", description: "Retail point of sale (POS) sales" },
     { name: "Product Returns", description: "Customer product returns against completed POS sales (immediate refund)" },
     { name: "Financial Reports", description: "Sales, profitability, margin and slow-moving reporting (ADMIN only)" },
+    { name: "Finance Reporting", description: "Company-wide finance snapshots, reports and trend series (ADMIN only)" },
   ],
   paths: {
     "/api/auth/sign-up/email": {
@@ -2154,7 +2155,59 @@ export const openApiDocument = {
         parameters: [idPathParam],
         responses: { "200": { description: "Purchase return deleted", content: { "application/json": { schema: { $ref: "#/components/schemas/EmptySuccessResponse" } } } }, "404": { description: "Purchase return not found" }, ...authErrorResponses }
       }
-    }
+    },
+    "/finance-reporting/dashboard": {
+      get: {
+        tags: ["Finance Reporting"],
+        summary: "Finance dashboard snapshot",
+        description:
+          "Lightweight \"what is happening financially right now\" snapshot: today's sales, discounts, returns and collections plus the current outstanding supplier payables and customer receivables. Whole-company, no filters.",
+        responses: {
+          "200": { description: "Current finance snapshot", content: { "application/json": { schema: { $ref: "#/components/schemas/FinanceDashboardResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/finance-reporting/report": {
+      get: {
+        tags: ["Finance Reporting"],
+        summary: "Full finance report",
+        description:
+          "Complete finance report page: period, summary, sales performance, purchasing, collections, profitability, inventory value and trends. Scope notes explain which sections honour the report filters and which cover the whole company.",
+        parameters: [
+          { name: "from", in: "query", schema: { type: "string", format: "date-time" }, description: "Inclusive start bound (UTC start-of-day). Defaults to the last 30 days." },
+          { name: "to", in: "query", schema: { type: "string", format: "date-time" }, description: "Inclusive end bound (UTC end-of-day). Defaults to today." },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Restrict to a single location." },
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" }, description: "Restrict to a single product group." },
+          { name: "granularity", in: "query", schema: { type: "string", enum: ["DAY", "MONTH", "YEAR"], default: "MONTH" } },
+        ],
+        responses: {
+          "200": { description: "Finance report", content: { "application/json": { schema: { $ref: "#/components/schemas/FinanceReportResponse" } } } },
+          "422": { description: "Invalid period or filters", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
+    "/finance-reporting/trends": {
+      get: {
+        tags: ["Finance Reporting"],
+        summary: "Bucketed finance trends",
+        description:
+          "Dedicated trend series bucketed by DAY, MONTH or YEAR. Every bucket carries sales, returns, COGS, profitability, collections and supplier activity so charts never need a second request. Empty buckets are returned with zeros.",
+        parameters: [
+          { name: "from", in: "query", schema: { type: "string", format: "date-time" }, description: "Inclusive start bound (UTC start-of-day). Defaults to the last 30 days." },
+          { name: "to", in: "query", schema: { type: "string", format: "date-time" }, description: "Inclusive end bound (UTC end-of-day). Defaults to today." },
+          { name: "locationId", in: "query", schema: { type: "string", format: "uuid" }, description: "Restrict to a single location." },
+          { name: "productGroupId", in: "query", schema: { type: "string", format: "uuid" }, description: "Restrict to a single product group." },
+          { name: "granularity", in: "query", schema: { type: "string", enum: ["DAY", "MONTH", "YEAR"], default: "DAY" } },
+        ],
+        responses: {
+          "200": { description: "Trend series", content: { "application/json": { schema: { $ref: "#/components/schemas/FinanceTrendsResponse" } } } },
+          "422": { description: "Invalid period or filters", content: { "application/json": { schema: { $ref: "#/components/schemas/ErrorResponse" } } } },
+          ...authErrorResponses,
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -2174,6 +2227,561 @@ export const openApiDocument = {
       },
     },
     schemas: {
+      FinanceSectionBasis: {
+        type: "object",
+        description: "Explains whether a report section is limited to the selected scope or covers the whole company.",
+        properties: {
+          basis: {
+            type: "string",
+            enum: [
+              "REPORT_SCOPE",
+              "COMPANY"
+            ]
+          },
+          note: {
+            type: "string"
+          }
+        }
+      },
+      MoneyBreakdown: {
+        type: "object",
+        properties: {
+          grossSales: {
+            type: "number",
+            example: 125000.5
+          },
+          discounts: {
+            type: "number",
+            example: 4200
+          },
+          netSales: {
+            type: "number",
+            example: 120800.5
+          },
+          customerReturns: {
+            type: "number",
+            example: 1500
+          },
+          netSalesAfterReturns: {
+            type: "number",
+            example: 119300.5
+          }
+        }
+      },
+      FinancePeriod: {
+        type: "object",
+        properties: {
+          from: {
+            type: "string",
+            format: "date-time"
+          },
+          to: {
+            type: "string",
+            format: "date-time"
+          },
+          fromDate: {
+            type: "string",
+            format: "date",
+            description: "UTC calendar start day"
+          },
+          toDate: {
+            type: "string",
+            format: "date",
+            description: "UTC calendar end day"
+          },
+          locationId: {
+            type: "string",
+            format: "uuid",
+            nullable: true
+          },
+          productGroupId: {
+            type: "string",
+            format: "uuid",
+            nullable: true
+          },
+          granularity: {
+            type: "string",
+            enum: [
+              "DAY",
+              "MONTH",
+              "YEAR"
+            ]
+          }
+        }
+      },
+      FinanceDashboard: {
+        type: "object",
+        description: "Whole-company \"right now\" snapshot for the current UTC day plus current balances.",
+        properties: {
+          asOf: {
+            type: "string",
+            format: "date-time"
+          },
+          todayGrossSales: {
+            type: "number",
+            example: 18250
+          },
+          todayDiscounts: {
+            type: "number",
+            example: 640
+          },
+          todayCustomerReturns: {
+            type: "number",
+            example: 320
+          },
+          todayNetSales: {
+            type: "number",
+            example: 17610
+          },
+          todayNetSalesAfterReturns: {
+            type: "number",
+            example: 17290
+          },
+          todayTransactionCount: {
+            type: "integer",
+            example: 47
+          },
+          todayCustomerCollections: {
+            type: "number",
+            example: 15900
+          },
+          todaySupplierPayments: {
+            type: "number",
+            example: 8000
+          },
+          todaySupplierReturns: {
+            type: "number",
+            example: 250
+          },
+          outstandingSupplierPayables: {
+            type: "number",
+            example: 420000
+          },
+          customerReceivables: {
+            type: "number",
+            example: 98000
+          }
+        }
+      },
+      FinanceSummary: {
+        allOf: [
+          {
+            $ref: "#/components/schemas/MoneyBreakdown"
+          },
+          {
+            type: "object",
+            properties: {
+              cogs: {
+                type: "number"
+              },
+              returnedCogs: {
+                type: "number"
+              },
+              grossProfit: {
+                type: "number"
+              },
+              grossMargin: {
+                type: "number",
+                description: "Percentage; 0 when net sales are 0"
+              },
+              grossPurchases: {
+                type: "number"
+              },
+              supplierReturns: {
+                type: "number"
+              },
+              netPurchases: {
+                type: "number"
+              },
+              supplierPayments: {
+                type: "number"
+              },
+              supplierOutstanding: {
+                type: "number"
+              },
+              customerCollections: {
+                type: "number"
+              },
+              customerReceivables: {
+                type: "number"
+              }
+            }
+          }
+        ]
+      },
+      PaymentMethodTotal: {
+        type: "object",
+        properties: {
+          method: {
+            type: "string",
+            example: "CASH"
+          },
+          amount: {
+            type: "number"
+          }
+        }
+      },
+      FinanceSalesPerformance: {
+        type: "object",
+        properties: {
+          grossSales: {
+            type: "number"
+          },
+          discounts: {
+            type: "number"
+          },
+          customerReturns: {
+            type: "number"
+          },
+          netSales: {
+            type: "number"
+          },
+          netSalesAfterReturns: {
+            type: "number"
+          },
+          transactionCount: {
+            type: "integer"
+          },
+          unitsSold: {
+            type: "number"
+          },
+          averageTransactionValue: {
+            type: "number"
+          },
+          byPaymentMethod: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/PaymentMethodTotal"
+            }
+          },
+          byLocation: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                locationId: {
+                  type: "string",
+                  format: "uuid"
+                },
+                locationName: {
+                  type: "string"
+                },
+                netSales: {
+                  type: "number"
+                },
+                discounts: {
+                  type: "number"
+                },
+                transactionCount: {
+                  type: "integer"
+                }
+              }
+            }
+          },
+          byProductGroup: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                productGroupId: {
+                  type: "string",
+                  format: "uuid",
+                  nullable: true
+                },
+                productGroupName: {
+                  type: "string"
+                },
+                lineRevenue: {
+                  type: "number"
+                },
+                unitsSold: {
+                  type: "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      FinancePurchasingSection: {
+        type: "object",
+        properties: {
+          grossPurchases: {
+            type: "number"
+          },
+          supplierReturns: {
+            type: "number"
+          },
+          netPurchases: {
+            type: "number"
+          },
+          invoiceAmount: {
+            type: "number"
+          },
+          supplierPayments: {
+            type: "number"
+          },
+          supplierOutstanding: {
+            type: "number"
+          },
+          purchaseOrderCount: {
+            type: "integer"
+          },
+          invoiceCount: {
+            type: "integer"
+          },
+          supplierReturnCount: {
+            type: "integer"
+          },
+          supplierPaymentCount: {
+            type: "integer"
+          },
+          outstandingInvoiceCount: {
+            type: "integer"
+          },
+          supplierReturnAppliedToPayable: {
+            type: "number"
+          },
+          supplierReturnCreditEffect: {
+            type: "number"
+          }
+        }
+      },
+      FinanceCollectionsSection: {
+        type: "object",
+        properties: {
+          customerCollections: {
+            type: "number"
+          },
+          customerReceivables: {
+            type: "number"
+          },
+          byPaymentMethod: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/PaymentMethodTotal"
+            }
+          }
+        }
+      },
+      FinanceProfitabilitySection: {
+        type: "object",
+        properties: {
+          netSales: {
+            type: "number"
+          },
+          cogs: {
+            type: "number"
+          },
+          grossProfit: {
+            type: "number"
+          },
+          grossMargin: {
+            type: "number",
+            description: "Percentage; 0 when net sales are 0"
+          }
+        }
+      },
+      InventoryValueBucket: {
+        type: "object",
+        properties: {
+          key: {
+            type: "string"
+          },
+          value: {
+            type: "number"
+          },
+          quantity: {
+            type: "number"
+          }
+        }
+      },
+      FinanceInventoryValueSection: {
+        type: "object",
+        properties: {
+          totalValue: {
+            type: "number"
+          },
+          batchCostValue: {
+            type: "number"
+          },
+          totalQuantity: {
+            type: "number"
+          },
+          stockedProducts: {
+            type: "integer"
+          },
+          expiredValue: {
+            type: "number"
+          },
+          expiringWithin30DaysValue: {
+            type: "number"
+          },
+          expiryBuckets: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/InventoryValueBucket"
+            }
+          }
+        }
+      },
+      FinanceTrendPoint: {
+        type: "object",
+        properties: {
+          period: {
+            type: "string",
+            description: "YYYY-MM-DD | YYYY-MM | YYYY depending on granularity"
+          },
+          grossSales: {
+            type: "number"
+          },
+          discounts: {
+            type: "number"
+          },
+          netSales: {
+            type: "number"
+          },
+          customerReturns: {
+            type: "number"
+          },
+          netSalesAfterReturns: {
+            type: "number"
+          },
+          cogs: {
+            type: "number"
+          },
+          grossProfit: {
+            type: "number"
+          },
+          grossMargin: {
+            type: "number",
+            description: "Percentage; 0 when net sales are 0"
+          },
+          transactionCount: {
+            type: "integer"
+          },
+          unitsSold: {
+            type: "number"
+          },
+          customerCollections: {
+            type: "number"
+          },
+          supplierPayments: {
+            type: "number"
+          },
+          supplierReturns: {
+            type: "number"
+          }
+        }
+      },
+      FinanceTrends: {
+        type: "object",
+        properties: {
+          granularity: {
+            type: "string",
+            enum: [
+              "DAY",
+              "MONTH",
+              "YEAR"
+            ]
+          },
+          from: {
+            type: "string",
+            format: "date-time"
+          },
+          to: {
+            type: "string",
+            format: "date-time"
+          },
+          points: {
+            type: "array",
+            items: {
+              $ref: "#/components/schemas/FinanceTrendPoint"
+            }
+          }
+        }
+      },
+      FinanceReport: {
+        type: "object",
+        properties: {
+          period: {
+            $ref: "#/components/schemas/FinancePeriod"
+          },
+          summary: {
+            $ref: "#/components/schemas/FinanceSummary"
+          },
+          salesPerformance: {
+            $ref: "#/components/schemas/FinanceSalesPerformance"
+          },
+          purchasing: {
+            $ref: "#/components/schemas/FinancePurchasingSection"
+          },
+          collections: {
+            $ref: "#/components/schemas/FinanceCollectionsSection"
+          },
+          profitability: {
+            $ref: "#/components/schemas/FinanceProfitabilitySection"
+          },
+          inventoryValue: {
+            $ref: "#/components/schemas/FinanceInventoryValueSection"
+          },
+          trends: {
+            $ref: "#/components/schemas/FinanceTrends"
+          },
+          scopeNotes: {
+            type: "object",
+            properties: {
+              salesPerformance: {
+                $ref: "#/components/schemas/FinanceSectionBasis"
+              },
+              purchasing: {
+                $ref: "#/components/schemas/FinanceSectionBasis"
+              },
+              collections: {
+                $ref: "#/components/schemas/FinanceSectionBasis"
+              },
+              inventoryValue: {
+                $ref: "#/components/schemas/FinanceSectionBasis"
+              }
+            }
+          }
+        }
+      },
+      FinanceDashboardResponse: {
+        type: "object",
+        properties: {
+          success: {
+            type: "boolean",
+            example: true
+          },
+          data: {
+            $ref: "#/components/schemas/FinanceDashboard"
+          }
+        }
+      },
+      FinanceReportResponse: {
+        type: "object",
+        properties: {
+          success: {
+            type: "boolean",
+            example: true
+          },
+          data: {
+            $ref: "#/components/schemas/FinanceReport"
+          }
+        }
+      },
+      FinanceTrendsResponse: {
+        type: "object",
+        properties: {
+          success: {
+            type: "boolean",
+            example: true
+          },
+          data: {
+            $ref: "#/components/schemas/FinanceTrends"
+          }
+        }
+      },
       GenericDataResponse: {
         type: "object",
         properties: {

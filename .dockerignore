@@ -3,7 +3,9 @@ build
 .git
 .env
 .env.*
+!.env
 !.env.example
+!.env.production.example
 coverage
 tests
 *.log

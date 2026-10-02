@@ -52,6 +52,9 @@ describe("inventory: product groups", () => {
     await prisma.inventoryStock.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.productUnit.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
+    // Creating a product also creates its default reorder configuration, which
+    // RESTRICTS deleting the product until it is removed first.
+    await prisma.reorderConfiguration.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.user.deleteMany({ where: { id: userId } });
@@ -199,6 +202,9 @@ describe("inventory: products", () => {
     await prisma.inventoryStock.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.productUnit.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
+    // Creating a product also creates its default reorder configuration, which
+    // RESTRICTS deleting the product until it is removed first.
+    await prisma.reorderConfiguration.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
@@ -406,6 +412,9 @@ describe("inventory: units & conversion", () => {
     await prisma.inventoryStock.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.productUnit.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
+    // Creating a product also creates its default reorder configuration, which
+    // RESTRICTS deleting the product until it is removed first.
+    await prisma.reorderConfiguration.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.unit.deleteMany({ where: { id: { in: unitIds } } });
@@ -640,6 +649,9 @@ describe("inventory: batches", () => {
     await prisma.inventoryStock.deleteMany({ where: { batchId: { in: batchIds } } });
     await prisma.batch.deleteMany({ where: { id: { in: batchIds } } });
     await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
+    // Creating a product also creates its default reorder configuration, which
+    // RESTRICTS deleting the product until it is removed first.
+    await prisma.reorderConfiguration.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.user.deleteMany({ where: { id: { in: userIds } } });
@@ -880,6 +892,9 @@ describe("inventory: stock movements", () => {
     await prisma.inventoryStock.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.batch.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.productUnit.deleteMany({ where: { productId: { in: productIds } } });
+    // Creating a product also creates its default reorder configuration, which
+    // RESTRICTS deleting the product until it is removed first.
+    await prisma.reorderConfiguration.deleteMany({ where: { productId: { in: productIds } } });
     await prisma.product.deleteMany({ where: { id: { in: productIds } } });
     await prisma.productGroup.deleteMany({ where: { id: { in: groupIds } } });
     await prisma.inventoryLocation.deleteMany({ where: { id: { in: locationIds } } });

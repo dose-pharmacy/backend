@@ -1,5 +1,9 @@
 import type { Request, Response } from "express";
-import { inventoryProductService, type InventoryProductListQuery } from "../../services/inventory/inventory-product.service.js";
+import {
+  inventoryProductService,
+  type InventoryProductListQuery,
+} from "../../services/inventory/inventory-product.service.js";
+import type { PricingStatusFilter } from "../../services/inventory/pricing.service.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { sendSuccess } from "../../utils/http.js";
 
@@ -15,6 +19,7 @@ export const inventoryProductController = {
       locationId: query.locationId,
       stockStatus: query.stockStatus as InventoryProductListQuery["stockStatus"],
       isActive: query.isActive !== undefined ? query.isActive === "true" : undefined,
+      pricingStatus: query.pricingStatus as PricingStatusFilter | undefined,
     };
     const { items, meta } = await inventoryProductService.list(input);
     sendSuccess(res, items, { meta });

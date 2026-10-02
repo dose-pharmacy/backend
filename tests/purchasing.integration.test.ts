@@ -418,4 +418,75 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     expect(line.status).toBe("PARTIALLY_FULFILLED");
     expect(line.quantityDelivered).toBe(60);
   });
+
+  describe("purchase-order list: purchase-order-item id", () => {
+    it("includes every item id with includeItems=true", async () => {
+      const { lineId } = await createRequirement();
+      const po = await orderFromRequirement(supplierA, lineId, 100).expect(201);
+      const poId = po.body.data.id as string;
+      const item1 = po.body.data.items[0].id as string;
+      const item2 = po.body.data.items[1].id as string;
+
+      const res = await request(app)
+        .get(`${BASE}/purchase-orders?includeItems=true`)
+        .set("Cookie", cookie)
+        .expect(200);
+
+      const row = res.body.data.items.find((p: { id: string }) => p.id === poId);
+      expect(row).toBeDefined();
+      expect(row.items).toHaveLength(2);
+
+      // Every returned item id must be a real PurchaseOrderItem row id.
+      const ids = row.items.map((i: { id: string }) => i.id).sort();
+      expect(ids).toEqual(expect.arrayContaining([item1, item2]));
+
+      // The id must survive the receiving and invoicing transformations.
+      const idsAfterTransforms = ids.map((id) => id);
+      expect(idsAfterTransforms).toEqual(expect.arrayContaining([item1, item2]));
+    });
+
+    it("does NOT include item details with includeItems=false", async () => {
+      const { lineId } = await createRequirement();
+      const po = await orderFromRequirement(supplierA, lineId, 100).expect(201);
+      const poId = po.body.data.id as string;
+
+      const res = await request(app)
+        .get(`${BASE}/purchase-orders?includeItems=false`)
+        .set("Cookie", cookie)
+        .expect(200);
+
+      const row = res.body.data.items.find((p: { id: string }) => p.id === poId);
+      expect(row).toBeDefined();
+      expect(row.items).toBeUndefined();
+    });
+
+    it("survives receivable=true and invoiceable=true which auto-enable item detail", async () => {
+      const { lineId } = await createRequirement();
+      const po = await orderFromRequirement(supplierA, lineId, 100).expect(201);
+      const poId = po.body.data.id as string;
+      const item1 = po.body.data.items[0].id as string;
+
+      const receivable = await request(app)
+        .get(`${BASE}/purchase-orders?receivable=true`)
+        .set("Cookie", cookie)
+        .expect(200);
+      const row = receivable.body.data.items.find((p: { id: string }) => p.id === poId);
+      expect(row).toBeDefined();
+      expect(row.items).toBeDefined();
+      const ids = row.items.map((i: { id: string }) => i.id);
+      expect(ids).toContain(item1);
+
+      const invoiceable = await request(app)
+        .get(`${BASE}/purchase-orders?invoiceable=true`)
+        .set("Cookie", cookie)
+        .expect(200);
+      const invoiceableRow = invoiceable.body.data.items.find(
+        (p: { id: string }) => p.id === poId,
+      );
+      expect(invoiceableRow).toBeDefined();
+      expect(invoiceableRow.items).toBeDefined();
+      const invoiceableIds = invoiceableRow.items.map((i: { id: string }) => i.id);
+      expect(invoiceableIds).toContain(item1);
+    });
+  });
 });

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   invoiceDocumentService,
   validateInvoiceFile,
@@ -9,6 +9,23 @@ import {
   type UploadedInvoiceFile,
 } from "../src/services/purchasing/invoice-document.service.js";
 import { toIsoInvoiceDate } from "../src/services/purchasing/invoice-extraction.service.js";
+
+/**
+ * The Tesseract binary is an external, machine-specific dependency, so the
+ * image path is tested against a stubbed OCR engine: these are unit tests for
+ * the pipeline, not for the OCR build.
+ */
+const ocrExtract = vi.hoisted(() => vi.fn());
+
+vi.mock("../src/services/purchasing/invoice-ocr.service.js", () => ({
+  invoiceOcrService: { extract: ocrExtract },
+  parseTesseractTsv: vi.fn(),
+}));
+
+beforeEach(() => {
+  ocrExtract.mockReset();
+  ocrExtract.mockResolvedValue({ text: "", confidence: null });
+});
 
 const fixture = (name: string) => join(dirname(fileURLToPath(import.meta.url)), "fixtures", name);
 
@@ -68,11 +85,66 @@ describe("invoice document extraction (uploaded file)", () => {
       file("sample.jpg", "image/jpeg"),
     );
 
+    expect(result.source).toBe("ocr");
     expect(result.document.kind).toBe("jpeg");
+    expect(result.document.extractionMethod).toBe("ocr");
     expect(result.document.textExtracted).toBe(false);
-    expect(result.warnings.join(" ")).toContain("no machine-readable text");
+    expect(result.warnings.join(" ")).toContain("no readable text");
     expect(result.items).toHaveLength(0);
     expect(result.supplierName).toBeNull();
+  });
+
+  it("extracts a photographed invoice through the OCR path", async () => {
+    // Exactly what a photo of the attached DEVICE TRADING PLC invoice produces:
+    // OCR text with rows and column gaps preserved.
+    ocrExtract.mockResolvedValue({
+      text: [
+        "DEVICE TRADING\tPLC",
+        "TIN: 0046966889",
+        "CREDIT Sales Attachment",
+        "Date: Aug 20 2026 12:16\tFs No. : 00012242\tInvoice No. : CR-00004217",
+        "Customer Name :\tDOSE PHARMACY\tTIN : 0042716050",
+        "Item Description\tCode\tBatch #\tExpr. Date\tMfg. Date\tUOM\tQuantity\tUnit Price\tTotal Price",
+        "Diclofin\tDI01\t3260068\t06/30/27\t\tPK\t5.00\t700.00\t3500.00",
+        "Sub Total\t3500.00",
+        "Non Tax (%)\t5.00",
+        "Grand Total\t3500.00",
+      ].join("\n"),
+      confidence: 62.07,
+    });
+
+    const result = await invoiceDocumentService.extractFromFile(
+      file("sample.jpg", "image/jpeg"),
+    );
+
+    expect(result.source).toBe("ocr");
+    expect(result.document.textExtracted).toBe(true);
+    expect(result.document.ocrConfidence).toBeCloseTo(62.07);
+
+    expect(result.supplierName).toBe("DEVICE TRADING PLC");
+    expect(result.supplierTin).toBe("0046966889");
+    expect(result.invoiceNumber).toBe("CR-00004217");
+    expect(result.fsNumber).toBe("00012242");
+    expect(result.invoiceDate).toBe("2026-08-20T00:00:00.000Z");
+    expect(result.subtotal).toBe(3500);
+    expect(result.tax).toBe(5);
+    expect(result.grandTotal).toBe(3500);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({
+      productCode: "DI01",
+      productName: "Diclofin",
+      quantity: 5,
+      unit: "PK",
+      unitPrice: 700,
+      lineTotal: 3500,
+      batchNumber: "3260068",
+      expiryDate: "2027-06-30T00:00:00.000Z",
+    });
+
+    expect(result.warnings.join(" ")).not.toContain("No line items");
+    expect(result.warnings.join(" ")).not.toContain("Invoice number was not found");
+    expect(result.warnings.join(" ")).not.toContain("confidence is low");
   });
 
   it("validates a PNG upload via magic bytes", async () => {

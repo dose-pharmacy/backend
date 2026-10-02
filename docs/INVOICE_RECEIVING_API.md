@@ -31,12 +31,44 @@ The selected PO is the source of truth for expected products and quantities.
 > ```
 >
 > Supports PDF (parsed from its embedded text layer), JPEG, PNG and WEBP
-> (validated by magic bytes; images carry no machine-readable text, so the
-> response includes a warning and the user reviews/enters values). Max 10 MB.
-> The endpoint is a pure transformation: nothing is persisted and no
-> SupplierInvoice is created. Scanned-image PDFs without a text layer return a
-> warning instead of a hard failure, and an external OCR adapter can still be
-> plugged in via the JSON `extract` endpoint below.
+> (validated by magic bytes). Max 10 MB. The endpoint is a pure transformation:
+> nothing is persisted and no SupplierInvoice is created. Scanned-image PDFs
+> without a text layer return a warning instead of a hard failure, and an
+> external OCR adapter can still be plugged in via the JSON `extract` endpoint
+> below.
+>
+> Images run through a LOCAL OCR pipeline (no external API):
+>
+> ```
+> sharp (rotate → upscale → grayscale → normalize → sharpen → PNG)
+>   ↓
+> tesseract stdin stdout --psm 6 -l eng tsv
+>   ↓
+> TSV word boxes → rows rebuilt from box geometry, column gaps become cells
+>   ↓
+> invoiceExtractionService (the same parser used for pasted text)
+> ```
+>
+> Two layout details decide whether a photographed table is readable at all:
+> rows come from the **word boxes**, never from Tesseract's own line
+> segmentation (a form's columns are routinely emitted as separate lines), and
+> a gap wider than roughly two characters becomes a **cell separator**. A table
+> row therefore survives as
+> `Diclofin | DI01 | 3260068 | 06/30/27 | PK | 5.00 | 700.00 | 3500.00` and is
+> mapped onto the columns named in the printed table header.
+>
+> Configuration (all optional):
+>
+> - `TESSERACT_PATH` (default `tesseract`) — binary name or full path.
+> - `TESSERACT_PSM` (default `6`) — Tesseract page segmentation mode.
+> - `TESSERACT_TARGET_WIDTH` (default `1800`) — small photos are upscaled to
+>   this width before OCR.
+>
+> Review response fields: `document.extractionMethod` (`ocr` |
+> `embedded-text` | `none`), `document.ocrConfidence` (average word confidence;
+> below 40% a warning is added) and `warnings[]` — every unreadable or
+> suspicious line is reported rather than silently dropped, so an amount-only
+> continuation row or an unreadable item is visible to the reviewer.
 >
 > **OCR is assistive, never authoritative.** The service never trusts the
 > extracted values: it re-matches and re-validates everything from scratch, and

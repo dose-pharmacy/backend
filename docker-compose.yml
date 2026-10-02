@@ -1,6 +1,7 @@
 version: "3.8"
 
 services:
+  # Local PostgreSQL for development (used by `DATABASE_URL` in .env).
   db:
     image: postgres:16
     restart: unless-stopped
@@ -17,6 +18,34 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # The backend image built from the project Dockerfile. tesseract-ocr is
+  # installed inside the image, so OCR works at runtime without installing it
+  # on the host. The container refuses to start until DATABASE_URL is set, so
+  # provide one (or point it at a managed Postgres).
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pharmacy-backend
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    volumes:
+      - type: bind
+        source: .env
+        target: /app/.env
+        read_only: true
 
 volumes:
   db-data:

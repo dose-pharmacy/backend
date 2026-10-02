@@ -529,6 +529,23 @@ describe("inventory: product pricing / target-margin warning", () => {
       .sort();
   }
 
+  type InventoryListItem = ListItem & {
+    totalStock: number;
+    stockStatus: string;
+    baseUnit: { id: string; name: string } | null;
+  };
+
+  async function listInventoryProducts(query: string) {
+    const res = await request(app)
+      .get(`${BASE}/inventory-products?${query}`)
+      .set("Cookie", cookie)
+      .expect(200);
+    return res.body as {
+      data: InventoryListItem[];
+      meta: { page: number; limit: number; total: number; totalPages: number };
+    };
+  }
+
   it("reports the pricing warning on product detail", async () => {
     for (const [key, fixture] of fixtures) {
       const res = await request(app)
@@ -710,5 +727,143 @@ describe("inventory: product pricing / target-margin warning", () => {
     } finally {
       await prisma.user.deleteMany({ where: { id: otherId } });
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // /inventory/inventory-products — the stock-status list must carry the same
+  // pricing warning and honour the same pricingStatus filter.
+  // ---------------------------------------------------------------------------
+  describe("inventory-products: pricing warning and pricingStatus filter", () => {
+    it("exposes the pricing warning on every inventory-product row", async () => {
+      const { data, meta } = await listInventoryProducts(`search=${suffix}&limit=100`);
+      expect(meta.total).toBe(fixtures.size);
+      expect(data).toHaveLength(fixtures.size);
+
+      const keyById = new Map([...fixtures.entries()].map(([key, f]) => [f.id, key]));
+      for (const item of data) {
+        const key = keyById.get(item.id) as string;
+        expect(key, item.sku).toBeTruthy();
+        expect(item.pricing, `fixture ${key}`).toEqual(fixtures.get(key)!.expected);
+        // Decimals are serialized as numbers by the API convention.
+        expect(typeof item.pricing.targetMargin).toBe("number");
+      }
+    });
+
+    it("keeps the existing stock fields intact alongside pricing", async () => {
+      const { data } = await listInventoryProducts(`search=${suffix}&limit=100`);
+      for (const item of data) {
+        expect(typeof item.totalStock, item.sku).toBe("number");
+        expect(["IN_STOCK", "LOW_STOCK", "OUT_OF_STOCK"]).toContain(item.stockStatus);
+      }
+    });
+
+    it("reports the real filtered total, not the page length", async () => {
+      // Regression: the count query used to be discarded, so meta.total was
+      // always the page length and totalPages was wrong.
+      const first = await listInventoryProducts(`search=${suffix}&limit=2&page=1`);
+      expect(first.data).toHaveLength(2);
+      expect(first.meta.total).toBe(fixtures.size);
+      expect(first.meta.totalPages).toBe(Math.ceil(fixtures.size / 2));
+    });
+
+    it("filters by pricingStatus=OK", async () => {
+      const { data, meta } = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=OK&limit=100`,
+      );
+      expect(keysOf(data)).toEqual(["AT_TARGET", "NO_STOCK", "OK"]);
+      expect(meta.total).toBe(3);
+    });
+
+    it("filters by pricingStatus=BELOW_TARGET", async () => {
+      const { data } = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=BELOW_TARGET&limit=100`,
+      );
+      expect(keysOf(data)).toEqual(["BELOW_TARGET", "CONVERTED", "HIGHEST"]);
+    });
+
+    it("filters by pricingStatus=BELOW_COST", async () => {
+      const { data } = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=BELOW_COST&limit=100`,
+      );
+      expect(keysOf(data)).toEqual(["AT_COST", "BELOW_COST", "NO_UNIT"]);
+    });
+
+    it("filters by pricingStatus=NO_MARGIN_CONFIG", async () => {
+      const { data } = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=NO_MARGIN_CONFIG&limit=100`,
+      );
+      expect(keysOf(data)).toEqual(["NO_MARGIN"]);
+    });
+
+    it("filters by pricingStatus=NO_PURCHASE_COST", async () => {
+      const { data } = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=NO_PURCHASE_COST&limit=100`,
+      );
+      expect(keysOf(data)).toEqual([
+        "CANCELLED_PO",
+        "INACTIVE_NO_COST",
+        "NO_COST",
+        "UNCONFIRMED",
+      ]);
+    });
+
+    it("treats pricingStatus=ALL as no filter", async () => {
+      const { data, meta } = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=ALL&limit=100`,
+      );
+      expect(meta.total).toBe(fixtures.size);
+      expect(data).toHaveLength(fixtures.size);
+    });
+
+    it("rejects an unknown pricingStatus", async () => {
+      const res = await request(app)
+        .get(`${BASE}/inventory-products?pricingStatus=BOGUS`)
+        .set("Cookie", cookie)
+        .expect(422);
+      expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("filters BEFORE paginating (pages are complete and disjoint)", async () => {
+      const first = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=OK&limit=2&page=1`,
+      );
+      expect(first.meta).toMatchObject({ page: 1, limit: 2, total: 3, totalPages: 2 });
+      expect(first.data).toHaveLength(2);
+
+      const second = await listInventoryProducts(
+        `search=${suffix}&pricingStatus=OK&limit=2&page=2`,
+      );
+      expect(second.meta).toMatchObject({ page: 2, total: 3 });
+      expect(second.data).toHaveLength(1);
+
+      const ids = [...first.data, ...second.data].map((item) => item.id);
+      expect(new Set(ids).size).toBe(3);
+      expect(keysOf([...first.data, ...second.data])).toEqual([
+        "AT_TARGET",
+        "NO_STOCK",
+        "OK",
+      ]);
+    });
+
+    it("agrees with /products for every pricingStatus", async () => {
+      for (const status of [
+        "OK",
+        "BELOW_TARGET",
+        "BELOW_COST",
+        "NO_MARGIN_CONFIG",
+        "NO_PURCHASE_COST",
+      ]) {
+        const [products, inventoryProducts] = await Promise.all([
+          listProducts(`search=${suffix}&pricingStatus=${status}&limit=100`),
+          listInventoryProducts(`search=${suffix}&pricingStatus=${status}&limit=100`),
+        ]);
+        expect(keysOf(inventoryProducts.data), status).toEqual(keysOf(products.data));
+        expect(inventoryProducts.meta.total, status).toBe(products.meta.total);
+      }
+    });
+
+    it("requires authentication", async () => {
+      await request(app).get(`${BASE}/inventory-products?pricingStatus=OK`).expect(401);
+    });
   });
 });

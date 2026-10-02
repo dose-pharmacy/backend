@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PRICING_STATUS_FILTER_VALUES } from "../../services/inventory/pricing.service.js";
 import { paginationQuerySchema, uuidSchema } from "./common.js";
 
 export const dashboardQuerySchema = z.object({
@@ -13,6 +14,10 @@ export const inventoryProductListQuerySchema = z
     locationId: uuidSchema.optional(),
     stockStatus: z.enum(["IN_STOCK", "LOW_STOCK", "OUT_OF_STOCK"]).optional(),
     isActive: z.enum(["true", "false"]).optional(),
+    // Pricing / target-margin warning filter, same values as /products.
+    // Evaluated and filtered IN THE DATABASE before pagination (see
+    // services/inventory/pricing.service.ts); `ALL` = no filter.
+    pricingStatus: z.enum(PRICING_STATUS_FILTER_VALUES).optional(),
   })
   .merge(paginationQuerySchema);
 

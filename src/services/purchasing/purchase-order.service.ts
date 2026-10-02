@@ -483,9 +483,28 @@ const TX_OPTIONS = { timeout: 30_000, maxWait: 15_000 } as const;
 
 /** Subset of a PO item needed for canonical receiving math. */
 type ReceivingQtyItem = {
+  id: string;
+  purchaseOrderId: string;
+  productId: string;
+  unitId: string | null;
+
   quantityOrdered: Prisma.Decimal;
+  quantityOrderedBase: Prisma.Decimal;
   quantityReceived: Prisma.Decimal;
   quantityShort: Prisma.Decimal;
+  unitCost: Prisma.Decimal;
+
+  product: {
+    id: string;
+    name: string;
+    sku: string | null;
+  };
+
+  unit: {
+    id: string;
+    name: string;
+    symbol: string;
+  } | null;
 };
 
 const PO_DETAIL_INCLUDE = {
@@ -908,6 +927,7 @@ export const purchaseOrderService = {
         include: {
           supplier: { select: { id: true, name: true } },
           createdBy: { select: { id: true, name: true } },
+    
           _count: { select: { items: true } },
           ...(includeItems
             ? {
@@ -951,13 +971,13 @@ export const purchaseOrderService = {
     const itemsWithDetail = includeItems
       ? (items.map((po) => {
           const row = po as unknown as {
-            items?: Array<ReceivingQtyItem & { id: string }>;
+            items?: ReceivingQtyItem[];
           };
           if (!row.items) return po;
           return {
             ...po,
             items: withReceivingQuantities(
-              withInvoiceQuantities(row.items, invoicedByItem) as unknown as ReceivingQtyItem[],
+              withInvoiceQuantities(row.items, invoicedByItem),
             ),
           };
         }) as typeof items)
