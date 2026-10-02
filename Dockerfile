@@ -33,6 +33,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV TESSERACT_PATH=/usr/bin/tesseract
+ENV TESSDATA_PREFIX=/usr/share/tessdata
 ENV TESSERACT_PSM=6
 ENV TESSERACT_TARGET_WIDTH=1800
 ENV TESSERACT_TIMEOUT_MS=30000
@@ -42,6 +43,7 @@ ENV TESSERACT_TIMEOUT_MS=30000
 RUN apk add --no-cache \
     openssl \
     tesseract-ocr \
+    tesseract-ocr-data-eng \
     ca-certificates \
     wget
   
