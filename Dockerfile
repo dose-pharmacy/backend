@@ -11,7 +11,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 
-RUN npm ci --omit=dev
+RUN npm ci 
 
 # ---------------------------------------------------------------------------
 # build — transpile TS → JS into /app/build.
