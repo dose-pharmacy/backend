@@ -208,88 +208,209 @@ async function hydrateProducts(params: {
 export const inventoryProductService = {
   async list(query: InventoryProductListQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
+
     const pricingStatus =
-      query.pricingStatus && query.pricingStatus !== "ALL" ? query.pricingStatus : undefined;
+      query.pricingStatus && query.pricingStatus !== "ALL"
+        ? query.pricingStatus
+        : undefined;
 
+    /**
+     * ============================================================
+     * PRICING STATUS FILTER
+     * ============================================================
+     *
+     * pricingStatus is calculated by pricingService, so the
+     * filtering + counting + pagination must happen there.
+     *
+     * We only hydrate the IDs belonging to the requested page.
+     */
     if (pricingStatus) {
-      // Pricing-status filtered list: the filter, the count and the pagination
-      // all happen in the DATABASE (see pricing.service.ts), then only the
-      // requested page is hydrated. Never fetch-then-filter-then-paginate in
-      // JavaScript, or the page would be half-empty and paging would skip rows.
-      const { ids, total } = await pricingService.listProductIdsByPricingStatus({
-        status: pricingStatus,
-        filters: {
-          search: query.search,
-          productGroupId: query.productGroupId,
-          brand: query.brand,
-          isActive: query.isActive,
-        },
-        skip,
-        take,
-      });
+      const { ids, total } =
+        await pricingService.listProductIdsByPricingStatus({
+          status: pricingStatus,
+          filters: {
+            search: query.search,
+            productGroupId: query.productGroupId,
+            brand: query.brand,
+            isActive: query.isActive,
+          },
+          skip,
+          take,
+        });
 
-      const rows =
-        ids.length === 0
-          ? []
-          : await prisma.product.findMany({
-              where: { id: { in: ids } },
-              select: INVENTORY_PRODUCT_SELECT,
-            });
-      const rowById = new Map(rows.map((row) => [row.id, row]));
-      // Preserve the database's page order instead of findMany's arbitrary one.
-      const orderedRows = ids.flatMap((id) => {
-        const row = rowById.get(id);
-        return row ? [row] : [];
-      });
-
-      const pricing = await pricingService.pricingForProductIds(ids);
-      let items = await hydrateProducts({
-        products: orderedRows,
-        locationId: query.locationId,
-        pricingById: pricing,
-      });
-      if (query.stockStatus) {
-        items = items.filter((item) => item.stockStatus === query.stockStatus);
+      if (ids.length === 0) {
+        return {
+          items: [],
+          meta: buildPaginationMeta(total, page, limit),
+        };
       }
 
-      return { items, meta: buildPaginationMeta(total, page, limit) };
+      const products = await prisma.product.findMany({
+        where: {
+          id: {
+            in: ids,
+          },
+        },
+        select: INVENTORY_PRODUCT_SELECT,
+      });
+
+      /**
+       * Prisma `findMany({ id: { in: ids } })` does not guarantee
+       * that the returned rows have the same order as `ids`.
+       *
+       * Rebuild the original order explicitly.
+       */
+      const productById = new Map(
+        products.map((product) => [product.id, product]),
+      );
+
+      const orderedProducts = ids.flatMap((id) => {
+        const product = productById.get(id);
+
+        return product ? [product] : [];
+      });
+
+      const pricingById =
+        await pricingService.pricingForProductIds(ids);
+
+      let items = await hydrateProducts({
+        products: orderedProducts,
+        locationId: query.locationId,
+        pricingById,
+      });
+
+      /**
+       * IMPORTANT:
+       *
+       * stockStatus is calculated from aggregated stock inside
+       * hydrateProducts(), so it cannot currently participate in
+       * the database-level pagination above.
+       *
+       * Therefore this filter can make the current page shorter.
+       */
+      if (query.stockStatus) {
+        items = items.filter(
+          (item) => item.stockStatus === query.stockStatus,
+        );
+      }
+
+      return {
+        items,
+        meta: buildPaginationMeta(total, page, limit),
+      };
     }
 
-    // Build where clause for products
+    /**
+     * ============================================================
+     * NORMAL PRODUCT LIST
+     * ============================================================
+     */
+
     const where: Prisma.ProductWhereInput = {
-      ...(query.productGroupId ? { productGroupId: query.productGroupId } : {}),
-      ...(query.brand ? { brand: { equals: query.brand, mode: "insensitive" as const } } : {}),
-      ...(query.isActive !== undefined ? { isActive: query.isActive } : {}),
+      ...(query.productGroupId
+        ? {
+            productGroupId: query.productGroupId,
+          }
+        : {}),
+
+      ...(query.brand
+        ? {
+            brand: {
+              equals: query.brand,
+              mode: "insensitive" as const,
+            },
+          }
+        : {}),
+
+      ...(query.isActive !== undefined
+        ? {
+            isActive: query.isActive,
+          }
+        : {}),
+
       ...(query.search
         ? {
             OR: [
-              { name: { contains: query.search, mode: "insensitive" as const } },
-              { genericName: { contains: query.search, mode: "insensitive" as const } },
-              { brand: { contains: query.search, mode: "insensitive" as const } },
-              { sku: { contains: query.search, mode: "insensitive" as const } },
+              {
+                name: {
+                  contains: query.search,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                genericName: {
+                  contains: query.search,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                brand: {
+                  contains: query.search,
+                  mode: "insensitive" as const,
+                },
+              },
+              {
+                sku: {
+                  contains: query.search,
+                  mode: "insensitive" as const,
+                },
+              },
             ],
           }
         : {}),
     };
 
+    /**
+     * IMPORTANT:
+     *
+     * `products` contains only the requested page.
+     *
+     * `total` contains the number of ALL products matching `where`.
+     *
+     * Pagination metadata MUST use `total`, not
+     * `products.length`.
+     */
     const [products, total] = await Promise.all([
       prisma.product.findMany({
         where,
         select: INVENTORY_PRODUCT_SELECT,
-        // The id tiebreaker matches the pricing-filtered path and keeps offset
-        // paging stable when several products share a createdAt.
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+
+        /**
+         * Stable ordering is important for offset pagination.
+         *
+         * createdAt alone is not guaranteed to be unique.
+         * Adding id gives us a deterministic tiebreaker.
+         */
+        orderBy: [
+          {
+            createdAt: "desc",
+          },
+          {
+            id: "desc",
+          },
+        ],
+
         skip,
         take,
       }),
-      // The real filtered count. It was previously discarded, which made
-      // meta.total the page length and totalPages wrong for every request.
-      prisma.product.count({ where }),
+
+      /**
+       * This is the REAL count of products matching the filters.
+       *
+       * Do NOT use products.length here.
+       */
+      prisma.product.count({
+        where,
+      }),
     ]);
 
-    const pricingById = await pricingService.pricingForProductIds(
-      products.map((product) => product.id),
-    );
+    /**
+     * Get pricing only for products on the current page.
+     */
+    const pricingById =
+      await pricingService.pricingForProductIds(
+        products.map((product) => product.id),
+      );
 
     let items = await hydrateProducts({
       products,
@@ -297,15 +418,35 @@ export const inventoryProductService = {
       pricingById,
     });
 
-    // NOTE: `stockStatus` depends on aggregated stock, so it is still applied
-    // after aggregation. This is a pre-existing limitation: combined with
-    // stockStatus the returned page can be shorter than `limit` and meta.total
-    // counts the pre-stockStatus dataset. `pricingStatus` above does NOT have
-    // this problem because it is filtered in the database before pagination.
+    /**
+     * stockStatus is derived from aggregated stock, so it is
+     * currently filtered after hydration.
+     *
+     * This means stockStatus + pagination is not fully database-
+     * paginated yet.
+     */
     if (query.stockStatus) {
-      items = items.filter((item) => item.stockStatus === query.stockStatus);
+      items = items.filter(
+        (item) => item.stockStatus === query.stockStatus,
+      );
     }
 
-    return { items, meta: buildPaginationMeta(total, page, limit) };
+    /**
+     * VERY IMPORTANT:
+     *
+     * Use `total`, not `items.length` and not `products.length`.
+     *
+     * Example:
+     *   total = 47
+     *   limit = 10
+     *
+     * => totalPages = 5
+     *
+     * Even though page 1 only contains 10 items.
+     */
+    return {
+      items,
+      meta: buildPaginationMeta(total, page, limit),
+    };
   },
 };
