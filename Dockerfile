@@ -38,10 +38,13 @@ ENV TESSERACT_TARGET_WIDTH=1800
 ENV TESSERACT_TIMEOUT_MS=30000
 
 # Runtime packages
+# Runtime packages
 RUN apk add --no-cache \
+    openssl \
     tesseract-ocr \
     ca-certificates \
     wget
+  
 
 # Non-root user
 RUN addgroup -S app && adduser -S app -G app
