@@ -1,5 +1,6 @@
 import type { OcrWord } from "./invoice-ocr.service.js";
 import type { ExtractedInvoice, ExtractedInvoiceItem } from "./invoice-extraction.service.js";
+import { logger } from "../../config/logger.js";
 
 /**
  * DEVICE TRADING PLC - CREDIT SALES ATTACHMENT (photographed paper invoice)
@@ -351,7 +352,10 @@ export function extractDeviceTradingCreditSales(
   words: OcrWord[],
   confidence: number | null,
   pageOverride?: PageSize,
+  traceId = "unknown",
 ): ExtractedInvoice {
+  const startedAt = Date.now();
+  logger.info({ traceId, stage: "template.extract.start", words: words.length, confidence }, "Device Trading template extraction started");
   if (!words || words.length === 0) return empty("OCR returned no words; invoice values could not be extracted.");
 
   const page = pageSize(words, pageOverride);
@@ -359,6 +363,7 @@ export function extractDeviceTradingCreditSales(
   const bounds = TABLE_X.map((f) => f * page.width);
 
   const header = locateHeader(words, page);
+  logger.info({ traceId, stage: "template.table.header", located: Boolean(header), slope: header?.slope, adjustedY: header?.adjustedY }, "Device Trading table header analysis completed");
   if (!header) warnings.push("Table header not located; using default geometry. Please review items.");
   const slope = header?.slope ?? FALLBACK_SLOPE;
   const adj = (w: OcrWord) => cy(w) - cx(w) * slope;
@@ -375,6 +380,7 @@ export function extractDeviceTradingCreditSales(
   );
 
   const rows = groupRows(tableWords.filter((w) => !isNoise(w)), slope, page.height * ROW_TOLERANCE);
+  logger.info({ traceId, stage: "template.table.rows", tableWords: tableWords.length, rows: rows.length, bodyTop, bodyBottom }, "Device Trading table rows grouped");
 
   const items: ExtractedInvoiceItem[] = [];
   let skippedLineCount = 0;
@@ -397,6 +403,7 @@ export function extractDeviceTradingCreditSales(
   const itemsSum = items.reduce((s, i) => s + (i.lineTotal ?? 0), 0);
   let subtotal = findAmount(words, /^sub(total)?$/, slope, page);
   let grandTotal = findAmount(words, /^gr[a-z@0]nd$/, slope, page);
+  logger.info({ traceId, stage: "template.values", items: items.length, subtotal, grandTotal }, "Device Trading values extracted");
 
   if (subtotal !== null && items.length > 0 && Math.abs(itemsSum - subtotal) > 0.01) {
     if (looksLikeMisread(subtotal, itemsSum)) {
@@ -426,7 +433,7 @@ export function extractDeviceTradingCreditSales(
     warnings.push(`OCR confidence is low (${confidence.toFixed(1)}%). Please review the extracted values carefully.`);
   }
 
-  return {
+  const result: ExtractedInvoice = {
     source: "ocr",
     supplierName: extractSupplierName(words, page),
     supplierTin: null, // the only TIN on the page belongs to the customer
@@ -443,4 +450,6 @@ export function extractDeviceTradingCreditSales(
     grandTotal,
     paymentTerms: words.some((w) => /^credit$/i.test(cleanCell(w.text))) ? "CREDIT" : null,
   };
+  logger.info({ traceId, stage: "template.extract.complete", items: result.items.length, subtotal: result.subtotal, grandTotal: result.grandTotal, warnings: result.warnings.length, durationMs: Date.now() - startedAt }, "Device Trading template extraction completed");
+  return result;
 }

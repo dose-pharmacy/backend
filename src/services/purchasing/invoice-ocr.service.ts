@@ -1,7 +1,9 @@
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import sharp from "sharp";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
+import { logger } from "../../config/logger.js";
 
 export type OcrWord = {
   text: string;
@@ -60,7 +62,9 @@ const MAX_OCR_PIXELS = 40_000_000;
  * printed invoices are typically 1–2k pixels wide with uneven lighting, which
  * Tesseract handles noticeably worse than a normalized, upscaled grayscale.
  */
-async function preprocessImage(buffer: Buffer): Promise<Buffer> {
+async function preprocessImage(buffer: Buffer, traceId: string): Promise<Buffer> {
+  const startedAt = Date.now();
+  logger.info({ traceId, stage: "ocr.preprocess.start", inputBytes: buffer.length }, "Invoice OCR preprocessing started");
   const source = sharp(buffer).rotate();
 
   let width = 0;
@@ -74,6 +78,7 @@ async function preprocessImage(buffer: Buffer): Promise<Buffer> {
     height = 0;
   }
   if (width > 0 && height > 0 && width * height > MAX_OCR_PIXELS) {
+    logger.warn({ traceId, stage: "ocr.preprocess.reject", width, height, pixels: width * height }, "Invoice OCR image exceeds pixel limit");
     throw new AppError(
       413,
       ErrorCode.VALIDATION_ERROR,
@@ -87,7 +92,7 @@ async function preprocessImage(buffer: Buffer): Promise<Buffer> {
       ? source.resize({ width: targetWidth, kernel: "lanczos3" })
       : source;
 
-  return working
+  const processed = await working
     // Convert to grayscale.
     .grayscale()
     // Improve contrast.
@@ -97,11 +102,16 @@ async function preprocessImage(buffer: Buffer): Promise<Buffer> {
     // Give OCR a clean PNG.
     .png()
     .toBuffer();
+  logger.info({ traceId, stage: "ocr.preprocess.complete", inputWidth: width, inputHeight: height, outputBytes: processed.length, durationMs: Date.now() - startedAt }, "Invoice OCR preprocessing completed");
+  return processed;
 }
 
-function runTesseract(imageBuffer: Buffer, psm: number): Promise<OcrResult> {
+function runTesseract(imageBuffer: Buffer, psm: number, traceId: string): Promise<OcrResult> {
   return new Promise((resolve, reject) => {
     const tesseractPath = process.env.TESSERACT_PATH || "tesseract";
+    const startedAt = Date.now();
+    const timeoutMs = Number(process.env.TESSERACT_TIMEOUT_MS ?? 30_000);
+    logger.info({ traceId, stage: "ocr.tesseract.start", tesseractPath, psm, timeoutMs, inputBytes: imageBuffer.length }, "Invoice Tesseract process starting");
 
     const child: ChildProcessWithoutNullStreams = spawn(tesseractPath, [
       "stdin",
@@ -115,9 +125,9 @@ function runTesseract(imageBuffer: Buffer, psm: number): Promise<OcrResult> {
 
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    const timeoutMs = Number(process.env.TESSERACT_TIMEOUT_MS ?? 30_000);
     const timeout = setTimeout(() => {
-      child.kill();
+      logger.error({ traceId, stage: "ocr.tesseract.timeout", timeoutMs, durationMs: Date.now() - startedAt }, "Invoice Tesseract process timed out");
+      child.kill("SIGKILL");
       reject(
         new AppError(
           422,
@@ -137,6 +147,7 @@ function runTesseract(imageBuffer: Buffer, psm: number): Promise<OcrResult> {
 
     child.on("error", (error: Error) => {
       clearTimeout(timeout);
+      logger.error({ traceId, stage: "ocr.tesseract.error", err: error, durationMs: Date.now() - startedAt }, "Invoice Tesseract process error");
       reject(
         new AppError(
           500,
@@ -148,6 +159,7 @@ function runTesseract(imageBuffer: Buffer, psm: number): Promise<OcrResult> {
 
     child.on("close", (code: number) => {
       clearTimeout(timeout);
+      logger.info({ traceId, stage: "ocr.tesseract.close", code, durationMs: Date.now() - startedAt, stdoutBytes: Buffer.concat(stdout).length, stderrBytes: Buffer.concat(stderr).length }, "Invoice Tesseract process closed");
       if (code !== 0) {
         const errorMessage = Buffer.concat(stderr).toString("utf8").trim();
 
@@ -164,7 +176,9 @@ function runTesseract(imageBuffer: Buffer, psm: number): Promise<OcrResult> {
 
       const tsv = Buffer.concat(stdout).toString("utf8");
 
-      resolve(parseTesseractTsv(tsv));
+      const result = parseTesseractTsv(tsv);
+      logger.info({ traceId, stage: "ocr.tsv.parsed", words: result.words.length, confidence: result.confidence }, "Invoice OCR TSV parsed");
+      resolve(result);
     });
 
     child.stdin.on("error", () => {
@@ -371,16 +385,19 @@ export function parseTesseractTsv(tsv: string): OcrResult {
 }
 
 export const invoiceOcrService = {
-  async extract(buffer: Buffer): Promise<OcrResult> {
-    const processed = await preprocessImage(buffer);
+  async extract(buffer: Buffer, traceId = randomUUID()): Promise<OcrResult> {
+    const startedAt = Date.now();
+    logger.info({ traceId, stage: "ocr.extract.start", inputBytes: buffer.length }, "Invoice OCR extraction started");
+    const processed = await preprocessImage(buffer, traceId);
 
     const psm = Number(process.env.TESSERACT_PSM ?? 6);
 
     const [result, meta] = await Promise.all([
-      runTesseract(processed, Number.isFinite(psm) ? psm : 6),
+      runTesseract(processed, Number.isFinite(psm) ? psm : 6, traceId),
       sharp(processed).metadata(),
     ]);
 
+    logger.info({ traceId, stage: "ocr.extract.complete", words: result.words.length, confidence: result.confidence, width: meta.width, height: meta.height, durationMs: Date.now() - startedAt }, "Invoice OCR extraction completed");
     return { ...result, width: meta.width, height: meta.height };
   },
 };

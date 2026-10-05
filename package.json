@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate:prod": "prisma migrate deploy",
-    "prisma:migrate:dev": "prisma migrate dev"
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:reset": "prisma migrate reset --force"
   },
   "keywords": [
     "pharmacy",

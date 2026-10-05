@@ -1,4 +1,5 @@
 import { PDFParse } from "pdf-parse";
+import { randomUUID } from "node:crypto";
 import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import {
@@ -6,6 +7,7 @@ import {
   type ExtractedInvoice,
 } from "./invoice-extraction.service.js";
 import { invoiceOcrService } from "./invoice-ocr.service.js";
+import { logger } from "../../config/logger.js";
 import {
   extractDeviceTradingCreditSales,
   isDeviceTradingCreditSalesTemplate,
@@ -687,12 +689,16 @@ export const invoiceDocumentService = {
   async extractFromFile(
     file: UploadedInvoiceFile,
   ): Promise<InvoiceDocumentExtraction> {
+    const traceId = randomUUID();
+    const startedAt = Date.now();
+    logger.info({ traceId, stage: "document.extract.start", fileName: file.originalName, fileBytes: file.buffer.length, mimeType: file.mimeType }, "Invoice document extraction started");
     /**
      * ------------------------------------------------------------
      * STEP 1 — Validate file
      * ------------------------------------------------------------
      */
     const kind = validateInvoiceFile(file);
+    logger.info({ traceId, stage: "document.validate.complete", kind }, "Invoice document validation completed");
 
     /**
      * ------------------------------------------------------------
@@ -764,7 +770,7 @@ export const invoiceDocumentService = {
     else {
       try {
         const ocrResult =
-          await invoiceOcrService.extract(file.buffer);
+          await invoiceOcrService.extract(file.buffer, traceId);
 
         text = ocrResult.text ?? "";
         ocrWords = ocrResult.words ?? [];
@@ -777,6 +783,7 @@ export const invoiceDocumentService = {
         extractionMethod = "ocr";
 
         ocrConfidence = ocrResult.confidence;
+        logger.info({ traceId, stage: "document.ocr.complete", textExtracted, words: ocrWords.length, confidence: ocrConfidence }, "Invoice document OCR stage completed");
 
         /**
          * OCR returned nothing.
@@ -834,10 +841,12 @@ export const invoiceDocumentService = {
      * parsing fields/items/totals.
      */
     const templateDetected = extractionMethod === "ocr" && isDeviceTradingCreditSalesTemplate(ocrWords);
+    logger.info({ traceId, stage: "document.template.detected", templateDetected, words: ocrWords.length }, "Invoice template detection completed");
     let base: ExtractedInvoice;
     if (templateDetected) {
       try {
-        base = extractDeviceTradingCreditSales(ocrWords, ocrConfidence, ocrPage);
+        base = extractDeviceTradingCreditSales(ocrWords, ocrConfidence, ocrPage, traceId);
+        logger.info({ traceId, stage: "document.template.complete", items: base.items.length, invoiceNumber: base.invoiceNumber, warnings: base.warnings.length }, "Invoice template extraction completed");
       } catch {
         base = text.trim().length > 0
           ? await invoiceExtractionService.extract({ text })
@@ -871,6 +880,7 @@ export const invoiceDocumentService = {
      * STEP 7 — Return reviewable extraction result
      * ------------------------------------------------------------
      */
+    logger.info({ traceId, stage: "document.extract.complete", items: base.items.length, warnings: warnings.length + base.warnings.length, durationMs: Date.now() - startedAt }, "Invoice document extraction completed");
     return {
       ...base,
 
