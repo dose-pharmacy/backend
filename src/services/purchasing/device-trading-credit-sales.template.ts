@@ -5,10 +5,11 @@ import { logger } from "../../config/logger.js";
 /**
  * DEVICE TRADING PLC - CREDIT SALES ATTACHMENT (photographed paper invoice)
  *
- * Everything here is RESOLUTION-INDEPENDENT. The OCR layer upscales photos
- * (TESSERACT_TARGET_WIDTH, default 1800px), so no absolute pixel value may
- * appear in this file: all thresholds are fractions of the page size, and the
- * table is located from its own header row instead of fixed Y coordinates.
+ * Everything here is RESOLUTION-INDEPENDENT. The OCR layer normalizes photos
+ * but never enlarges them (TESSERACT_TARGET_WIDTH is an upper bound only), so
+ * no absolute pixel value may appear in this file: all thresholds are
+ * fractions of the page size, and the table is located from its own header row
+ * instead of fixed Y coordinates.
  *
  * Photos are skewed, so rows are grouped on a slope-corrected Y
  * (adjustedY) estimated from the printed table header.
