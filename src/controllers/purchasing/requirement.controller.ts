@@ -31,7 +31,10 @@ export const requirementController = {
   }),
 
   preview: asyncHandler(async (req: Request, res: Response) => {
-    const data = await requirementService.preview(req.body as CreateRequirementInput);
+    const data = await requirementService.preview(
+      req.body as CreateRequirementInput,
+      req.auth!.user,
+    );
     sendSuccess(res, data, { status: 200 });
   }),
 

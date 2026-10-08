@@ -846,7 +846,10 @@ export const requirementService = {
     });
   },
 
-  async preview(input: CreateRequirementInput): Promise<RequirementActionResponse> {
+  async preview(
+    input: CreateRequirementInput,
+    actor: Pick<AuthenticatedUser, "id">,
+  ): Promise<RequirementActionResponse> {
     // Run in a transaction that always rolls back, so we can reuse the logic
     // without actually modifying the database.
     try {
@@ -854,7 +857,7 @@ export const requirementService = {
         const result = await processRequirementLinesTx(
           tx,
           input.lines,
-          "preview",
+          actor.id,
           () => "PR-PREVIEW",
           input.requiredBy,
           input.notes,
