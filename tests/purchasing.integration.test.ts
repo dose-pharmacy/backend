@@ -26,6 +26,8 @@ describe("purchasing: requirement -> purchase order allocation", () => {
   let userId: string;
   let groupId: string;
   let productId: string;
+  let stripUnitId: string;
+  let boxUnitId: string;
   let locationId: string;
   let supplierA: string;
   let supplierB: string;
@@ -69,6 +71,20 @@ describe("purchasing: requirement -> purchase order allocation", () => {
         isBaseUnit: true,
       },
     });
+    const stripUnit = await prisma.unit.create({
+      data: { name: `Purchasing Strip ${suffix}`, symbol: "P-STRIP" },
+    });
+    stripUnitId = stripUnit.id;
+    await prisma.productUnit.create({
+      data: { productId: product.id, unitId: stripUnit.id, conversionFactor: 10 },
+    });
+    const boxUnit = await prisma.unit.create({
+      data: { name: `Purchasing Box ${suffix}`, symbol: "P-BOX" },
+    });
+    boxUnitId = boxUnit.id;
+    await prisma.productUnit.create({
+      data: { productId: product.id, unitId: boxUnit.id, conversionFactor: 100 },
+    });
 
     const location = await prisma.inventoryLocation.create({
       data: { name: `Purchasing Store ${suffix}` },
@@ -106,8 +122,9 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     await prisma.productUnit.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.unit.deleteMany({
-      where: { name: { startsWith: "Purchasing Tablet" } },
+      where: { id: { in: [stripUnitId, boxUnitId] } },
     });
+    await prisma.unit.deleteMany({ where: { name: { startsWith: "Purchasing Tablet" } } });
     await prisma.productGroup.deleteMany({ where: { id: groupId } });
     await prisma.inventoryLocation.deleteMany({ where: { id: locationId } });
     await prisma.supplier.deleteMany({ where: { id: { in: [supplierA, supplierB, supplierC] } } });
@@ -153,6 +170,110 @@ describe("purchasing: requirement -> purchase order allocation", () => {
     expect(line.orderedQuantity).toBe(0);
     expect(line.remainingQuantity).toBe(100);
     expect(line.status).toBe("OPEN");
+  });
+
+  it("accumulates same-product registrations and keeps the latest date", async () => {
+    const first = await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ requiredBy: "2026-10-20", lines: [{ productId, quantityNeeded: 5 }] })
+      .expect(201);
+    const requirementId = first.body.data.createdRequirement.id as string;
+    requirementIds.push(requirementId);
+    const lineId = first.body.data.createdRequirement.lines[0].id as string;
+
+    await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ requiredBy: "2026-10-25", lines: [{ productId, quantityNeeded: 10 }] })
+      .expect(201);
+
+    const requirement = await prisma.purchaseRequirement.findUnique({
+      where: { id: requirementId },
+      include: { lines: true },
+    });
+    expect(requirement?.requiredBy?.toISOString()).toBe("2026-10-25T00:00:00.000Z");
+    expect(requirement?.lines).toHaveLength(1);
+    expect(requirement?.lines[0]?.id).toBe(lineId);
+    expect(requirement?.lines[0]?.quantityNeeded.toNumber()).toBe(15);
+    expect(requirement?.lines[0]?.quantityNeededBase.toNumber()).toBe(15);
+  });
+
+  it("converts different units before accumulating a product requirement", async () => {
+    const first = await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ lines: [{ productId, unitId: boxUnitId, quantityNeeded: 5 }] })
+      .expect(201);
+    const requirementId = first.body.data.createdRequirement.id as string;
+    requirementIds.push(requirementId);
+
+    await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ lines: [{ productId, unitId: stripUnitId, quantityNeeded: 10 }] })
+      .expect(201);
+
+    const line = await prisma.purchaseRequirementLine.findFirst({ where: { requirementId } });
+    expect(line?.unitId).toBe(boxUnitId);
+    expect(line?.quantityNeeded.toNumber()).toBe(6);
+    expect(line?.quantityNeededBase.toNumber()).toBe(600);
+  });
+
+  it("preserves the existing later date when the new date is earlier or null", async () => {
+    const first = await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ requiredBy: "2026-10-25", lines: [{ productId, quantityNeeded: 5 }] })
+      .expect(201);
+    const requirementId = first.body.data.createdRequirement.id as string;
+    requirementIds.push(requirementId);
+
+    await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ requiredBy: "2026-10-15", lines: [{ productId, quantityNeeded: 1 }] })
+      .expect(201);
+    await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ lines: [{ productId, quantityNeeded: 1 }] })
+      .expect(201);
+
+    const requirement = await prisma.purchaseRequirement.findUnique({ where: { id: requirementId } });
+    expect(requirement?.requiredBy?.toISOString()).toBe("2026-10-25T00:00:00.000Z");
+  });
+
+  it("does not merge a closed requirement into a new active requirement", async () => {
+    const first = await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ lines: [{ productId, quantityNeeded: 5 }] })
+      .expect(201);
+    const closedId = first.body.data.createdRequirement.id as string;
+    requirementIds.push(closedId);
+    await prisma.purchaseRequirement.update({
+      where: { id: closedId },
+      data: { status: "CLOSED" },
+    });
+    await prisma.purchaseRequirementLine.updateMany({
+      where: { requirementId: closedId },
+      data: { status: "CLOSED" },
+    });
+
+    const second = await request(app)
+      .post(`${BASE}/requirements`)
+      .set("Cookie", cookie)
+      .send({ lines: [{ productId, quantityNeeded: 10 }] })
+      .expect(201);
+    const newId = second.body.data.createdRequirement.id as string;
+    requirementIds.push(newId);
+    expect(newId).not.toBe(closedId);
+    const lines = await prisma.purchaseRequirementLine.findMany({
+      where: { productId },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(lines.map((line) => line.quantityNeeded.toNumber())).toEqual([5, 10]);
   });
 
   it("returns an order preview for a requirement line", async () => {
