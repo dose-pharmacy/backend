@@ -375,6 +375,12 @@ async function assertProductExists(productId: string): Promise<void> {
   }
 }
 
+function latestRequirementDate(existing: Date | null, incoming?: Date | null): Date | null {
+  if (!existing) return incoming ?? null;
+  if (!incoming) return existing;
+  return incoming > existing ? incoming : existing;
+}
+
 async function processRequirementLinesTx(
   tx: DbClient,
   linesInput: Array<{
@@ -389,111 +395,140 @@ async function processRequirementLinesTx(
   requiredBy?: Date | null,
   headerNotes?: string | null,
 ): Promise<RequirementActionResponse> {
-  // 1. Resolve units and validate products and duplicates
-  const resolvedLines = [];
-  const seen = new Set<string>();
+  // 1. Resolve units and normalize every submitted quantity to the product's
+  // base unit. Product identity, not the submitted unit, determines merging.
+  const resolvedLines = new Map<string, {
+    productId: string;
+    baseUnitId: string;
+    baseQuantity: Prisma.Decimal;
+    requestedQuantity: number;
+    reasonCode?: "LOW_STOCK" | "REORDER_ALERT" | "MANUAL";
+    notes?: string | null;
+  }>();
   for (const line of linesInput) {
     await assertProductExists(line.productId);
     const unitId = await resolveLineUnitId(line.productId, line.unitId, tx);
-    const key = `${line.productId}:${unitId}`;
-    if (seen.has(key)) {
-      throw new AppError(
-        422,
-        ErrorCode.DUPLICATE_PRODUCT_IN_REQUIREMENT,
-        "Duplicate Product + Unit in request",
-      );
-    }
-    seen.add(key);
-    resolvedLines.push({ ...line, resolvedUnitId: unitId });
+    const baseUnitId = await resolveLineUnitId(line.productId, null, tx);
+    const { baseQuantity } = await productUnitService.toBaseQuantity(
+      line.productId,
+      unitId,
+      line.quantityNeeded,
+      tx,
+    );
+    const previous = resolvedLines.get(line.productId);
+    resolvedLines.set(line.productId, previous
+      ? { ...previous, baseQuantity: previous.baseQuantity.add(baseQuantity) }
+      : {
+          productId: line.productId,
+          baseUnitId,
+          baseQuantity,
+          requestedQuantity: line.quantityNeeded,
+          reasonCode: line.reasonCode,
+          notes: line.notes,
+        });
   }
 
   const actions: RequirementActionResponse["actions"] = [];
   const toCreate = [];
   const affectedRequirementIds = new Set<string>();
 
-  for (const line of resolvedLines) {
-    // 2. Obtain an advisory lock for this Product + Unit to serialize writers
-    const lockKey = `req_line:${line.productId}:${line.resolvedUnitId}`;
+  for (const line of resolvedLines.values()) {
+    // 2. Product-level lock prevents different units from racing to create
+    // separate active requirements for the same product.
+    const lockKey = `req_line:${line.productId}`;
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
 
-    // 3. Find the single active requirement line (OPEN or PARTIALLY_FULFILLED)
+    // 3. Find the single active requirement line for this product. CLOSED
+    // requirements remain historical and are never merged.
     const activeLines = await tx.purchaseRequirementLine.findMany({
       where: {
         productId: line.productId,
-        unitId: line.resolvedUnitId,
         status: {
-          in: [PurchaseRequirementStatus.OPEN, PurchaseRequirementStatus.PARTIALLY_FULFILLED],
+          in: [
+            PurchaseRequirementStatus.OPEN,
+            PurchaseRequirementStatus.PARTIALLY_FULFILLED,
+            PurchaseRequirementStatus.FULFILLED,
+          ],
         },
         requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
       },
-      select: { id: true, requirementId: true, quantityNeeded: true, quantityDelivered: true, status: true },
+      select: {
+        id: true,
+        requirementId: true,
+        unitId: true,
+        quantityNeeded: true,
+        quantityNeededBase: true,
+        quantityDelivered: true,
+        status: true,
+        requirement: { select: { requiredBy: true } },
+      },
     });
 
     if (activeLines.length > 1) {
       throw new AppError(
         409,
         ErrorCode.DUPLICATE_PRODUCT_IN_REQUIREMENT,
-        "Multiple active requirement lines exist for this product and unit. Cannot proceed.",
+        "Multiple active requirement lines exist for this product. Resolve duplicates before proceeding.",
       );
     }
 
     const activeLine = activeLines.length === 1 ? activeLines[0] : null;
 
     if (activeLine) {
-      // 4. Update existing
-      const { baseQuantity } = await productUnitService.toBaseQuantity(
+      // 4. Aggregate in base units, then convert back to the existing display
+      // unit so existing purchase-order allocations keep their meaning.
+      const activeUnitId = activeLine.unitId ?? line.baseUnitId;
+      const existingUnit = await productUnitService.toBaseQuantity(
         line.productId,
-        line.resolvedUnitId,
-        line.quantityNeeded,
+        activeUnitId,
+        1,
         tx,
       );
-
-      // Do not allow shrinking required quantity below what is already delivered.
-      // (The prompt doesn't strictly define exact rules for active allocations, but says "Use the minimum safe quantity").
-      if (toDecimal(line.quantityNeeded).lt(activeLine.quantityDelivered)) {
-         throw new AppError(
-           422,
-           ErrorCode.BAD_REQUEST,
-           `Cannot reduce required quantity below the already delivered quantity (${activeLine.quantityDelivered.toString()}).`
-         );
-      }
+      const existingBaseQuantity = activeLine.quantityNeededBase.gt(0)
+        ? activeLine.quantityNeededBase
+        : (await productUnitService.toBaseQuantity(
+            line.productId,
+            activeUnitId,
+            activeLine.quantityNeeded.toNumber(),
+            tx,
+          )).baseQuantity;
+      const totalBaseQuantity = existingBaseQuantity.add(line.baseQuantity);
+      const totalDisplayQuantity = totalBaseQuantity.div(existingUnit.unit.conversionFactor);
 
       await tx.purchaseRequirementLine.update({
         where: { id: activeLine.id },
         data: {
-          quantityNeeded: line.quantityNeeded,
-          quantityNeededBase: baseQuantity.toNumber(),
+          quantityNeeded: totalDisplayQuantity.toNumber(),
+          quantityNeededBase: totalBaseQuantity.toNumber(),
         },
+      });
+      await tx.purchaseRequirement.update({
+        where: { id: activeLine.requirementId },
+        data: { requiredBy: latestRequirementDate(activeLine.requirement.requiredBy, requiredBy) },
       });
       affectedRequirementIds.add(activeLine.requirementId);
       actions.push({
         productId: line.productId,
-        unitId: line.resolvedUnitId,
-        requestedQuantity: line.quantityNeeded,
+        unitId: activeUnitId,
+        requestedQuantity: line.requestedQuantity,
         action: "UPDATE",
         existingRequirement: null, // will populate below
       });
     } else {
       // 5. Enqueue creation
-      const { baseQuantity } = await productUnitService.toBaseQuantity(
-        line.productId,
-        line.resolvedUnitId,
-        line.quantityNeeded,
-        tx,
-      );
       toCreate.push({
         productId: line.productId,
-        quantityNeeded: line.quantityNeeded,
-        unitId: line.resolvedUnitId,
-        quantityNeededBase: baseQuantity.toNumber(),
+        quantityNeeded: line.baseQuantity.toNumber(),
+        unitId: line.baseUnitId,
+        quantityNeededBase: line.baseQuantity.toNumber(),
         reasonCode: line.reasonCode,
         notes: line.notes,
         status: PurchaseRequirementStatus.OPEN,
       });
       actions.push({
         productId: line.productId,
-        unitId: line.resolvedUnitId,
-        requestedQuantity: line.quantityNeeded,
+        unitId: line.baseUnitId,
+        requestedQuantity: line.requestedQuantity,
         action: "CREATE",
         existingRequirement: null, // will populate below
       });
@@ -526,8 +561,7 @@ async function processRequirementLinesTx(
   // Fetch full line views for the response
   const activeLineViews = await tx.purchaseRequirementLine.findMany({
     where: {
-      productId: { in: resolvedLines.map((l) => l.productId) },
-      unitId: { in: resolvedLines.map((l) => l.resolvedUnitId) },
+      productId: { in: [...resolvedLines.keys()] },
       status: { in: [PurchaseRequirementStatus.OPEN, PurchaseRequirementStatus.PARTIALLY_FULFILLED, PurchaseRequirementStatus.FULFILLED] },
       requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
     },
