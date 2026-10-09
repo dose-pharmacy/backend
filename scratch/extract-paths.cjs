@@ -7,3 +7,5 @@ if (pathsMatch) {
 } else {
   console.log('no paths found');
 }
+
+\

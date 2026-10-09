@@ -11,12 +11,14 @@
 
 1. [Suppliers](#suppliers)
 2. [Purchase Requirements](#purchase-requirements)
-3. [Purchase Orders](#purchase-orders)
-4. [Goods Receipts](#goods-receipts)
-5. [Supplier Invoices](#supplier-invoices)
-6. [Purchase Returns](#purchase-returns)
-7. [Invoice-Assisted Receiving](#invoice-assisted-receiving)
-8. [Error Codes](#error-codes)
+3. [Purchase Requirement Lines (Product-Oriented)](#purchase-requirement-lines)
+4. [Purchase Orders](#purchase-orders)
+5. [Goods Receipts](#goods-receipts)
+6. [Supplier Invoices](#supplier-invoices)
+7. [Purchase Returns](#purchase-returns)
+8. [Invoice-Assisted Receiving](#invoice-assisted-receiving)
+9. [Error Codes](#error-codes)
+
 
 ---
 
@@ -463,6 +465,235 @@ POST /requirements/generate-from-reorder
 ---
 
 ## 📋 Purchase Requirement Lines
+
+### List Requirement Lines (Product-Oriented Main Table)
+```
+GET /requirement-lines
+GET /purchase/requirement-lines (alias)
+```
+
+**Purpose:**
+Dedicated endpoint for the redesigned Purchase Requirements user interface. Returns a flat, product-oriented dataset where **each row represents one purchase requirement line** rather than a nested requirement header. Supports tabbed status filtering, multi-status selection, text search across products and requirement references, stable sorting, and database-level pagination.
+
+**Authentication & Authorization:**
+- Requires authenticated user via Better Auth session cookie.
+- Requires `ADMIN` role.
+
+**Default Status Behavior:**
+When no `status` or `statuses` parameter is supplied, the API defaults to returning only requirement lines whose effective status is:
+- `OPEN`
+- `PARTIALLY_FULFILLED`
+
+Requirements or lines with status `CLOSED` or `FULFILLED` are **excluded by default**.
+
+**Explicit Status Filtering:**
+Clients may filter independently by each supported enum value:
+- `OPEN`: Unordered requirement lines from active (non-closed) requirements.
+- `PARTIALLY_FULFILLED`: Requirement lines with active orders placed or partial deliveries received.
+- `FULFILLED`: Requirement lines where `quantityDelivered >= requiredQuantity`.
+- `CLOSED`: Requirement lines marked `CLOSED` or belonging to parent requirements that have been closed.
+
+**Multi-Status Filtering:**
+The `statuses` query parameter accepts a comma-separated list or array of statuses (e.g. `statuses=OPEN,PARTIALLY_FULFILLED`). When provided, it overrides the default status behavior and returns records matching any of the specified statuses.
+
+**Query Parameters:**
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | 1-indexed page number (min: 1) |
+| `limit` | integer | No | 20 | Items per page (min: 1, max: 100) |
+| `status` | enum | No | - | Single status filter (`OPEN`, `PARTIALLY_FULFILLED`, `FULFILLED`, `CLOSED`) |
+| `statuses` | string/array | No | - | Multi-status filter, comma-separated (e.g. `OPEN,PARTIALLY_FULFILLED`) |
+| `search` | string | No | - | Case-insensitive search across product name, SKU, and requirement reference |
+| `sortBy` | enum | No | `createdAt` | Sort field: `createdAt`, `updatedAt`, `quantityNeeded`, `requiredQuantity`, `requiredBy` |
+| `sortOrder` | enum | No | `desc` | Sort direction: `asc`, `desc` (with `id` as deterministic tiebreaker) |
+
+**Field Definitions & Quantity Semantics:**
+- `requiredQuantity`: The target requirement target in the line's configured unit (`quantityNeeded`).
+- `orderedQuantity`: Net active quantity covered by non-cancelled purchase orders in the line's unit, deducting accepted shortages.
+- `quantityDelivered`: Authoritative physical quantity accepted into inventory via confirmed goods receipts.
+- `remainingToOrder`: Requirement quantity still eligible to be ordered (`max(0, requiredQuantity - (quantityDelivered + remainingToReceive))`). Accounts for active order commitments without double-counting received quantities.
+- `remainingToReceive`: Active ordered quantity awaiting delivery (`max(0, orderedQuantity - quantityDelivered)`).
+- `activeOrderCount`: Count of non-cancelled purchase orders currently allocating to this requirement line.
+- `lineStatus` / `status`: Canonical derived line fulfillment status (`OPEN`, `PARTIALLY_FULFILLED`, `FULFILLED`, `CLOSED`).
+- `requirementStatus`: Status of the parent requirement header.
+
+**Response 200 (Success):**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "7b82f091-62ad-4d1e-8123-b1c4e9545001",
+      "requirementId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "requirementReference": "PR-202610-0012",
+      "requirementStatus": "OPEN",
+      "lineStatus": "PARTIALLY_FULFILLED",
+      "status": "PARTIALLY_FULFILLED",
+      "productId": "4a719c83-0518-4b77-a89e-3d842b0cb321",
+      "productName": "Amoxicillin 500mg Capsule",
+      "productSku": "AMOX-500",
+      "product": {
+        "id": "4a719c83-0518-4b77-a89e-3d842b0cb321",
+        "name": "Amoxicillin 500mg Capsule",
+        "sku": "AMOX-500",
+        "brand": "Generic"
+      },
+      "unitId": "8f3e2841-3bb1-4fc3-9092-2bb1904a0122",
+      "unitName": "Box",
+      "unitSymbol": "BOX",
+      "unit": {
+        "id": "8f3e2841-3bb1-4fc3-9092-2bb1904a0122",
+        "name": "Box",
+        "symbol": "BOX"
+      },
+      "requiredQuantity": 40,
+      "orderedQuantity": 20,
+      "quantityDelivered": 15,
+      "remainingToOrder": 20,
+      "remainingToReceive": 5,
+      "activeOrderCount": 1,
+      "reasonCode": "LOW_STOCK",
+      "notes": "Weekly dispensary replenishment",
+      "requiredBy": "2026-10-25T00:00:00.000Z",
+      "createdAt": "2026-10-09T08:30:00.000Z",
+      "updatedAt": "2026-10-09T09:15:00.000Z",
+      "createdBy": {
+        "id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        "name": "Inventory Pharmacist"
+      }
+    }
+  ],
+  "meta": {
+    "page": 1,
+    "limit": 20,
+    "total": 45,
+    "totalPages": 3
+  },
+  "summary": {
+    "open": 20,
+    "partiallyFulfilled": 15,
+    "fulfilled": 8,
+    "closed": 2,
+    "total": 45
+  }
+}
+```
+
+---
+
+### Get Requirement Line Detail (With Purchase Order History)
+```
+GET /requirement-lines/:lineId
+GET /purchase/requirement-lines/:lineId (alias)
+GET /requirements/lines/:lineId (alias)
+```
+
+**Purpose:**
+Returns the complete details for a single purchase requirement line, its parent requirement metadata, and its linked purchase order allocation history. When a product appears in multiple requirements, this endpoint specifically loads the history of the selected requirement line and does not conflate histories across unrelated requirements.
+
+**Authentication & Authorization:**
+- Requires authenticated user via Better Auth session cookie.
+- Requires `ADMIN` role.
+
+**Path Parameters:**
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `lineId` | string (UUID) | Yes | Requirement Line ID |
+
+**Response 200 (Success):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "7b82f091-62ad-4d1e-8123-b1c4e9545001",
+    "requirementId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "requirementReference": "PR-202610-0012",
+    "requirementStatus": "OPEN",
+    "lineStatus": "PARTIALLY_FULFILLED",
+    "status": "PARTIALLY_FULFILLED",
+    "productId": "4a719c83-0518-4b77-a89e-3d842b0cb321",
+    "productName": "Amoxicillin 500mg Capsule",
+    "productSku": "AMOX-500",
+    "product": {
+      "id": "4a719c83-0518-4b77-a89e-3d842b0cb321",
+      "name": "Amoxicillin 500mg Capsule",
+      "sku": "AMOX-500",
+      "brand": "Generic"
+    },
+    "unitId": "8f3e2841-3bb1-4fc3-9092-2bb1904a0122",
+    "unitName": "Box",
+    "unitSymbol": "BOX",
+    "unit": {
+      "id": "8f3e2841-3bb1-4fc3-9092-2bb1904a0122",
+      "name": "Box",
+      "symbol": "BOX"
+    },
+    "requiredQuantity": 40,
+    "orderedQuantity": 20,
+    "quantityDelivered": 15,
+    "remainingToOrder": 20,
+    "remainingToReceive": 5,
+    "activeOrderCount": 1,
+    "reasonCode": "LOW_STOCK",
+    "notes": "Weekly dispensary replenishment",
+    "requiredBy": "2026-10-25T00:00:00.000Z",
+    "createdAt": "2026-10-09T08:30:00.000Z",
+    "updatedAt": "2026-10-09T09:15:00.000Z",
+    "createdBy": {
+      "id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "name": "Inventory Pharmacist"
+    },
+    "requirement": {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "reference": "PR-202610-0012",
+      "status": "OPEN",
+      "requiredBy": "2026-10-25T00:00:00.000Z",
+      "notes": "Weekly replenishment batch",
+      "createdBy": {
+        "id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        "name": "Inventory Pharmacist"
+      },
+      "createdAt": "2026-10-09T08:30:00.000Z",
+      "updatedAt": "2026-10-09T09:15:00.000Z"
+    },
+    "purchaseOrders": [
+      {
+        "allocationId": "a1b2c3d4-0001-4000-8000-000000000001",
+        "purchaseOrderId": "e8a91b2c-3d4e-5f60-7182-9304a5b6c7d8",
+        "purchaseOrderNumber": "PO-202610-0045",
+        "poNumber": "PO-202610-0045",
+        "supplierId": "91a2b3c4-d5e6-7f80-1234-567890abcdef",
+        "supplierName": "National Drug Distributors",
+        "supplier": {
+          "id": "91a2b3c4-d5e6-7f80-1234-567890abcdef",
+          "name": "National Drug Distributors"
+        },
+        "purchaseOrderStatus": "AWAITING_DELIVERY",
+        "status": "AWAITING_DELIVERY",
+        "quantityAllocated": 20,
+        "quantityOrdered": 20,
+        "quantityReceived": 15,
+        "quantityShort": 0,
+        "outstandingDeliveryQuantity": 5,
+        "unitCost": 45.0,
+        "active": true,
+        "orderDate": "2026-10-09T08:45:00.000Z",
+        "expectedDeliveryDate": "2026-10-15T00:00:00.000Z",
+        "createdAt": "2026-10-09T08:45:00.000Z",
+        "updatedAt": "2026-10-09T09:15:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+**Error Responses:**
+- `401 UNAUTHENTICATED`: When no session cookie or an invalid session cookie is provided.
+- `403 FORBIDDEN`: When the user does not possess the `ADMIN` role.
+- `404 REQUIREMENT_LINE_NOT_FOUND`: When the specified `lineId` does not exist.
+- `422 VALIDATION_ERROR`: When parameters fail validation (e.g. non-UUID `lineId`, invalid status, or page < 1).
+
+---
 
 ### Add Line to Requirement
 ```

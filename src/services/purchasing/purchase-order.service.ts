@@ -1349,6 +1349,9 @@ export const purchaseOrderService = {
    */
   async updateItem(itemId: string, input: UpdatePOItemInput) {
     return prisma.$transaction(async (tx) => {
+      // Serialize concurrent updates / receipts / shortages on the same PO item.
+      await tx.$executeRaw`SELECT id FROM "purchase_order_item" WHERE id = ${itemId} FOR UPDATE`;
+      
       const existing = await tx.purchaseOrderItem.findUnique({
         where: { id: itemId },
         include: {

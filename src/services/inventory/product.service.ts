@@ -484,26 +484,47 @@ export const productService = {
           });
         }
 
+        async function hasTransactionalHistory(productId: string, dbTx: Prisma.TransactionClient): Promise<boolean> {
+          const [stock, batch, stockTx, poItem, reqLine, saleLine, transferItem, prItem, srItem] = await Promise.all([
+            dbTx.inventoryStock.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.batch.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.stockTransaction.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.purchaseOrderItem.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.purchaseRequirementLine.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.saleLine.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.stockTransferItem.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.purchaseReturn.findFirst({ where: { productId }, select: { id: true } }),
+            dbTx.saleReturnItem.findFirst({ where: { productId }, select: { id: true } })
+          ]);
+          return !!(stock || batch || stockTx || poItem || reqLine || saleLine || transferItem || prItem || srItem);
+        }
+
         if (validatedUnits) {
           const existingConfigs = await tx.productUnit.findMany({
             where: { productId: id },
             select: { id: true, unitId: true, isBaseUnit: true },
           });
           const byUnitId = new Map(existingConfigs.map((c) => [c.unitId, c]));
-          const hasExistingBase = existingConfigs.some((c) => c.isBaseUnit);
+          let hasExistingBase = existingConfigs.some((c) => c.isBaseUnit);
+
+          const currentBase = existingConfigs.find((c) => c.isBaseUnit);
+          const newBase = validatedUnits.find((u) => u.isBaseUnit);
+          
+          if (currentBase && newBase && currentBase.unitId !== newBase.unitId) {
+            if (await hasTransactionalHistory(id, tx)) {
+              throw new AppError(409, ErrorCode.BASE_UNIT_FORBIDDEN, "Base unit cannot be changed because this product has existing inventory, purchase, or requirement history.");
+            }
+            await tx.productUnit.update({
+              where: { id: currentBase.id },
+              data: { isBaseUnit: false }
+            });
+            currentBase.isBaseUnit = false;
+            hasExistingBase = false;
+          }
 
           for (const unitConfig of validatedUnits) {
             const existing = byUnitId.get(unitConfig.unitId);
             if (existing) {
-              // The base unit designation cannot be changed through a
-              // product update (use the dedicated unit endpoints).
-              if (!existing.isBaseUnit && unitConfig.isBaseUnit) {
-                throw new AppError(
-                  409,
-                  ErrorCode.BASE_UNIT_FORBIDDEN,
-                  "The base unit designation cannot be changed through a product update",
-                );
-              }
               // The base unit conversion factor is fixed at 1.
               if (existing.isBaseUnit && !unitConfig.conversionFactor.equals(1)) {
                 throw new AppError(
@@ -518,6 +539,7 @@ export const productService = {
                   conversionFactor: unitConfig.conversionFactor,
                   sellPrice: unitConfig.sellPrice,
                   purchasePrice: unitConfig.purchasePrice,
+                  isBaseUnit: unitConfig.isBaseUnit,
                 },
               });
             } else if (unitConfig.isBaseUnit && hasExistingBase) {

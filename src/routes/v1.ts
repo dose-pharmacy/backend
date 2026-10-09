@@ -26,6 +26,7 @@ v1Router.get(
 v1Router.use("/dashboard", dashboardRouter);
 v1Router.use("/inventory", inventoryRouter);
 v1Router.use("/purchasing", purchasingRouter);
+v1Router.use("/purchase", purchasingRouter);
 v1Router.use("/pos", posRouter);
 v1Router.use("/financials", financialsRouter);
 v1Router.use("/audit", auditTrailRouter);

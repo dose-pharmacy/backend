@@ -63,6 +63,33 @@ export const requirementListQuerySchema = z
   .merge(paginationQuerySchema);
 
 /**
+ * Validated query schema for the product-oriented requirement lines list endpoint.
+ * Supports status tabs, multi-status filtering, text search, sorting, and pagination.
+ */
+export const requirementLinesQuerySchema = z
+  .object({
+    search: z.string().trim().max(200).optional(),
+    status: requirementStatusEnum.optional(),
+    statuses: z
+      .preprocess((val) => {
+        if (typeof val === "string") {
+          const parts = val
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          return parts.length > 0 ? parts : undefined;
+        }
+        return val;
+      }, z.array(requirementStatusEnum).optional())
+      .optional(),
+    sortBy: z
+      .enum(["createdAt", "updatedAt", "quantityNeeded", "requiredQuantity", "requiredBy"])
+      .optional(),
+    sortOrder: z.enum(["asc", "desc"]).optional(),
+  })
+  .merge(paginationQuerySchema);
+
+/**
  * Requirement lines for a single product (across all requirements). Returns,
  * per line, the required amount, its unit and the amount already created/ordered.
  */
@@ -81,3 +108,4 @@ export const requirementParamsSchema = z.object({
 export const requirementLineParamsSchema = z.object({
   lineId: uuidSchema,
 });
+

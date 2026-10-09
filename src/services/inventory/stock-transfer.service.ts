@@ -445,6 +445,10 @@ export const stockTransferService = {
   async complete(id: string, actor: Pick<AuthenticatedUser, "id">) {
     await prisma.$transaction(
       async (tx) => {
+        // 1. Lock the transfer row so concurrent calls serialise here instead of
+        //    reading the same PENDING status and executing twice.
+        await tx.$executeRaw`SELECT id FROM stock_transfer WHERE id = ${id} FOR UPDATE`;
+
         const transfer = await tx.stockTransfer.findUnique({
           where: { id },
           include: {

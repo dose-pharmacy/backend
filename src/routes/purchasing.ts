@@ -22,6 +22,7 @@ import {
   addRequirementLineSchema,
   updateRequirementLineSchema,
   requirementListQuerySchema,
+  requirementLinesQuerySchema,
   requirementLinesByProductQuerySchema,
   requirementParamsSchema,
   requirementLineParamsSchema,
@@ -212,12 +213,37 @@ purchasingRouter.get(
   requirementController.getOrderPreview,
 );
 
+// Detail endpoint for an individual requirement line (with PO history)
+purchasingRouter.get(
+  "/requirements/lines/:lineId",
+  ...admin,
+  validate({ params: requirementLineParamsSchema }),
+  requirementController.getLineDetail,
+);
+
 purchasingRouter.delete(
   "/requirements/lines/:lineId",
   ...admin,
   validate({ params: requirementLineParamsSchema }),
   requirementController.removeLine,
 );
+
+// ---------------------------------------------------------------------------
+// Product-Oriented Purchase Requirement Lines (Main table & line detail)
+// ---------------------------------------------------------------------------
+purchasingRouter.get(
+  "/requirement-lines",
+  ...admin,
+  validate({ query: requirementLinesQuerySchema }),
+  requirementController.listLines,
+);
+purchasingRouter.get(
+  "/requirement-lines/:lineId",
+  ...admin,
+  validate({ params: requirementLineParamsSchema }),
+  requirementController.getLineDetail,
+);
+
 
 // ---------------------------------------------------------------------------
 // Purchase Orders

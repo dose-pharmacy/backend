@@ -29,6 +29,7 @@ export type SalePaymentInput = {
   method: PaymentMethod;
   amount: number;
   reference?: string;
+  idempotencyKey?: string;
 };
 
 export type CreateSaleInput = {
@@ -37,9 +38,9 @@ export type CreateSaleInput = {
   payments: SalePaymentInput[];
   billDiscount?: { type: DiscountType; value: number };
   notes?: string;
-  // Customer information for credit sales (required when outstanding > 0)
   customerName?: string;
   customerPhone?: string;
+  idempotencyKey?: string;
 };
 
 export type ListSalesQuery = PageQuery & {
@@ -249,6 +250,16 @@ export const saleService = {
     try {
       return await prisma.$transaction(
         async (tx) => {
+          if (input.idempotencyKey) {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`saleIdempotency:${input.idempotencyKey}`}, 0))`;
+            const existing = await tx.sale.findUnique({
+              where: { idempotencyKey: input.idempotencyKey },
+              include: saleDetailInclude,
+            });
+            if (existing) {
+              return existing;
+            }
+          }
           // 1. Validate the selling location.
           const location = await tx.inventoryLocation.findUnique({
             where: { id: input.locationId },
@@ -382,6 +393,7 @@ export const saleService = {
               // Customer info for credit sales
               customerName: outstandingAmount.gt(0) ? input.customerName?.trim() ?? null : null,
               customerPhone: outstandingAmount.gt(0) ? input.customerPhone?.trim() ?? null : null,
+              idempotencyKey: input.idempotencyKey ?? null,
               items: {
                 create: preparedItems.map((prepared, index) => ({
                   productId: prepared.productId,
@@ -546,7 +558,19 @@ export const saleService = {
   ) {
     return await prisma.$transaction(
       async (tx) => {
+        if (payment.idempotencyKey) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`salePaymentIdempotency:${payment.idempotencyKey}`}, 0))`;
+          const existing = await tx.salePayment.findFirst({
+            where: { idempotencyKey: payment.idempotencyKey },
+          });
+          if (existing) {
+            return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleDetailInclude });
+          }
+        }
+
         // Lock the sale row to prevent concurrent payments from overpaying
+        await tx.$executeRaw`SELECT id FROM sale WHERE id = ${saleId} FOR UPDATE`;
+
         const sale = await tx.sale.findUnique({
           where: { id: saleId },
           select: {
@@ -610,6 +634,7 @@ export const saleService = {
             method: payment.method,
             amount: paymentAmount,
             reference: payment.reference ?? null,
+            idempotencyKey: payment.idempotencyKey ?? null,
           },
         });
 

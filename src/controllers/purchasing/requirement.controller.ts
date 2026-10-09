@@ -4,6 +4,7 @@ import {
   type CreateRequirementInput,
   type RequirementListQuery,
   type RequirementLinesByProductQuery,
+  type RequirementLinesQuery,
   type UpdateRequirementInput,
   type AddRequirementLineInput,
   type UpdateRequirementLineInput,
@@ -22,6 +23,38 @@ export const requirementController = {
     };
     const { items, meta, summary } = await requirementService.list(input);
     sendSuccess(res, items, { meta, summary });
+  }),
+
+  /**
+   * Dedicated product-oriented requirement lines list endpoint.
+   * Returns a flat list with one row per requirement line with summary quantities.
+   */
+  listLines: asyncHandler(async (req: Request, res: Response) => {
+    const query = req.query as Record<string, string | string[] | undefined>;
+    const input: RequirementLinesQuery = {
+      page: query.page ? Number(query.page) : undefined,
+      limit: query.limit ? Number(query.limit) : undefined,
+      search: typeof query.search === "string" ? query.search : undefined,
+      status: typeof query.status === "string" ? (query.status as any) : undefined,
+      statuses: Array.isArray(query.statuses)
+        ? (query.statuses as any)
+        : typeof query.statuses === "string"
+          ? (query.statuses.split(",").map((s) => s.trim()).filter(Boolean) as any)
+          : undefined,
+      sortBy: typeof query.sortBy === "string" ? (query.sortBy as any) : undefined,
+      sortOrder: typeof query.sortOrder === "string" ? (query.sortOrder as any) : undefined,
+    };
+    const { items, meta, summary } = await requirementService.listRequirementLines(input);
+    sendSuccess(res, items, { meta, summary });
+  }),
+
+  /**
+   * Dedicated detail endpoint for a single purchase requirement line.
+   * Includes linked purchase order history and parent requirement details.
+   */
+  getLineDetail: asyncHandler(async (req: Request, res: Response) => {
+    const data = await requirementService.getRequirementLineDetail(req.params.lineId as string);
+    sendSuccess(res, data);
   }),
 
   create: asyncHandler(async (req: Request, res: Response) => {
@@ -112,3 +145,4 @@ export const requirementController = {
     sendSuccess(res, data, { status: 201 });
   }),
 };
+

@@ -35,6 +35,7 @@ export type CreateGRInput = {
     manufacturingDate?: Date | null;
     expiryDate?: Date | null;
   }>;
+  idempotencyKey?: string;
 };
 
 export type UpdateGRItemInput = {
@@ -173,12 +174,30 @@ export const goodsReceiptService = {
     actor: Pick<AuthenticatedUser, "id">,
     externalTx?: Prisma.TransactionClient,
   ) {
-    // Composable with the invoice-assisted receiving flow: when an external
-    // transaction is supplied every read/write uses it, so the receipt is
-    // created atomically with the rest of the receiving operation. The manual
-    // web form calls this without a tx and keeps its previous behaviour.
-    const db = externalTx ?? prisma;
-    const po = await assertPOExistsAndValid(input.purchaseOrderId, db);
+    const run = async (db: Prisma.TransactionClient) => {
+      if (input.idempotencyKey) {
+        // $executeRaw is needed because pg_advisory_xact_lock returns void
+        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`goodsReceiptIdempotency:${input.idempotencyKey}`}, 0))`;
+        const existing = await db.goodsReceipt.findUnique({
+          where: { idempotencyKey: input.idempotencyKey },
+          include: {
+            purchaseOrder: { select: { id: true, poNumber: true } },
+            createdBy: { select: { id: true, name: true } },
+            items: {
+              include: {
+                purchaseOrderItem: { select: { id: true, productId: true, unitCost: true } },
+                location: { select: { id: true, name: true } },
+                unit: { select: { id: true, name: true, symbol: true } },
+              },
+            },
+          },
+        });
+        if (existing) {
+          return existing;
+        }
+      }
+
+      const po = await assertPOExistsAndValid(input.purchaseOrderId, db);
 
     // A receipt represents an actual delivery: it must contain at least one
     // line. (The HTTP layer already enforces the non-empty array; this keeps
@@ -309,6 +328,7 @@ export const goodsReceiptService = {
         receivedDate: input.receivedDate ? toUtcDay(input.receivedDate) : new Date(),
         status,
         discrepancyNote: input.discrepancyNote,
+        idempotencyKey: input.idempotencyKey ?? null,
         createdById: actor.id,
         items: {
           create: validatedItems.map((item) => ({
@@ -357,6 +377,12 @@ export const goodsReceiptService = {
     );
 
     return receipt;
+    };
+
+    if (externalTx) {
+      return run(externalTx);
+    }
+    return prisma.$transaction(run, { timeout: 30_000, maxWait: 15_000 });
   },
 
   async getById(id: string) {
@@ -396,32 +422,34 @@ export const goodsReceiptService = {
   },
 
   async resolve(id: string, input: ResolveGRInput, actor?: Pick<AuthenticatedUser, "id">) {
-    const receipt = await prisma.goodsReceipt.findUnique({
-      where: { id },
-      select: { id: true, status: true },
-    });
-    if (!receipt) {
-      throw new AppError(404, ErrorCode.GOODS_RECEIPT_NOT_FOUND, "Goods receipt not found");
-    }
-    if (receipt.status === "MATCHED") {
-      throw new AppError(409, ErrorCode.BAD_REQUEST, "Receipt is already matched, no resolution needed");
-    }
-
-    // Update items if provided
-    if (input.items && input.items.length > 0) {
-      for (const item of input.items) {
-        const grItem = await prisma.goodsReceiptItem.findUnique({
-          where: { id: item.id },
-          select: { id: true, goodsReceiptId: true },
-        });
-        if (!grItem || grItem.goodsReceiptId !== id) {
-          throw new AppError(404, ErrorCode.GOODS_RECEIPT_ITEM_NOT_FOUND, `Goods receipt item ${item.id} not found`);
-        }
+    return prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT id FROM "goods_receipt" WHERE id = ${id} FOR UPDATE`;
+      
+      const receipt = await tx.goodsReceipt.findUnique({
+        where: { id },
+        select: { id: true, status: true },
+      });
+      if (!receipt) {
+        throw new AppError(404, ErrorCode.GOODS_RECEIPT_NOT_FOUND, "Goods receipt not found");
+      }
+      if (receipt.status === "MATCHED") {
+        throw new AppError(409, ErrorCode.BAD_REQUEST, "Receipt is already matched, no resolution needed");
       }
 
-      await prisma.$transaction(
-        input.items.map((item) =>
-          prisma.goodsReceiptItem.update({
+      // Update items if provided
+      if (input.items && input.items.length > 0) {
+        const itemIds = input.items.map((i) => i.id);
+        const existingItems = await tx.goodsReceiptItem.findMany({
+          where: { id: { in: itemIds } },
+          select: { id: true, goodsReceiptId: true },
+        });
+
+        if (existingItems.length !== input.items.length || existingItems.some((i) => i.goodsReceiptId !== id)) {
+          throw new AppError(404, ErrorCode.GOODS_RECEIPT_ITEM_NOT_FOUND, "One or more goods receipt items not found or do not belong to this receipt");
+        }
+
+        for (const item of input.items) {
+          await tx.goodsReceiptItem.update({
             where: { id: item.id },
             data: {
               deliveredQty: item.deliveredQty,
@@ -430,46 +458,46 @@ export const goodsReceiptService = {
               manufacturingDate: item.manufacturingDate ? toUtcDay(item.manufacturingDate) : null,
               expiryDate: item.expiryDate ? toUtcDay(item.expiryDate) : null,
             },
-          })
-        )
+          });
+        }
+      }
+
+      // Recompute status
+      const items = await tx.goodsReceiptItem.findMany({
+        where: { goodsReceiptId: id },
+        select: { expectedQty: true, deliveredQty: true, actualQty: true },
+      });
+
+      let newStatus: "MATCHED" | "DISCREPANCY" | "RESOLVED";
+      const allMatch = items.every(
+        (i) => i.actualQty.equals(i.deliveredQty) && i.deliveredQty.equals(i.expectedQty)
       );
-    }
 
-    // Recompute status
-    const items = await prisma.goodsReceiptItem.findMany({
-      where: { goodsReceiptId: id },
-      select: { expectedQty: true, deliveredQty: true, actualQty: true },
+      if (allMatch) {
+        newStatus = "MATCHED";
+      } else if (input.discrepancyNote && input.discrepancyNote.trim().length > 0) {
+        newStatus = "RESOLVED";
+      } else {
+        newStatus = "DISCREPANCY";
+      }
+
+      const updated = await tx.goodsReceipt.update({
+        where: { id },
+        data: {
+          status: newStatus,
+          discrepancyNote: input.discrepancyNote ?? undefined,
+        },
+      });
+
+      await recordAuditEvent({
+        event: AuditEvent.GOODS_RECEIPT_RESOLVED,
+        entityId: id,
+        actorId: actor?.id ?? null,
+        metadata: { receiptNumber: updated.receiptNumber, newStatus },
+      }, tx);
+
+      return updated;
     });
-
-    let newStatus: "MATCHED" | "DISCREPANCY" | "RESOLVED";
-    const allMatch = items.every(
-      (i) => i.actualQty === i.deliveredQty && i.deliveredQty === i.expectedQty
-    );
-
-    if (allMatch) {
-      newStatus = "MATCHED";
-    } else if (input.discrepancyNote && input.discrepancyNote.trim().length > 0) {
-      newStatus = "RESOLVED";
-    } else {
-      newStatus = "DISCREPANCY";
-    }
-
-    const updated = await prisma.goodsReceipt.update({
-      where: { id },
-      data: {
-        status: newStatus,
-        discrepancyNote: input.discrepancyNote ?? undefined,
-      },
-    });
-
-    await recordAuditEvent({
-      event: AuditEvent.GOODS_RECEIPT_RESOLVED,
-      entityId: id,
-      actorId: actor?.id ?? null,
-      metadata: { receiptNumber: updated.receiptNumber, newStatus },
-    });
-
-    return updated;
   },
 
   /**

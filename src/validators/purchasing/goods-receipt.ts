@@ -17,6 +17,7 @@ export const createGoodsReceiptSchema = z.object({
   receivedDate: z.coerce.date().optional(),
   discrepancyNote: z.string().trim().max(1000).optional(),
   items: z.array(createGRItemSchema).min(1, "At least one item is required"),
+  idempotencyKey: z.string().trim().min(8).max(200).optional(),
 });
 
 export const updateGRItemSchema = z.object({

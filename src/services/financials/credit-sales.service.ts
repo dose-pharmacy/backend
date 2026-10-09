@@ -142,7 +142,7 @@ export const creditSalesService = {
             where: { saleId: { in: saleIds } },
             orderBy: { createdAt: "asc" },
           })
-        : ([] as { id: string; saleId: string; method: PaymentMethod; amount: Prisma.Decimal; reference: string | null; createdAt: Date }[]),
+        : ([] as { id: string; saleId: string; method: PaymentMethod; amount: Prisma.Decimal; reference: string | null; idempotencyKey: string | null; createdAt: Date }[]),
       saleIds.length > 0
         ? prisma.saleItem.groupBy({
             by: ["saleId"],

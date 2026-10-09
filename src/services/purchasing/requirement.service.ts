@@ -74,6 +74,92 @@ export type RequirementLinesByProductQuery = PageQuery & {
   status?: PurchaseRequirementStatus;
 };
 
+export type RequirementLinesQuery = PageQuery & {
+  search?: string;
+  status?: PurchaseRequirementStatus;
+  statuses?: PurchaseRequirementStatus[];
+  sortBy?: "createdAt" | "updatedAt" | "quantityNeeded" | "requiredQuantity" | "requiredBy";
+  sortOrder?: "asc" | "desc";
+};
+
+export type ProductRequirementLineRow = {
+  id: string;
+  requirementId: string;
+  requirementReference: string;
+  requirementStatus: PurchaseRequirementStatus;
+  lineStatus: PurchaseRequirementStatus;
+  status: PurchaseRequirementStatus;
+  productId: string;
+  productName: string;
+  productSku: string;
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    brand: string | null;
+  };
+  unitId: string | null;
+  unitName: string | null;
+  unitSymbol: string | null;
+  unit: {
+    id: string;
+    name: string;
+    symbol: string;
+  } | null;
+  requiredQuantity: number;
+  orderedQuantity: number;
+  quantityDelivered: number;
+  remainingToOrder: number;
+  remainingToReceive: number;
+  activeOrderCount: number;
+  reasonCode: string | null;
+  notes: string | null;
+  requiredBy: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: {
+    id: string;
+    name: string;
+  } | null;
+};
+
+export type RequirementLinePurchaseOrderHistory = {
+  allocationId: string;
+  purchaseOrderId: string;
+  purchaseOrderNumber: string;
+  poNumber: string;
+  supplierId: string | null;
+  supplierName: string | null;
+  supplier: { id: string; name: string } | null;
+  purchaseOrderStatus: PurchaseOrderStatus;
+  status: PurchaseOrderStatus;
+  quantityAllocated: number;
+  quantityOrdered: number;
+  quantityReceived: number;
+  quantityShort: number;
+  outstandingDeliveryQuantity: number;
+  unitCost: number;
+  active: boolean;
+  orderDate: Date | null;
+  expectedDeliveryDate: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type RequirementLineDetailView = ProductRequirementLineRow & {
+  requirement: {
+    id: string;
+    reference: string;
+    status: PurchaseRequirementStatus;
+    requiredBy: Date | null;
+    notes: string | null;
+    createdBy: { id: string; name: string } | null;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+  purchaseOrders: RequirementLinePurchaseOrderHistory[];
+};
+
 /** Prisma handle usable both inside and outside an interactive transaction. */
 export type DbClient = Prisma.TransactionClient;
 
@@ -99,9 +185,12 @@ const ALLOCATION_INCLUDE = {
       unitCost: true,
       purchaseOrder: {
         select: {
+          id: true,
           status: true,
           poNumber: true,
           supplier: { select: { id: true, name: true } },
+          orderDate: true,
+          expectedDeliveryDate: true,
         },
       },
     },
@@ -121,10 +210,26 @@ type AllocationRow = {
     quantityShort: Prisma.Decimal;
     unitCost: Prisma.Decimal;
     purchaseOrder: {
+      id: string;
       status: PurchaseOrderStatus;
       poNumber: string;
       supplier: { id: string; name: string } | null;
+      orderDate?: Date | null;
+      expectedDeliveryDate?: Date | null;
     };
+  };
+};
+
+type LineWithRequirementRow = LineRow & {
+  requirement: {
+    id: string;
+    reference: string;
+    status: PurchaseRequirementStatus;
+    requiredBy: Date | null;
+    notes: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+    createdBy: { id: string; name: string } | null;
   };
 };
 
@@ -262,7 +367,11 @@ function mapAllocation(allocation: AllocationRow): RequirementAllocationView {
  *  - quantityAwaitingDelivery = quantityOrdered (the active, undelivered portion)
  *  - status uses delivered (not ordered) for FULFILLED
  */
-function mapRequirementLine(line: LineRow): RequirementLineView {
+/**
+ * Computes canonical requirement line quantities and display status.
+ * Shared by both the legacy parent-requirement views and the new product-oriented list/detail APIs.
+ */
+function computeLineQuantities(line: LineRow) {
   const required = line.quantityNeeded.toNumber();
   const delivered = line.quantityDelivered.toNumber();
 
@@ -289,14 +398,94 @@ function mapRequirementLine(line: LineRow): RequirementLineView {
       ? toDecimal(orderedActiveBase).div(toDecimal(lineToBaseFactor)).toDecimalPlaces(3).toNumber()
       : orderedActiveBase;
 
-  // How much of the requirement is still unmet and not covered by an active order.
-  const quantityToOrder = Math.max(0, required - delivered - orderedActive);
   // How much is ordered and still expected to arrive (the "awaiting delivery" portion).
   const quantityAwaitingDelivery = Math.max(0, orderedActive - delivered);
+  // How much of the requirement target is still unmet and not covered by active orders/deliveries.
+  // Never double-count delivered and undelivered portions.
+  const quantityToOrder = Math.max(0, required - (delivered + quantityAwaitingDelivery));
 
   const activeOrderCount = line.allocations.filter(
     (a) => a.purchaseOrderItem.purchaseOrder.status !== PurchaseOrderStatus.CANCELLED,
   ).length;
+
+  const status = deriveLineStatus(required, delivered, orderedActive, line.status);
+
+  return {
+    required,
+    delivered,
+    orderedActive,
+    quantityToOrder,
+    quantityAwaitingDelivery,
+    activeOrderCount,
+    status,
+  };
+}
+
+/**
+ * Maps a requirement line to the flat ProductRequirementLineRow shape.
+ */
+function mapProductRequirementLineRow(line: LineWithRequirementRow): ProductRequirementLineRow {
+  const q = computeLineQuantities(line);
+  return {
+    id: line.id,
+    requirementId: line.requirementId,
+    requirementReference: line.requirement.reference,
+    requirementStatus: line.requirement.status,
+    lineStatus: q.status,
+    status: q.status,
+    productId: line.productId,
+    productName: line.product.name,
+    productSku: line.product.sku,
+    product: {
+      id: line.product.id,
+      name: line.product.name,
+      sku: line.product.sku,
+      brand: line.product.brand,
+    },
+    unitId: line.unitId,
+    unitName: line.unit?.name ?? null,
+    unitSymbol: line.unit?.symbol ?? null,
+    unit: line.unit
+      ? {
+          id: line.unit.id,
+          name: line.unit.name,
+          symbol: line.unit.symbol,
+        }
+      : null,
+    requiredQuantity: q.required,
+    orderedQuantity: q.orderedActive,
+    quantityDelivered: q.delivered,
+    remainingToOrder: q.quantityToOrder,
+    remainingToReceive: q.quantityAwaitingDelivery,
+    activeOrderCount: q.activeOrderCount,
+    reasonCode: line.reasonCode,
+    notes: line.notes,
+    requiredBy: line.requirement.requiredBy,
+    createdAt: line.createdAt,
+    updatedAt: line.updatedAt,
+    createdBy: line.requirement.createdBy
+      ? {
+          id: line.requirement.createdBy.id,
+          name: line.requirement.createdBy.name,
+        }
+      : null,
+  };
+}
+
+/**
+ * Maps a requirement line to a client-friendly shape.
+ *
+ * Key invariants:
+ *  - quantityOrdered (= orderedActive) = net active ordered in the line's own
+ *    unit, accounting for accepted shortages. Cancelled POs are excluded.
+ *    Formula (per non-cancelled allocation, in base units):
+ *      effective = quantityReceived + max(0, quantityAllocated - quantityReceived - quantityShort)
+ *  - quantityToOrder = max(0, required - delivered - quantityOrdered)
+ *  - quantityAwaitingDelivery = quantityOrdered (the active, undelivered portion)
+ *  - status uses delivered (not ordered) for FULFILLED
+ */
+function mapRequirementLine(line: LineRow): RequirementLineView {
+  const q = computeLineQuantities(line);
 
   return {
     id: line.id,
@@ -305,27 +494,28 @@ function mapRequirementLine(line: LineRow): RequirementLineView {
     product: line.product,
     unitId: line.unitId,
     unit: line.unit,
-    requiredQuantity: required,
+    requiredQuantity: q.required,
     // Backwards-compat aliases kept for existing frontend consumers.
-    quantityNeeded: required,
-    quantityOrdered: orderedActive,
-    orderedQuantity: orderedActive,
+    quantityNeeded: q.required,
+    quantityOrdered: q.orderedActive,
+    orderedQuantity: q.orderedActive,
     // quantityRemaining = not delivered and not covered by an active order.
-    quantityRemaining: quantityToOrder,
-    remainingQuantity: Math.max(0, required - delivered),
-    remainingToOrder: quantityToOrder,
-    quantityDelivered: delivered,
+    quantityRemaining: q.quantityToOrder,
+    remainingQuantity: Math.max(0, q.required - q.delivered),
+    remainingToOrder: q.quantityToOrder,
+    quantityDelivered: q.delivered,
     // remainingToReceive = quantity ordered but not yet physically received.
-    remainingToReceive: quantityAwaitingDelivery,
-    activeOrderCount,
+    remainingToReceive: q.quantityAwaitingDelivery,
+    activeOrderCount: q.activeOrderCount,
     reasonCode: line.reasonCode,
-    status: deriveLineStatus(required, delivered, orderedActive, line.status),
+    status: q.status,
     notes: line.notes,
     createdAt: line.createdAt,
     updatedAt: line.updatedAt,
     allocations: line.allocations.map(mapAllocation),
   };
 }
+
 
 /** Resolves a line's unit: explicit unitId, or the product's base unit. */
 async function resolveLineUnitId(
@@ -380,6 +570,61 @@ function latestRequirementDate(existing: Date | null, incoming?: Date | null): D
   if (!incoming) return existing;
   return incoming > existing ? incoming : existing;
 }
+
+const LINE_INCLUDE_ACTIVE = {
+  product: { select: { id: true, name: true, sku: true, brand: true } },
+  unit: { select: { id: true, name: true, symbol: true } },
+  allocations: {
+    where: ACTIVE_ALLOCATION_WHERE,
+    include: ALLOCATION_INCLUDE,
+    orderBy: { createdAt: "desc" as const },
+  },
+} satisfies Prisma.PurchaseRequirementLineInclude;
+
+const LINE_WITH_REQUIREMENT_INCLUDE = {
+  product: { select: { id: true, name: true, sku: true, brand: true } },
+  unit: { select: { id: true, name: true, symbol: true } },
+  requirement: {
+    select: {
+      id: true,
+      reference: true,
+      status: true,
+      requiredBy: true,
+      notes: true,
+      createdAt: true,
+      updatedAt: true,
+      createdBy: { select: { id: true, name: true } },
+    },
+  },
+  allocations: {
+    where: ACTIVE_ALLOCATION_WHERE,
+    include: ALLOCATION_INCLUDE,
+    orderBy: { createdAt: "desc" as const },
+  },
+} satisfies Prisma.PurchaseRequirementLineInclude;
+
+const LINE_DETAIL_INCLUDE = {
+  product: { select: { id: true, name: true, sku: true, brand: true } },
+  unit: { select: { id: true, name: true, symbol: true } },
+  requirement: {
+    select: {
+      id: true,
+      reference: true,
+      status: true,
+      requiredBy: true,
+      notes: true,
+      createdAt: true,
+      updatedAt: true,
+      createdBy: { select: { id: true, name: true } },
+    },
+  },
+  allocations: {
+    include: ALLOCATION_INCLUDE,
+    orderBy: { createdAt: "desc" as const },
+  },
+} satisfies Prisma.PurchaseRequirementLineInclude;
+
+const LINE_INCLUDE_ALL = LINE_DETAIL_INCLUDE;
 
 async function processRequirementLinesTx(
   tx: DbClient,
@@ -750,26 +995,7 @@ function generatePRNumber(): string {
   return `PR-${timestamp}${random}`;
 }
 
-const LINE_INCLUDE_ACTIVE = {
-  product: { select: { id: true, name: true, sku: true, brand: true } },
-  unit: { select: { id: true, name: true, symbol: true } },
-  allocations: {
-    where: ACTIVE_ALLOCATION_WHERE,
-    include: ALLOCATION_INCLUDE,
-    orderBy: { createdAt: "desc" as const },
-  },
-} satisfies Prisma.PurchaseRequirementLineInclude;
 
-// Detail view keeps cancelled allocations for auditability; the mapper still excludes
-// them from the derived ordered quantity.
-const LINE_INCLUDE_ALL = {
-  product: { select: { id: true, name: true, sku: true, brand: true } },
-  unit: { select: { id: true, name: true, symbol: true } },
-  allocations: {
-    include: ALLOCATION_INCLUDE,
-    orderBy: { createdAt: "desc" as const },
-  },
-} satisfies Prisma.PurchaseRequirementLineInclude;
 
 async function loadMappingLine(lineId: string): Promise<LineRow> {
   const line = await prisma.purchaseRequirementLine.findUnique({
@@ -1431,8 +1657,236 @@ export const requirementService = {
       return result;
     });
   },
+
+  /**
+   * Dedicated product-oriented requirement lines list endpoint.
+   * Returns a flat list with one row per purchase requirement line.
+   * Default: OPEN and PARTIALLY_FULFILLED lines from active requirements.
+   * Supports filtering by status (OPEN, PARTIALLY_FULFILLED, FULFILLED, CLOSED),
+   * multi-status filtering, search across product name, SKU, and requirement reference,
+   * database-level pagination, and stable sorting.
+   */
+  async listRequirementLines(query: RequirementLinesQuery) {
+    const { page, limit, skip, take } = resolvePagination(query);
+
+    const selectedStatuses =
+      query.statuses && query.statuses.length > 0
+        ? query.statuses
+        : query.status
+          ? [query.status]
+          : [PurchaseRequirementStatus.OPEN, PurchaseRequirementStatus.PARTIALLY_FULFILLED];
+
+    const hasClosed = selectedStatuses.includes(PurchaseRequirementStatus.CLOSED);
+    const nonClosed = selectedStatuses.filter((s) => s !== PurchaseRequirementStatus.CLOSED);
+
+    let statusWhere: Prisma.PurchaseRequirementLineWhereInput;
+    if (hasClosed && nonClosed.length > 0) {
+      statusWhere = {
+        OR: [
+          {
+            status: { in: nonClosed },
+            requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+          },
+          {
+            OR: [
+              { status: PurchaseRequirementStatus.CLOSED },
+              { requirement: { status: PurchaseRequirementStatus.CLOSED } },
+            ],
+          },
+        ],
+      };
+    } else if (hasClosed) {
+      statusWhere = {
+        OR: [
+          { status: PurchaseRequirementStatus.CLOSED },
+          { requirement: { status: PurchaseRequirementStatus.CLOSED } },
+        ],
+      };
+    } else {
+      statusWhere = {
+        status: { in: nonClosed },
+        requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+      };
+    }
+
+    const whereConditions: Prisma.PurchaseRequirementLineWhereInput[] = [statusWhere];
+
+    if (query.search) {
+      const search = query.search.trim();
+      if (search) {
+        whereConditions.push({
+          OR: [
+            { product: { name: { contains: search, mode: "insensitive" } } },
+            { product: { sku: { contains: search, mode: "insensitive" } } },
+            { requirement: { reference: { contains: search, mode: "insensitive" } } },
+          ],
+        });
+      }
+    }
+
+    const where: Prisma.PurchaseRequirementLineWhereInput =
+      whereConditions.length === 1 ? whereConditions[0]! : { AND: whereConditions };
+
+    const sortOrder = query.sortOrder === "asc" ? ("asc" as const) : ("desc" as const);
+    let orderBy: Prisma.PurchaseRequirementLineOrderByWithRelationInput[];
+
+    if (query.sortBy === "quantityNeeded" || query.sortBy === "requiredQuantity") {
+      orderBy = [{ quantityNeeded: sortOrder }, { id: sortOrder }];
+    } else if (query.sortBy === "updatedAt") {
+      orderBy = [{ updatedAt: sortOrder }, { id: sortOrder }];
+    } else if (query.sortBy === "requiredBy") {
+      orderBy = [{ requirement: { requiredBy: sortOrder } }, { id: sortOrder }];
+    } else {
+      orderBy = [{ createdAt: sortOrder }, { id: sortOrder }];
+    }
+
+    const searchCondition: Prisma.PurchaseRequirementLineWhereInput | undefined = query.search?.trim()
+      ? {
+          OR: [
+            { product: { name: { contains: query.search.trim(), mode: "insensitive" } } },
+            { product: { sku: { contains: query.search.trim(), mode: "insensitive" } } },
+            { requirement: { reference: { contains: query.search.trim(), mode: "insensitive" } } },
+          ],
+        }
+      : undefined;
+
+    const [items, total, openCount, partiallyFulfilledCount, fulfilledCount, closedCount] =
+      await prisma.$transaction([
+        prisma.purchaseRequirementLine.findMany({
+          where,
+          include: LINE_WITH_REQUIREMENT_INCLUDE,
+          orderBy,
+          skip,
+          take,
+        }),
+        prisma.purchaseRequirementLine.count({ where }),
+        prisma.purchaseRequirementLine.count({
+          where: {
+            status: PurchaseRequirementStatus.OPEN,
+            requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+            ...(searchCondition ? { AND: [searchCondition] } : {}),
+          },
+        }),
+        prisma.purchaseRequirementLine.count({
+          where: {
+            status: PurchaseRequirementStatus.PARTIALLY_FULFILLED,
+            requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+            ...(searchCondition ? { AND: [searchCondition] } : {}),
+          },
+        }),
+        prisma.purchaseRequirementLine.count({
+          where: {
+            status: PurchaseRequirementStatus.FULFILLED,
+            requirement: { status: { not: PurchaseRequirementStatus.CLOSED } },
+            ...(searchCondition ? { AND: [searchCondition] } : {}),
+          },
+        }),
+        prisma.purchaseRequirementLine.count({
+          where: {
+            OR: [
+              { status: PurchaseRequirementStatus.CLOSED },
+              { requirement: { status: PurchaseRequirementStatus.CLOSED } },
+            ],
+            ...(searchCondition ? { AND: [searchCondition] } : {}),
+          },
+        }),
+      ]);
+
+    const summary = {
+      open: openCount,
+      partiallyFulfilled: partiallyFulfilledCount,
+      fulfilled: fulfilledCount,
+      closed: closedCount,
+      total,
+    };
+
+    const mappedItems = (items as unknown as LineWithRequirementRow[]).map(
+      mapProductRequirementLineRow,
+    );
+
+    return {
+      items: mappedItems,
+      meta: buildPaginationMeta(total, page, limit),
+      summary,
+    };
+  },
+
+  /**
+   * Detail endpoint for a single purchase requirement line.
+   * Returns requirement line information, parent requirement details,
+   * canonical quantities, and complete purchase order history for this specific line.
+   */
+  async getRequirementLineDetail(lineId: string): Promise<RequirementLineDetailView> {
+    const line = await prisma.purchaseRequirementLine.findUnique({
+      where: { id: lineId },
+      include: LINE_DETAIL_INCLUDE,
+    });
+
+    if (!line) {
+      throw new AppError(404, ErrorCode.REQUIREMENT_LINE_NOT_FOUND, "Requirement line not found");
+    }
+
+    const row = line as unknown as LineWithRequirementRow;
+    const baseLine = mapProductRequirementLineRow(row);
+
+    const purchaseOrders: RequirementLinePurchaseOrderHistory[] = row.allocations.map((a) => {
+      const item = a.purchaseOrderItem;
+      const po = item.purchaseOrder;
+      const allocated = a.quantityAllocated.toNumber();
+      const received = item.quantityReceived.toNumber();
+      const short = item.quantityShort.toNumber();
+      const outstandingDeliveryQuantity = Math.max(0, allocated - received - short);
+
+      return {
+        allocationId: a.id,
+        purchaseOrderId: po.id,
+        purchaseOrderNumber: po.poNumber,
+        poNumber: po.poNumber,
+        supplierId: po.supplier?.id ?? null,
+        supplierName: po.supplier?.name ?? null,
+        supplier: po.supplier,
+        purchaseOrderStatus: po.status,
+        status: po.status,
+        quantityAllocated: allocated,
+        quantityOrdered: item.quantityOrdered.toNumber(),
+        quantityReceived: received,
+        quantityShort: short,
+        outstandingDeliveryQuantity,
+        unitCost: item.unitCost.toNumber(),
+        active: po.status !== PurchaseOrderStatus.CANCELLED,
+        orderDate: po.orderDate ?? null,
+        expectedDeliveryDate: po.expectedDeliveryDate ?? null,
+        createdAt: a.createdAt,
+        updatedAt: a.updatedAt,
+      };
+    });
+
+    return {
+      ...baseLine,
+      requirement: {
+        id: row.requirement.id,
+        reference: row.requirement.reference,
+        status: row.requirement.status,
+        requiredBy: row.requirement.requiredBy,
+        notes: row.requirement.notes,
+        createdBy: row.requirement.createdBy
+          ? { id: row.requirement.createdBy.id, name: row.requirement.createdBy.name }
+          : null,
+        createdAt: row.requirement.createdAt,
+        updatedAt: row.requirement.updatedAt,
+      },
+      purchaseOrders,
+    };
+  },
 };
 
 // Re-exported so callers can obtain a freshly mapped line after an external mutation
 // (e.g. purchase order item edits) without duplicating the mapper.
-export { loadMappingLine, mapRequirementLine };
+export {
+  loadMappingLine,
+  mapRequirementLine,
+  mapProductRequirementLineRow,
+  computeLineQuantities,
+  LINE_DETAIL_INCLUDE as LINE_INCLUDE_ALL,
+};
+

@@ -250,5 +250,19 @@ Accepts the already-extracted, normalized supplier invoice; matches it against
 the selected PO and validates against the PO's **current** remaining quantities.
 The preview mutates nothing; confirmation orchestrates the canonical receiving
 services inside one transaction. See [INVOICE_RECEIVING_API.md](./INVOICE_RECEIVING_API.md).
+
 ---
+
+### GET /requirement-lines — Product-Oriented Requirements Main Table
+```
+GET /requirement-lines (alias: GET /purchase/requirement-lines)
+```
+Dedicated endpoint returning one row per purchase requirement line with database-level pagination, search, stable sorting, and status filtering (`OPEN`, `PARTIALLY_FULFILLED`, `FULFILLED`, `CLOSED`, and multi-status `statuses`). Default status includes `OPEN` and `PARTIALLY_FULFILLED` from active requirements (excluding `CLOSED` and `FULFILLED`). Includes server-computed summary counts over the filtered dataset for UI tab badges.
+
+### GET /requirement-lines/:lineId — Product Detail & Purchase Order History
+```
+GET /requirement-lines/:lineId (alias: GET /purchase/requirement-lines/:lineId)
+```
+Returns requirement line information, parent requirement details, canonical quantities (`requiredQuantity`, `orderedQuantity`, `quantityDelivered`, `remainingToOrder`, `remainingToReceive`, `activeOrderCount`), and complete purchase order history for the selected line.
+
 

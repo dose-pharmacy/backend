@@ -34,6 +34,7 @@ export const salePaymentSchema = z.object({
   method: paymentMethodSchema,
   amount: moneySchema,
   reference: z.string().trim().max(200).optional(),
+  idempotencyKey: z.string().trim().min(8).max(200).optional(),
 });
 
 /**
@@ -69,6 +70,7 @@ export const createSaleSchema = z
     notes: z.string().trim().max(500).optional(),
     customerName: z.string().trim().max(200).optional(),
     customerPhone: z.string().trim().max(50).optional(),
+    idempotencyKey: z.string().trim().min(8).max(200).optional(),
   })
   ;
 
@@ -101,4 +103,5 @@ export const addSalePaymentSchema = z.object({
   method: paymentMethodSchema,
   amount: moneySchema,
   reference: z.string().trim().max(200).optional(),
+  idempotencyKey: z.string().trim().min(8).max(200).optional(),
 });
