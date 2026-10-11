@@ -258,7 +258,15 @@ The PO and goods-receipt **list** responses add a compact medicine preview so
 list rows can show *what was ordered/received* without expanding the row:
 
 ```json
-"itemPreview": { "first": "Paracetamol 500mg", "additionalCount": 2 }
+"itemPreview": {
+  "first": "Paracetamol 500mg",
+  "additionalCount": 2,
+  "products": [
+    { "name": "Paracetamol 500mg", "brand": "Cadila" },
+    { "name": "Amoxicillin 250mg", "brand": "GSK" },
+    { "name": "Vitamin C 100mg", "brand": null }
+  ]
+}
 ```
 
 - `first` — the first **distinct** medicine/product name on the record (item
@@ -266,6 +274,8 @@ list rows can show *what was ordered/received* without expanding the row:
 - `additionalCount` — the number of **additional distinct** products:
   `distinctProductCount − 1` (never negative). A single-product record has
   `additionalCount: 0`; a record with no resolvable product names is `null`.
+- `products` — the full ordered, de-duplicated list (`name` + `brand`) so the UI
+  can open a popup showing every medicine and its brand without another request.
 - Computed with **one query per page** (never per row / no N+1), so a page of 20
   orders costs a single extra query regardless of line-item count.
 - `itemPreview` is additive — it does not replace `_count.items` (PO) or

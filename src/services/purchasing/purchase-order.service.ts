@@ -193,12 +193,18 @@ async function attachPaymentSummaries<
 }
 
 /**
- * Compact, list-row medicine preview: the first distinct product name on the
- * order plus how many additional distinct products it contains. Computed with
- * ONE query for the whole page (never per-row), so list endpoints stay fast
- * regardless of how many line items each order has.
+ * Compact, list-row medicine preview: the first distinct product on the order
+ * plus how many additional distinct products it contains, and the full ordered
+ * list so the UI can open a popup showing every product (with its brand).
+ * Computed with ONE query for the whole page (never per-row), so list endpoints
+ * stay fast regardless of how many line items each order has.
  */
-export type ItemPreview = { first: string; additionalCount: number };
+export type ItemPreviewProduct = { name: string; brand: string | null };
+export type ItemPreview = {
+  first: string;
+  additionalCount: number;
+  products: ItemPreviewProduct[];
+};
 
 export async function buildItemPreviews(
   parentIds: string[],
@@ -207,31 +213,34 @@ export async function buildItemPreviews(
 
   const rows = await prisma.purchaseOrderItem.findMany({
     where: { purchaseOrderId: { in: parentIds } },
-    select: { purchaseOrderId: true, product: { select: { name: true } } },
+    select: {
+      purchaseOrderId: true,
+      product: { select: { name: true, brand: true } },
+    },
     orderBy: { createdAt: "asc" },
   });
 
-  const seen = new Map<string, Set<string>>();
-  const first = new Map<string, string>();
+  const byParent = new Map<string, Map<string, ItemPreviewProduct>>();
   for (const row of rows) {
     const name = row.product?.name;
     if (!name) continue;
-    let names = seen.get(row.purchaseOrderId);
-    if (!names) {
-      names = new Set();
-      seen.set(row.purchaseOrderId, names);
+    let products = byParent.get(row.purchaseOrderId);
+    if (!products) {
+      products = new Map();
+      byParent.set(row.purchaseOrderId, products);
     }
-    if (!names.has(name)) {
-      names.add(name);
-      if (!first.has(row.purchaseOrderId)) first.set(row.purchaseOrderId, name);
+    if (!products.has(name)) {
+      products.set(name, { name, brand: row.product?.brand ?? null });
     }
   }
 
   const previews = new Map<string, ItemPreview>();
-  for (const [poId, names] of seen) {
+  for (const [poId, products] of byParent) {
+    const list = Array.from(products.values());
     previews.set(poId, {
-      first: first.get(poId)!,
-      additionalCount: Math.max(0, names.size - 1),
+      first: list[0].name,
+      additionalCount: Math.max(0, list.length - 1),
+      products: list,
     });
   }
   return previews;

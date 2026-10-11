@@ -134,13 +134,19 @@ function computeGRStatus(
   return "MATCHED";
 }
 
-type ItemPreview = { first: string; additionalCount: number };
+type ItemPreviewProduct = { name: string; brand: string | null };
+type ItemPreview = {
+  first: string;
+  additionalCount: number;
+  products: ItemPreviewProduct[];
+};
 
 /**
- * Compact, list-row medicine preview: the first distinct product name on the
- * receipt plus how many additional distinct products it contains. Computed with
- * ONE query for the whole page (never per-row), because the receipt LIST
- * response only carries `_count.items` (no product names).
+ * Compact, list-row medicine preview: the first distinct product on the receipt
+ * plus how many additional distinct products it contains, and the full ordered
+ * list so the UI can open a popup showing every product (with its brand).
+ * Computed with ONE query for the whole page (never per-row), because the
+ * receipt LIST response only carries `_count.items` (no product names).
  */
 async function buildReceiptItemPreviews(
   receiptIds: string[],
@@ -151,32 +157,37 @@ async function buildReceiptItemPreviews(
     where: { goodsReceiptId: { in: receiptIds } },
     select: {
       goodsReceiptId: true,
-      purchaseOrderItem: { select: { product: { select: { name: true } } } },
+      purchaseOrderItem: {
+        select: { product: { select: { name: true, brand: true } } },
+      },
     },
     orderBy: { id: "asc" },
   });
 
-  const seen = new Map<string, Set<string>>();
-  const first = new Map<string, string>();
+  const byParent = new Map<string, Map<string, ItemPreviewProduct>>();
   for (const row of rows) {
     const name = row.purchaseOrderItem?.product?.name;
     if (!name) continue;
-    let names = seen.get(row.goodsReceiptId);
-    if (!names) {
-      names = new Set();
-      seen.set(row.goodsReceiptId, names);
+    let products = byParent.get(row.goodsReceiptId);
+    if (!products) {
+      products = new Map();
+      byParent.set(row.goodsReceiptId, products);
     }
-    if (!names.has(name)) {
-      names.add(name);
-      if (!first.has(row.goodsReceiptId)) first.set(row.goodsReceiptId, name);
+    if (!products.has(name)) {
+      products.set(name, {
+        name,
+        brand: row.purchaseOrderItem?.product?.brand ?? null,
+      });
     }
   }
 
   const previews = new Map<string, ItemPreview>();
-  for (const [id, names] of seen) {
+  for (const [id, products] of byParent) {
+    const list = Array.from(products.values());
     previews.set(id, {
-      first: first.get(id)!,
-      additionalCount: Math.max(0, names.size - 1),
+      first: list[0].name,
+      additionalCount: Math.max(0, list.length - 1),
+      products: list,
     });
   }
   return previews;
