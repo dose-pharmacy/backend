@@ -134,6 +134,54 @@ function computeGRStatus(
   return "MATCHED";
 }
 
+type ItemPreview = { first: string; additionalCount: number };
+
+/**
+ * Compact, list-row medicine preview: the first distinct product name on the
+ * receipt plus how many additional distinct products it contains. Computed with
+ * ONE query for the whole page (never per-row), because the receipt LIST
+ * response only carries `_count.items` (no product names).
+ */
+async function buildReceiptItemPreviews(
+  receiptIds: string[],
+): Promise<Map<string, ItemPreview>> {
+  if (receiptIds.length === 0) return new Map();
+
+  const rows = await prisma.goodsReceiptItem.findMany({
+    where: { goodsReceiptId: { in: receiptIds } },
+    select: {
+      goodsReceiptId: true,
+      purchaseOrderItem: { select: { product: { select: { name: true } } } },
+    },
+    orderBy: { id: "asc" },
+  });
+
+  const seen = new Map<string, Set<string>>();
+  const first = new Map<string, string>();
+  for (const row of rows) {
+    const name = row.purchaseOrderItem?.product?.name;
+    if (!name) continue;
+    let names = seen.get(row.goodsReceiptId);
+    if (!names) {
+      names = new Set();
+      seen.set(row.goodsReceiptId, names);
+    }
+    if (!names.has(name)) {
+      names.add(name);
+      if (!first.has(row.goodsReceiptId)) first.set(row.goodsReceiptId, name);
+    }
+  }
+
+  const previews = new Map<string, ItemPreview>();
+  for (const [id, names] of seen) {
+    previews.set(id, {
+      first: first.get(id)!,
+      additionalCount: Math.max(0, names.size - 1),
+    });
+  }
+  return previews;
+}
+
 export const goodsReceiptService = {
   async list(query: GRListQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
@@ -201,7 +249,19 @@ export const goodsReceiptService = {
       resolved: countByStatus.get("RESOLVED") ?? 0,
     };
 
-    return { items, meta: buildPaginationMeta(total, page, limit), summary };
+    // One grouped query for the whole page: a compact medicine preview for the
+    // list rows (which otherwise only carry `_count.items`).
+    const previews = await buildReceiptItemPreviews(items.map((r) => r.id));
+    const itemsWithPreview = items.map((receipt) => ({
+      ...receipt,
+      itemPreview: previews.get(receipt.id) ?? null,
+    }));
+
+    return {
+      items: itemsWithPreview,
+      meta: buildPaginationMeta(total, page, limit),
+      summary,
+    };
   },
 
   async create(

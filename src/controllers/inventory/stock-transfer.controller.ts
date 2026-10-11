@@ -19,6 +19,7 @@ export const stockTransferController = {
       status: query.status as ListTransfersQuery["status"],
       fromLocationId: query.fromLocationId,
       toLocationId: query.toLocationId,
+      search: query.search,
     };
     const { items, meta } = await stockTransferService.list(input);
     sendSuccess(res, items, { meta });

@@ -249,3 +249,24 @@ Invalid combinations return **422** with the standard error envelope:
   the `OR` search clause.
 - `src/docs/openapi.ts` — shared date query parameters wired into the three list
   endpoints.
+
+---
+
+## 13. List-row medicine preview (`itemPreview`)
+
+The PO and goods-receipt **list** responses add a compact medicine preview so
+list rows can show *what was ordered/received* without expanding the row:
+
+```json
+"itemPreview": { "first": "Paracetamol 500mg", "additionalCount": 2 }
+```
+
+- `first` — the first **distinct** medicine/product name on the record (item
+  insertion order for POs; deterministic order for receipts).
+- `additionalCount` — the number of **additional distinct** products:
+  `distinctProductCount − 1` (never negative). A single-product record has
+  `additionalCount: 0`; a record with no resolvable product names is `null`.
+- Computed with **one query per page** (never per row / no N+1), so a page of 20
+  orders costs a single extra query regardless of line-item count.
+- `itemPreview` is additive — it does not replace `_count.items` (PO) or
+  `items` (when `includeItems=true`).

@@ -820,12 +820,15 @@ export const openApiDocument = {
       get: {
         tags: ["Transfers"],
         summary: "List stock transfers",
+        description:
+          "Paginated transfer list. `search` matches the source/destination location names and the name of any medicine/product on the transfer's line items (case-insensitive, each transfer returned once).",
         parameters: [
           { name: "page", in: "query", schema: { type: "integer", minimum: 1 } },
           { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
           { name: "status", in: "query", schema: { type: "string", enum: ["DRAFT", "PENDING", "COMPLETED", "CANCELLED"] } },
           { name: "fromLocationId", in: "query", schema: { type: "string", format: "uuid" } },
           { name: "toLocationId", in: "query", schema: { type: "string", format: "uuid" } },
+          { name: "search", in: "query", schema: { type: "string", maxLength: 200 } },
         ],
         responses: {
           "200": { description: "Paginated transfer list", content: { "application/json": { schema: { $ref: "#/components/schemas/TransferListResponse" } } } },

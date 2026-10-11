@@ -192,6 +192,51 @@ async function attachPaymentSummaries<
   });
 }
 
+/**
+ * Compact, list-row medicine preview: the first distinct product name on the
+ * order plus how many additional distinct products it contains. Computed with
+ * ONE query for the whole page (never per-row), so list endpoints stay fast
+ * regardless of how many line items each order has.
+ */
+export type ItemPreview = { first: string; additionalCount: number };
+
+export async function buildItemPreviews(
+  parentIds: string[],
+): Promise<Map<string, ItemPreview>> {
+  if (parentIds.length === 0) return new Map();
+
+  const rows = await prisma.purchaseOrderItem.findMany({
+    where: { purchaseOrderId: { in: parentIds } },
+    select: { purchaseOrderId: true, product: { select: { name: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const seen = new Map<string, Set<string>>();
+  const first = new Map<string, string>();
+  for (const row of rows) {
+    const name = row.product?.name;
+    if (!name) continue;
+    let names = seen.get(row.purchaseOrderId);
+    if (!names) {
+      names = new Set();
+      seen.set(row.purchaseOrderId, names);
+    }
+    if (!names.has(name)) {
+      names.add(name);
+      if (!first.has(row.purchaseOrderId)) first.set(row.purchaseOrderId, name);
+    }
+  }
+
+  const previews = new Map<string, ItemPreview>();
+  for (const [poId, names] of seen) {
+    previews.set(poId, {
+      first: first.get(poId)!,
+      additionalCount: Math.max(0, names.size - 1),
+    });
+  }
+  return previews;
+}
+
 export function buildReceivingSummary(items: Array<{
   quantityOrdered: Prisma.Decimal | number;
   quantityReceived: Prisma.Decimal | number;
@@ -518,7 +563,7 @@ const PO_DETAIL_INCLUDE = {
   createdBy: { select: { id: true, name: true } },
   items: {
     include: {
-      product: { select: { id: true, name: true, sku: true } },
+      product: { select: { id: true, name: true, sku: true, brand: true } },
       unit: { select: { id: true, name: true, symbol: true } },
       requirementLine: {
         select: {
@@ -956,7 +1001,7 @@ export const purchaseOrderService = {
             ? {
                 items: {
                   include: {
-                    product: { select: { id: true, name: true, sku: true } },
+                    product: { select: { id: true, name: true, sku: true, brand: true } },
                     unit: { select: { id: true, name: true, symbol: true } },
                   },
                   orderBy: { createdAt: "asc" as const },
@@ -988,11 +1033,18 @@ export const purchaseOrderService = {
     };
 
     const items = await attachPaymentSummaries(rawItems);
+    // One grouped query for the whole page: a compact medicine preview for the
+    // default (no-item-detail) list rows.
+    const previews = await buildItemPreviews(rawItems.map((po) => po.id));
+    const itemsWithPreview = items.map((po) => ({
+      ...po,
+      itemPreview: previews.get(po.id) ?? null,
+    }));
     // One aggregate for the whole page: invoiced quantities per PO item
     // across ALL invoices of the page's orders.
     const invoicedByItem = await invoicedQuantitiesByItem(items.map((po) => po.id));
     const itemsWithDetail = includeItems
-      ? (items.map((po) => {
+      ? (itemsWithPreview.map((po) => {
           const row = po as unknown as {
             items?: ReceivingQtyItem[];
           };
@@ -1003,8 +1055,8 @@ export const purchaseOrderService = {
               withInvoiceQuantities(row.items, invoicedByItem),
             ),
           };
-        }) as typeof items)
-      : items;
+        }) as typeof itemsWithPreview)
+      : itemsWithPreview;
     return { items: itemsWithDetail, meta: buildPaginationMeta(total, page, limit), summary };
   },
 
@@ -1304,7 +1356,7 @@ export const purchaseOrderService = {
       const updated = await tx.purchaseOrderItem.findUnique({
         where: { id: itemId },
         include: {
-          product: { select: { id: true, name: true, sku: true } },
+          product: { select: { id: true, name: true, sku: true, brand: true } },
         },
       });
 
@@ -1520,7 +1572,7 @@ export const purchaseOrderService = {
       return tx.purchaseOrderItem.findUnique({
         where: { id: itemId },
         include: {
-          product: { select: { id: true, name: true, sku: true } },
+          product: { select: { id: true, name: true, sku: true, brand: true } },
           allocations: { select: { id: true, requirementLineId: true, quantityAllocated: true } },
         },
       });

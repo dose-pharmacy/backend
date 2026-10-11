@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { paginationQuerySchema, quantitySchema, uuidSchema } from "./common.js";
+import {
+  optionalQueryString,
+  paginationQuerySchema,
+  quantitySchema,
+  uuidSchema,
+} from "./common.js";
 
 /**
  * Transfer line item. `quantity` is the user-entered quantity in `unitId`;
@@ -75,6 +80,12 @@ export const transferListQuerySchema = z
     status: z.enum(["DRAFT", "PENDING", "COMPLETED", "CANCELLED"]).optional(),
     fromLocationId: uuidSchema.optional(),
     toLocationId: uuidSchema.optional(),
+    // Free-text search across the source/destination location names and the
+    // name of any medicine/product on the transfer's line items. A transfer has
+    // no human-readable number, so locations + products are the searchable
+    // surface. `some` compiles to EXISTS, so a transfer with several matching
+    // items is still returned exactly once.
+    search: optionalQueryString(200),
   })
   .merge(paginationQuerySchema);
 

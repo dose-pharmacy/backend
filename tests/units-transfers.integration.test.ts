@@ -622,6 +622,37 @@ describe("inventory: transfers", () => {
     expect(res.body.data.items[0].baseQuantity).toBe(50);
   });
 
+  it("searches transfers by product and location names", async () => {
+    const create = await request(app)
+      .post("/api/v1/inventory/transfers")
+      .set("Cookie", cookie)
+      .send({
+        fromLocationId: locationAId,
+        toLocationId: locationBId,
+        items: [{ productId, batchId, unitId: tabletId, quantity: 7 }],
+      })
+      .expect(201);
+    const transferId = create.body.data.id as string;
+
+    const byProduct = await request(app)
+      .get("/api/v1/inventory/transfers?search=Paracetamol")
+      .set("Cookie", cookie)
+      .expect(200);
+    expect(byProduct.body.data.map((t: { id: string }) => t.id)).toContain(transferId);
+
+    const byLocation = await request(app)
+      .get("/api/v1/inventory/transfers?search=Branch")
+      .set("Cookie", cookie)
+      .expect(200);
+    expect(byLocation.body.data.map((t: { id: string }) => t.id)).toContain(transferId);
+
+    const noMatch = await request(app)
+      .get("/api/v1/inventory/transfers?search=zzz-no-such-thing")
+      .set("Cookie", cookie)
+      .expect(200);
+    expect(noMatch.body.data.map((t: { id: string }) => t.id)).not.toContain(transferId);
+  });
+
   it("computes baseQuantity for a Box item (2 Boxes = 200 Tablets)", async () => {
     const res = await request(app)
       .post("/api/v1/inventory/transfers")

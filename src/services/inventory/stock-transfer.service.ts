@@ -51,6 +51,11 @@ export type ListTransfersQuery = PageQuery & {
   status?: TransferStatus;
   fromLocationId?: string;
   toLocationId?: string;
+  /**
+   * Free-text search across the source/destination location names and the name
+   * of any medicine/product on the transfer's line items.
+   */
+  search?: string;
 };
 
 const transferDetailInclude = {
@@ -59,7 +64,7 @@ const transferDetailInclude = {
   createdBy: { select: { id: true, name: true, email: true } },
   items: {
     include: {
-      product: { select: { id: true, name: true, sku: true } },
+      product: { select: { id: true, name: true, sku: true, brand: true } },
       batch: { select: { id: true, batchNumber: true, expiryDate: true } },
       unit: { select: { id: true, name: true, symbol: true } },
     },
@@ -145,10 +150,28 @@ export const stockTransferService = {
   async list(query: ListTransfersQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
 
+    // Trim so a whitespace-only search behaves like no search at all.
+    const search = query.search?.trim();
+
     const where: Prisma.StockTransferWhereInput = {
       ...(query.status ? { status: query.status } : {}),
       ...(query.fromLocationId ? { fromLocationId: query.fromLocationId } : {}),
       ...(query.toLocationId ? { toLocationId: query.toLocationId } : {}),
+      ...(search
+        ? {
+            OR: [
+              { fromLocation: { name: { contains: search, mode: "insensitive" as const } } },
+              { toLocation: { name: { contains: search, mode: "insensitive" as const } } },
+              {
+                items: {
+                  some: {
+                    product: { name: { contains: search, mode: "insensitive" as const } },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
     };
 
     const [items, total] = await prisma.$transaction([
@@ -318,7 +341,7 @@ export const stockTransferService = {
           baseQuantity,
         },
         include: {
-          product: { select: { id: true, name: true, sku: true } },
+          product: { select: { id: true, name: true, sku: true, brand: true } },
           batch: { select: { id: true, batchNumber: true, expiryDate: true } },
           unit: { select: { id: true, name: true, symbol: true } },
         },
@@ -387,7 +410,7 @@ export const stockTransferService = {
           baseQuantity,
         },
         include: {
-          product: { select: { id: true, name: true, sku: true } },
+          product: { select: { id: true, name: true, sku: true, brand: true } },
           batch: { select: { id: true, batchNumber: true, expiryDate: true } },
           unit: { select: { id: true, name: true, symbol: true } },
         },
