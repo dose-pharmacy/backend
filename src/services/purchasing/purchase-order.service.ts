@@ -13,6 +13,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
+import { resolveDateFilter, type DateFilterInput } from "../../utils/date-filter.js";
 import { recomputeRequirementStatus } from "./requirement.service.js";
 import { productUnitService } from "../inventory/product-unit.service.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
@@ -59,18 +60,23 @@ export type UpdatePOItemInput = Partial<{
   unitCost: number;
 }>;
 
-export type POListQuery = PageQuery & {
-  supplierId?: string;
-  status?: PurchaseOrderStatus;
-  paymentStatus?: PurchaseOrderPaymentStatus | "ALL";
-  search?: string;
-  /** Only purchase orders that still have at least one item to receive. */
-  receivable?: boolean;
-  /** Only purchase orders with at least one item that has received-but-not-invoiced quantity. */
-  invoiceable?: boolean;
-  /** Include item detail (product, unit and quantities) in list rows. */
-  includeItems?: boolean;
-};
+export type POListQuery = PageQuery &
+  DateFilterInput & {
+    supplierId?: string;
+    status?: PurchaseOrderStatus;
+    paymentStatus?: PurchaseOrderPaymentStatus | "ALL";
+    /**
+     * Free-text search across the PO number, notes, supplier name and the name
+     * of any medicine/product on the order's line items.
+     */
+    search?: string;
+    /** Only purchase orders that still have at least one item to receive. */
+    receivable?: boolean;
+    /** Only purchase orders with at least one item that has received-but-not-invoiced quantity. */
+    invoiceable?: boolean;
+    /** Include item detail (product, unit and quantities) in list rows. */
+    includeItems?: boolean;
+  };
 
 export type PopaymentSummary = {
   status: PurchaseOrderPaymentStatus;
@@ -863,14 +869,31 @@ export const purchaseOrderService = {
   async list(query: POListQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
 
+    // Trim so a whitespace-only search behaves like no search at all.
+    const search = query.search?.trim();
+    // Date filter on the PO's business registration date (`orderDate`), never
+    // expectedDeliveryDate/updatedAt. Half-open `[gte, lt)` UTC-day bounds.
+    const dateRange = resolveDateFilter(query);
+
     const where: Prisma.PurchaseOrderWhereInput = {
       ...(query.supplierId ? { supplierId: query.supplierId } : {}),
       ...(query.status ? { status: query.status } : {}),
-      ...(query.search
+      ...(dateRange ? { orderDate: dateRange } : {}),
+      ...(search
         ? {
             OR: [
-              { poNumber: { contains: query.search, mode: "insensitive" as const } },
-              { notes: { contains: query.search, mode: "insensitive" as const } },
+              { poNumber: { contains: search, mode: "insensitive" as const } },
+              { notes: { contains: search, mode: "insensitive" as const } },
+              { supplier: { name: { contains: search, mode: "insensitive" as const } } },
+              // `some` compiles to an EXISTS subquery, so a PO with several
+              // matching line items is still returned exactly once.
+              {
+                items: {
+                  some: {
+                    product: { name: { contains: search, mode: "insensitive" as const } },
+                  },
+                },
+              },
             ],
           }
         : {}),

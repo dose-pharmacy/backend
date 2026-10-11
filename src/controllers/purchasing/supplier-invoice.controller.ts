@@ -5,13 +5,16 @@ import { sendSuccess } from "../../utils/http.js";
 
 export const supplierInvoiceController = {
   list: asyncHandler(async (req: Request, res: Response) => {
-    const query = req.query as Record<string, string | undefined>;
+    const query = req.query as Record<string, unknown>;
     const input: SupplierInvoiceListQuery = {
       page: query.page ? Number(query.page) : undefined,
       limit: query.limit ? Number(query.limit) : undefined,
-      supplierId: query.supplierId,
+      supplierId: query.supplierId as string | undefined,
       status: query.status as SupplierInvoiceListQuery["status"],
-      search: query.search,
+      search: query.search as string | undefined,
+      datePreset: query.datePreset as SupplierInvoiceListQuery["datePreset"],
+      dateFrom: query.dateFrom instanceof Date ? query.dateFrom : undefined,
+      dateTo: query.dateTo instanceof Date ? query.dateTo : undefined,
     };
     const { items, meta } = await supplierInvoiceService.list(input);
     sendSuccess(res, items, { meta });

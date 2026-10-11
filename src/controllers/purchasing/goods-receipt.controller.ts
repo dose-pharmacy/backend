@@ -5,12 +5,16 @@ import { sendSuccess } from "../../utils/http.js";
 
 export const goodsReceiptController = {
   list: asyncHandler(async (req: Request, res: Response) => {
-    const query = req.query as Record<string, string | undefined>;
+    const query = req.query as Record<string, unknown>;
     const input: GRListQuery = {
       page: query.page ? Number(query.page) : undefined,
       limit: query.limit ? Number(query.limit) : undefined,
-      purchaseOrderId: query.purchaseOrderId,
+      purchaseOrderId: query.purchaseOrderId as string | undefined,
       status: query.status as GRListQuery["status"],
+      search: query.search as string | undefined,
+      datePreset: query.datePreset as GRListQuery["datePreset"],
+      dateFrom: query.dateFrom instanceof Date ? query.dateFrom : undefined,
+      dateTo: query.dateTo instanceof Date ? query.dateTo : undefined,
     };
     const { items, meta, summary } = await goodsReceiptService.list(input);
     sendSuccess(res, items, { meta, summary });

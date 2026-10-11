@@ -5,6 +5,7 @@ import { prisma } from "../../database/prisma.js";
 import { recordMovementInTransaction } from "../inventory/stock-movement.service.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
+import { resolveDateFilter, type DateFilterInput } from "../../utils/date-filter.js";
 import { roundTo, toDecimal } from "../../utils/decimal.js";
 import { addUtcDays, startOfTodayUtc, toUtcDay } from "../../utils/date-time.js";
 import type { PageQuery } from "../../utils/pagination.js";
@@ -52,10 +53,16 @@ export type ResolveGRInput = {
   items?: UpdateGRItemInput[];
 };
 
-export type GRListQuery = PageQuery & {
-  purchaseOrderId?: string;
-  status?: "MATCHED" | "DISCREPANCY" | "RESOLVED";
-};
+export type GRListQuery = PageQuery &
+  DateFilterInput & {
+    purchaseOrderId?: string;
+    status?: "MATCHED" | "DISCREPANCY" | "RESOLVED";
+    /**
+     * Free-text search across the receipt number, the supplier name and the
+     * name of any medicine/product on the receipt's line items.
+     */
+    search?: string;
+  };
 
 function generateReceiptNumber(): string {
   const timestamp = Date.now().toString().slice(-6);
@@ -131,9 +138,37 @@ export const goodsReceiptService = {
   async list(query: GRListQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
 
+    // Trim so a whitespace-only search behaves like no search at all.
+    const search = query.search?.trim();
+    // Date filter on the receipt's own recorded date (`receivedDate`), never the
+    // linked purchase order's dates. Applied uniformly to every status.
+    const dateRange = resolveDateFilter(query);
+
     const where: Prisma.GoodsReceiptWhereInput = {
       ...(query.purchaseOrderId ? { purchaseOrderId: query.purchaseOrderId } : {}),
       ...(query.status ? { status: query.status } : {}),
+      ...(dateRange ? { receivedDate: dateRange } : {}),
+      ...(search
+        ? {
+            OR: [
+              { receiptNumber: { contains: search, mode: "insensitive" as const } },
+              // Supplier is a direct relation on the receipt.
+              { supplier: { name: { contains: search, mode: "insensitive" as const } } },
+              // Product is reached via the received items -> purchase order item.
+              // `some` compiles to EXISTS, so a receipt with several matching
+              // items is still returned exactly once.
+              {
+                items: {
+                  some: {
+                    purchaseOrderItem: {
+                      product: { name: { contains: search, mode: "insensitive" as const } },
+                    },
+                  },
+                },
+              },
+            ],
+          }
+        : {}),
     };
 
     const [items, total, statusGroups] = await prisma.$transaction([

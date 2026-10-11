@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, decimalNumber, moneySchema, quantitySchema } from "../inventory/common.js";
+import { dateFilterQueryShape, dateFilterIssues } from "../date-filter.js";
 
 const invoiceStatusEnum = z.enum(["OPEN", "PARTIALLY_PAID", "PAID"]);
 
@@ -112,9 +113,16 @@ export const supplierInvoiceListQuerySchema = z
   .object({
     supplierId: uuidSchema.optional(),
     status: invoiceStatusEnum.optional(),
+    // Existing search: invoice number + supplier name (unchanged).
     search: z.string().trim().max(200).optional(),
+    ...dateFilterQueryShape,
   })
-  .merge(paginationQuerySchema);
+  .merge(paginationQuerySchema)
+  .superRefine((value, ctx) => {
+    for (const issue of dateFilterIssues(value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, ...issue });
+    }
+  });
 
 export const supplierInvoiceParamsSchema = z.object({
   id: uuidSchema,

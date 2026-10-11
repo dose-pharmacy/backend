@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema, decimalNumber } from "../inventory/common.js";
+import { dateFilterQueryShape, dateFilterIssues } from "../date-filter.js";
 
 const poStatusEnum = z.enum([
   "AWAITING_DELIVERY",
@@ -74,6 +75,8 @@ export const purchaseOrderListQuerySchema = z
     supplierId: uuidSchema.optional(),
     status: poStatusEnum.optional(),
     paymentStatus: poPaymentStatusEnum.optional(),
+    // One query searches PO number, notes, supplier name and the name of any
+    // medicine/product on the order's line items. Each PO is returned once.
     search: z.string().trim().max(200).optional(),
     // Only orders that still have at least one item with remaining quantity.
     receivable: booleanQueryParam,
@@ -83,8 +86,14 @@ export const purchaseOrderListQuerySchema = z
     // Include item detail (product/unit/quantities) on list rows. Implied by
     // `receivable=true`.
     includeItems: booleanQueryParam,
+    ...dateFilterQueryShape,
   })
-  .merge(paginationQuerySchema);
+  .merge(paginationQuerySchema)
+  .superRefine((value, ctx) => {
+    for (const issue of dateFilterIssues(value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, ...issue });
+    }
+  });
 
 export const purchaseOrderParamsSchema = z.object({
   id: uuidSchema,

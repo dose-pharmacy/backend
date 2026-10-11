@@ -3,6 +3,7 @@ import { AppError } from "../../errors/app-error.js";
 import { ErrorCode } from "../../errors/error-codes.js";
 import { prisma } from "../../database/prisma.js";
 import { buildPaginationMeta, resolvePagination } from "../../utils/pagination.js";
+import { resolveDateFilter, type DateFilterInput } from "../../utils/date-filter.js";
 import { toDecimal } from "../../utils/decimal.js";
 import { AuditEvent, recordAuditEvent } from "../audit/audit-events.js";
 import type { PageQuery } from "../../utils/pagination.js";
@@ -55,11 +56,16 @@ export type RecordPaymentInput = {
   notes?: string | null;
 };
 
-export type SupplierInvoiceListQuery = PageQuery & {
-  supplierId?: string;
-  status?: "OPEN" | "PARTIALLY_PAID" | "PAID";
-  search?: string;
-};
+export type SupplierInvoiceListQuery = PageQuery &
+  DateFilterInput & {
+    supplierId?: string;
+    status?: "OPEN" | "PARTIALLY_PAID" | "PAID";
+    /**
+     * Existing search over the invoice number and supplier name. The
+     * medicine/supplier-name extensions deliberately do NOT apply to invoices.
+     */
+    search?: string;
+  };
 
 function money(value: number | Prisma.Decimal): Prisma.Decimal {
   const decimal = value instanceof Prisma.Decimal ? value : toDecimal(value);
@@ -256,9 +262,15 @@ export const supplierInvoiceService = {
   async list(query: SupplierInvoiceListQuery) {
     const { page, limit, skip, take } = resolvePagination(query);
 
+    // Existing search behaviour is preserved exactly (invoice number + supplier
+    // name). Date filtering is new and uses the invoice's recorded `invoiceDate`
+    // (never dueDate, payment date or updatedAt).
+    const dateRange = resolveDateFilter(query);
+
     const where: Prisma.SupplierInvoiceWhereInput = {
       ...(query.supplierId ? { supplierId: query.supplierId } : {}),
       ...(query.status ? { status: query.status } : {}),
+      ...(dateRange ? { invoiceDate: dateRange } : {}),
       ...(query.search
         ? {
             OR: [

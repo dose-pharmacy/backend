@@ -812,7 +812,10 @@ GET /purchase-orders
 | `supplierId` | UUID | No | Filter by supplier |
 | `status` | enum | No | `REGISTERED`, `AWAITING_DELIVERY`, `RECEIVED`, `CLOSED`, `CANCELLED` |
 | `paymentStatus` | enum | No | `NOT_INVOICED`, `UNPAID`, `PARTIALLY_PAID`, `PAID`, `ALL` |
-| `search` | string | No | Search in poNumber, notes |
+| `search` | string ≤ 200 | No | Case-insensitive partial match on poNumber, notes, supplier name, medicine/product name |
+| `datePreset` | enum | No | `today`, `this_week`, `this_month` (UTC) |
+| `dateFrom` | date | No | Inclusive first calendar day (UTC), filters on `orderDate` |
+| `dateTo` | date | No | Inclusive last calendar day (UTC), filters on `orderDate` |
 
 **Response 200:**
 ```json
@@ -848,6 +851,15 @@ GET /purchase-orders
 
 `summary` counts are computed server-side over the **filtered** dataset (all
 filters applied), not just the current page.
+
+**New: Search & Date Filtering**
+
+`search` also matches the supplier name and the name of any medicine/product on
+the order's line items; each PO is returned once. `datePreset` /
+`dateFrom` / `dateTo` filter on `orderDate`. A preset and custom bounds are
+mutually exclusive, ranges are inclusive of the whole UTC calendar day, and
+`dateFrom > dateTo` is rejected with `422`. Full details:
+[PURCHASING_SEARCH_AND_DATE_FILTERS.md](./PURCHASING_SEARCH_AND_DATE_FILTERS.md).
 
 **New: Payment Status Filtering**
 
@@ -1311,6 +1323,10 @@ GET /goods-receipts
 | `limit` | integer | No | Default: 20, max: 100 |
 | `purchaseOrderId` | UUID | No | Filter by PO |
 | `status` | enum | No | `MATCHED`, `DISCREPANCY`, `RESOLVED` |
+| `search` | string ≤ 200 | No | Case-insensitive partial match on receipt number, supplier name, received medicine/product name |
+| `datePreset` | enum | No | `today`, `this_week`, `this_month` (UTC) |
+| `dateFrom` | date | No | Inclusive first calendar day (UTC), filters on `receivedDate` |
+| `dateTo` | date | No | Inclusive last calendar day (UTC), filters on `receivedDate` |
 
 **Response 200:**
 ```json
@@ -1346,7 +1362,15 @@ GET /goods-receipts
 `summary` counts are computed server-side over the **filtered** dataset. Each
 receipt item records the transaction `unitId` (the PO item's ordered unit), so
 received quantities are interpreted in the correct unit and normalized to base
-units when confirming into inventory.```
+units when confirming into inventory.
+
+The `search` parameter matches the receipt number, supplier name and any received
+medicine/product name; each receipt is returned once. `datePreset` /
+`dateFrom` / `dateTo` filter on `receivedDate` (not the linked PO's
+`orderDate`). See
+[PURCHASING_SEARCH_AND_DATE_FILTERS.md](./PURCHASING_SEARCH_AND_DATE_FILTERS.md).
+
+```
 POST /purchase-orders/:id/goods-receipts
 ```
 
@@ -1597,7 +1621,10 @@ GET /supplier-invoices
 | `limit` | integer | No | Default: 20, max: 100 |
 | `supplierId` | UUID | No | Filter by supplier |
 | `status` | enum | No | `OPEN`, `PARTIALLY_PAID`, `PAID` |
-| `search` | string | No | Search in invoiceNumber, supplier name |
+| `search` | string ≤ 200 | No | Case-insensitive partial match on invoiceNumber, supplier name |
+| `datePreset` | enum | No | `today`, `this_week`, `this_month` (UTC) |
+| `dateFrom` | date | No | Inclusive first calendar day (UTC), filters on `invoiceDate` |
+| `dateTo` | date | No | Inclusive last calendar day (UTC), filters on `invoiceDate` |
 
 **Response 200:**
 ```json
@@ -1635,6 +1662,11 @@ GET /supplier-invoices
   "meta": { "page": "integer", "limit": "integer", "total": "integer", "totalPages": "integer" }
 }
 ```
+
+New `datePreset` / `dateFrom` / `dateTo` parameters filter on `invoiceDate`.
+The existing `search` behavior (invoice number + supplier name) is unchanged, and
+`invoiceNumber` remains required when creating an invoice. See
+[PURCHASING_SEARCH_AND_DATE_FILTERS.md](./PURCHASING_SEARCH_AND_DATE_FILTERS.md).
 
 ---### Create Supplier Invoice (Major Update)
 ```

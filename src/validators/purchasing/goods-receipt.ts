@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { paginationQuerySchema, uuidSchema, quantitySchema } from "../inventory/common.js";
+import { dateFilterQueryShape, dateFilterIssues } from "../date-filter.js";
 
 const grStatusEnum = z.enum(["MATCHED", "DISCREPANCY", "RESOLVED"]);
 
@@ -38,8 +39,17 @@ export const goodsReceiptListQuerySchema = z
   .object({
     purchaseOrderId: uuidSchema.optional(),
     status: grStatusEnum.optional(),
+    // Search receipt number, supplier name and the name of any received
+    // medicine/product. Each receipt is returned once.
+    search: z.string().trim().max(200).optional(),
+    ...dateFilterQueryShape,
   })
-  .merge(paginationQuerySchema);
+  .merge(paginationQuerySchema)
+  .superRefine((value, ctx) => {
+    for (const issue of dateFilterIssues(value)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, ...issue });
+    }
+  });
 
 export const goodsReceiptParamsSchema = z.object({
   id: uuidSchema,

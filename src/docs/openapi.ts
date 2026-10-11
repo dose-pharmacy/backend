@@ -42,6 +42,15 @@ const pageQueryParam = { name: "page", in: "query" as const, schema: { type: "in
 const limitQueryParam = { name: "limit", in: "query" as const, schema: { type: "integer", minimum: 1, maximum: 100, default: 20, example: 20 } };
 const searchQueryParam = { name: "search", in: "query" as const, schema: { type: "string" }, description: "Search text applied to the endpoint's searchable fields" };
 
+/**
+ * Shared purchasing list date-filter query parameters. Presets are computed
+ * server-side in UTC; custom ranges are inclusive UTC calendar days. A preset
+ * and custom bounds are mutually exclusive.
+ */
+const datePresetQueryParam = { name: "datePreset", in: "query" as const, schema: { type: "string", enum: ["today", "this_week", "this_month"] }, description: "Server-computed UTC date window: today (current UTC day), this_week (Monday..Sunday), this_month (calendar month). Cannot be combined with dateFrom/dateTo." };
+const dateFromQueryParam = { name: "dateFrom", in: "query" as const, schema: { type: "string", format: "date" }, description: "Inclusive first calendar day (UTC). Optional; omitted leaves the lower bound open. Cannot be combined with datePreset." };
+const dateToQueryParam = { name: "dateTo", in: "query" as const, schema: { type: "string", format: "date" }, description: "Inclusive last calendar day (UTC). Optional; omitted leaves the upper bound open. Cannot be combined with datePreset." };
+
 /** Shared request/response body fragments. */
 const jsonBody = (ref: string, required = true) => ({
   required,
@@ -1802,7 +1811,10 @@ export const openApiDocument = {
           { name: "receivable", in: "query", schema: { type: "boolean" }, description: "Only orders with at least one item still to receive (includes PARTIALLY_RECEIVED, excludes fully received)" },
           { name: "invoiceable", in: "query", schema: { type: "boolean" }, description: "Supplier -> invoice-eligible PO list: only orders with at least one item where quantityReceived > quantityInvoiced. PO status does NOT gate eligibility (AWAITING_DELIVERY/PARTIALLY_RECEIVED/RECEIVED orders all appear if billable goods exist); fully invoiced orders are excluded. Implies includeItems=true" },
           { name: "includeItems", in: "query", schema: { type: "boolean" }, description: "Include item detail (product, unit, ordered/received/invoiced/remaining quantities, quantityRemainingToInvoice) on each order. Implied by receivable=true or invoiceable=true" },
-          searchQueryParam,
+          { name: "search", in: "query", schema: { type: "string" }, description: "Search PO number, notes, supplier name and the name of any medicine/product on the order's line items. Each PO is returned once. Whitespace is trimmed; blank is ignored." },
+          datePresetQueryParam,
+          dateFromQueryParam,
+          dateToQueryParam,
           pageQueryParam,
           limitQueryParam,
         ],
@@ -1899,6 +1911,10 @@ export const openApiDocument = {
         parameters: [
           { name: "purchaseOrderId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by purchase order" },
           { name: "status", in: "query", schema: { type: "string", enum: ["MATCHED", "DISCREPANCY", "RESOLVED"] }, description: "Filter by receipt status" },
+          { name: "search", in: "query", schema: { type: "string" }, description: "Search receipt number, supplier name and the name of any received medicine/product. Each receipt is returned once. Whitespace is trimmed; blank is ignored." },
+          datePresetQueryParam,
+          dateFromQueryParam,
+          dateToQueryParam,
           pageQueryParam,
           limitQueryParam,
         ],
@@ -2045,7 +2061,10 @@ export const openApiDocument = {
         parameters: [
           { name: "supplierId", in: "query", schema: { type: "string", format: "uuid" }, description: "Filter by supplier" },
           { name: "status", in: "query", schema: { type: "string", enum: ["OPEN", "PARTIALLY_PAID", "PAID"] }, description: "Filter by invoice status" },
-          searchQueryParam,
+          { name: "search", in: "query", schema: { type: "string" }, description: "Search supplier invoice number and supplier name (existing behaviour)." },
+          datePresetQueryParam,
+          dateFromQueryParam,
+          dateToQueryParam,
           pageQueryParam,
           limitQueryParam,
         ],
